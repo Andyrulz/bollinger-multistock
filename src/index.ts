@@ -686,6 +686,11 @@ class TradingBot {
         let livePrice;
         let isMarketHours = false;
         let priceStreamingActive = false;
+        let breakoutDetectionActive = false;
+        let latestBreakoutSignal;
+        let oneMinuteCandleCount = 0;
+  let volumeSMA50: number | undefined;
+  let latestOneMinuteCandle: any;
         
         try {
           strategyState = this.breakoutStrategy.getStrategyState();
@@ -693,6 +698,11 @@ class TradingBot {
           livePrice = this.breakoutStrategy.getLivePrice();
           isMarketHours = this.breakoutStrategy.isMarketHours();
           priceStreamingActive = this.breakoutStrategy.isPriceStreamingActive();
+          breakoutDetectionActive = this.breakoutStrategy.isBreakoutDetectionActive();
+          latestBreakoutSignal = this.breakoutStrategy.getLatestBreakoutSignal();
+          oneMinuteCandleCount = this.breakoutStrategy.getOneMinuteCandleCount();
+          volumeSMA50 = this.breakoutStrategy.getCurrentVolumeSMA50();
+          latestOneMinuteCandle = this.breakoutStrategy.getLatestOneMinuteCandle();
         } catch (error) {
           this.logger.error('Error getting detailed strategy data:', error);
         }
@@ -707,6 +717,11 @@ class TradingBot {
           last_update: strategyState?.lastUpdateTime || new Date(),
           live_price: livePrice || null,
           price_streaming_active: priceStreamingActive,
+          breakout_detection_active: breakoutDetectionActive,
+          latest_breakout_signal: latestBreakoutSignal || null,
+          one_minute_candle_count: oneMinuteCandleCount,
+          volume_sma_50: typeof volumeSMA50 === 'number' ? volumeSMA50 : null,
+            latest_one_minute_candle: latestOneMinuteCandle || null,
           timestamp: new Date().toISOString()
         });
       } catch (error) {
@@ -865,6 +880,11 @@ class TradingBot {
       const livePrice = this.breakoutStrategy.getLivePrice();
       const priceStreamingActive = this.breakoutStrategy.isPriceStreamingActive();
       const isMarketHours = this.breakoutStrategy.isMarketHours();
+      const breakoutDetectionActive = this.breakoutStrategy.isBreakoutDetectionActive();
+      const latestBreakoutSignal = this.breakoutStrategy.getLatestBreakoutSignal();
+      const oneMinuteCandleCount = this.breakoutStrategy.getOneMinuteCandleCount();
+  const volumeSMA50 = this.breakoutStrategy.getCurrentVolumeSMA50();
+  const latestOneMinuteCandle = this.breakoutStrategy.getLatestOneMinuteCandle();
       
       const htmlResponse = `
 <!DOCTYPE html>
@@ -986,6 +1006,38 @@ class TradingBot {
         .pivot-time {
             font-size: 0.9rem;
             color: #718096;
+        }
+        
+        .breakout-signal {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid;
+        }
+        
+        .breakout-signal.bullish_breakout {
+            background: linear-gradient(135deg, #f0fff4, #e6fffa);
+            border-color: #48bb78;
+        }
+        
+        .breakout-signal.bearish_breakdown {
+            background: linear-gradient(135deg, #fff5f5, #fed7d7);
+            border-color: #f56565;
+        }
+        
+        .signal-title {
+            font-weight: 700;
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+        
+        .signal-details {
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+        
+        .signal-details div {
+            margin: 2px 0;
         }
         
         .actions-grid {
@@ -1183,6 +1235,27 @@ class TradingBot {
                             <div class="pivot-price">₹${latestPivots.pivotLow.price.toFixed(2)}</div>
                             <div class="pivot-time">${new Date(latestPivots.pivotLow.timestamp).toLocaleString()}</div>
                         ` : 'No pivot low detected yet'}
+                    </div>
+                </div>
+
+                <div class="status-card ${breakoutDetectionActive ? 'success' : 'warning'}">
+                    <div class="card-title">🎯 Breakout Detection</div>
+                    <div class="card-content">
+                        <strong>Status:</strong> ${breakoutDetectionActive ? '🟢 ACTIVE' : '🔴 INACTIVE'}<br>
+                        <strong>1-Min Candles:</strong> ${oneMinuteCandleCount}/50<br>
+                        <strong>Vol SMA (50):</strong> ${typeof volumeSMA50 === 'number' ? volumeSMA50.toFixed(0) : `N/A (${oneMinuteCandleCount}/50)`}<br>
+            ${latestOneMinuteCandle ? `<strong>Last 1m Vol:</strong> ${latestOneMinuteCandle.volume.toLocaleString()}${volumeSMA50 ? ` (${((latestOneMinuteCandle.volume / volumeSMA50) * 100).toFixed(0)}% of SMA)` : ''}<br>` : ''}
+                        ${latestBreakoutSignal ? `
+                            <div class="breakout-signal ${latestBreakoutSignal.type}">
+                                <div class="signal-title">${latestBreakoutSignal.type === 'bullish_breakout' ? '🟢 BULLISH BREAKOUT' : '🔴 BEARISH BREAKDOWN'}</div>
+                                <div class="signal-details">
+                                    <div>Price: ₹${latestBreakoutSignal.price.toFixed(2)}</div>
+                                    <div>Pivot: ₹${latestBreakoutSignal.pivotPrice.toFixed(2)}</div>
+                                    <div>Volume: ${latestBreakoutSignal.volume.toLocaleString()} (MA: ${latestBreakoutSignal.volumeMA.toFixed(0)})</div>
+                                    <div>Time: ${new Date(latestBreakoutSignal.timestamp).toLocaleString()}</div>
+                                </div>
+                            </div>
+                        ` : breakoutDetectionActive ? 'Monitoring for breakouts...' : 'Detection not active'}
                     </div>
                 </div>
             </div>

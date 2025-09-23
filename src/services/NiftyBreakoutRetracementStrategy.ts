@@ -18,6 +18,22 @@ export interface PivotPoint {
   confirmed: boolean;
 }
 
+export interface BreakoutSignal {
+  timestamp: Date;
+  type: 'bullish_breakout' | 'bearish_breakdown';
+  price: number;
+  volume: number;
+  volumeMA: number;
+  pivotPrice: number;
+  candle: {
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  };
+}
+
 export interface StrategyState {
   isActive: boolean;
   currentContract?: NiftyFuturesData;
@@ -31,6 +47,11 @@ export interface StrategyState {
   };
   livePrice?: TickData;
   priceStreamingActive: boolean;
+  // Breakout detection data
+  oneMinuteCandleData: Candle[];
+  latestBreakoutSignal?: BreakoutSignal;
+  breakoutDetectionActive: boolean;
+  currentVolumeSMA50?: number; // Cached 50-period volume SMA for 1-min candles
 }
 
 export class NiftyBreakoutRetracementStrategy {
@@ -42,6 +63,16 @@ export class NiftyBreakoutRetracementStrategy {
   private readonly LOOKBACK_PERIOD = 15;
   private readonly CANDLE_INTERVAL = 5; // 5 minutes
   private readonly HISTORICAL_DAYS = 7; // 7 calendar days for safety
+  
+  // 1-minute candle tracking
+  private currentMinuteCandle: {
+    timestamp: Date;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  } | null = null;
 
   constructor(kiteConnect: any, logger: Logger, niftyStrategy: NiftyFuturesStrategy) {
     this.kiteConnect = kiteConnect;
@@ -56,7 +87,9 @@ export class NiftyBreakoutRetracementStrategy {
         start: "09:15",
         end: "15:30"
       },
-      priceStreamingActive: false
+      priceStreamingActive: false,
+      oneMinuteCandleData: [],
+      breakoutDetectionActive: false
     };
   }
 
@@ -85,6 +118,9 @@ export class NiftyBreakoutRetracementStrategy {
       // Start live price streaming
       await this.startPriceStreaming();
 
+      // Start breakout detection
+      await this.startBreakoutDetection();
+
       // Start the strategy
       this.strategyState.isActive = true;
       
@@ -106,6 +142,9 @@ export class NiftyBreakoutRetracementStrategy {
   public async stopStrategy(): Promise<void> {
     try {
       this.strategyState.isActive = false;
+      
+      // Stop breakout detection
+      this.stopBreakoutDetection();
       
       // Stop price streaming
       await this.stopPriceStreaming();
@@ -136,6 +175,9 @@ export class NiftyBreakoutRetracementStrategy {
       this.niftyStrategy.onPriceUpdate((tick: TickData) => {
         this.strategyState.livePrice = tick;
         this.strategyState.lastUpdateTime = new Date();
+        
+        // Process tick for 1-minute candle generation
+        this.processTickForOneMinuteCandle(tick);
         
         // Log price updates (reduce frequency for production)
         if (Math.random() < 0.1) { // Log only 10% of updates to avoid spam
@@ -228,6 +270,62 @@ export class NiftyBreakoutRetracementStrategy {
 
     } catch (error) {
       this.logger.error('Failed to load historical data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Load historical 1-minute candle data for breakout detection (last 50 candles)
+   */
+  private async loadOneMinuteHistoricalData(): Promise<void> {
+    try {
+      if (!this.strategyState.currentContract) {
+        throw new Error('No current contract available for loading 1-minute data');
+      }
+
+      const toDate = new Date();
+      const fromDate = new Date(toDate);
+      fromDate.setHours(fromDate.getHours() - 24); // Get last 24 hours to ensure we have 50+ candles
+
+      this.logger.info(`Loading 1-minute historical data from ${fromDate.toISOString()} to ${toDate.toISOString()}`);
+
+      const historicalData = await this.kiteConnect.getHistoricalData(
+        this.strategyState.currentContract.instrument_token,
+        'minute',
+        fromDate,
+        toDate
+      );
+
+      if (!historicalData || historicalData.length === 0) {
+        this.logger.warn('No 1-minute historical data received');
+        return;
+      }
+
+      this.strategyState.oneMinuteCandleData = historicalData.map((candle: any) => ({
+        timestamp: new Date(candle.date),
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume || 0
+      }));
+
+      // Sort by timestamp and keep only the last 50 candles
+      this.strategyState.oneMinuteCandleData.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      this.strategyState.oneMinuteCandleData = this.strategyState.oneMinuteCandleData.slice(-50);
+
+      this.logger.info(`Loaded ${this.strategyState.oneMinuteCandleData.length} 1-minute candles for breakout detection`);
+      
+      if (this.strategyState.oneMinuteCandleData.length > 0) {
+        const firstCandle = this.strategyState.oneMinuteCandleData[0];
+        const lastCandle = this.strategyState.oneMinuteCandleData[this.strategyState.oneMinuteCandleData.length - 1];
+        if (firstCandle && lastCandle) {
+          this.logger.info(`1-minute data range: ${firstCandle.timestamp.toISOString()} to ${lastCandle.timestamp.toISOString()}`);
+        }
+      }
+
+    } catch (error) {
+      this.logger.error('Error loading 1-minute historical data:', error);
       throw error;
     }
   }
@@ -590,6 +688,27 @@ export class NiftyBreakoutRetracementStrategy {
   }
 
   /**
+   * Check if breakout detection is active
+   */
+  public isBreakoutDetectionActive(): boolean {
+    return this.strategyState.breakoutDetectionActive;
+  }
+
+  /**
+   * Get latest breakout signal
+   */
+  public getLatestBreakoutSignal(): BreakoutSignal | undefined {
+    return this.strategyState.latestBreakoutSignal;
+  }
+
+  /**
+   * Get 1-minute candle count
+   */
+  public getOneMinuteCandleCount(): number {
+    return this.strategyState.oneMinuteCandleData.length;
+  }
+
+  /**
    * Manual start of price streaming (for testing or manual control)
    */
   public async startManualPriceStreaming(): Promise<void> {
@@ -605,6 +724,216 @@ export class NiftyBreakoutRetracementStrategy {
     }
     
     await this.startPriceStreaming();
+  }
+
+  /**
+   * Calculate 50-period volume moving average from 1-minute data
+   */
+  private calculateVolumeMA(): number {
+    if (this.strategyState.oneMinuteCandleData.length < 50) {
+      this.logger.warn('Not enough 1-minute data for volume MA calculation');
+      return 0;
+    }
+
+    const volumes = this.strategyState.oneMinuteCandleData.slice(-50).map(candle => candle.volume);
+    const sum = volumes.reduce((acc, vol) => acc + vol, 0);
+    return sum / volumes.length;
+  }
+
+  /**
+   * Add new 1-minute candle and check for breakout
+   */
+  private async addOneMinuteCandle(candle: Candle): Promise<void> {
+    // Add new candle to 1-minute data
+    this.strategyState.oneMinuteCandleData.push(candle);
+    
+    // Keep only last 50 candles
+    if (this.strategyState.oneMinuteCandleData.length > 50) {
+      this.strategyState.oneMinuteCandleData = this.strategyState.oneMinuteCandleData.slice(-50);
+    }
+
+    // Update cached 50-period volume SMA (only meaningful when we have 50 candles)
+    if (this.strategyState.oneMinuteCandleData.length >= 50) {
+      this.strategyState.currentVolumeSMA50 = this.calculateVolumeMA();
+    } else {
+      // Remove the property so UI can detect absence cleanly under exactOptionalPropertyTypes
+      delete this.strategyState.currentVolumeSMA50;
+    }
+
+    // Check for breakout if we have enough data and pivots
+    if (this.strategyState.oneMinuteCandleData.length >= 50 && 
+        this.strategyState.breakoutDetectionActive &&
+        (this.strategyState.latestPivotHigh || this.strategyState.latestPivotLow)) {
+      await this.checkForBreakout(candle);
+    }
+  }
+
+  /**
+   * Check for bullish breakout or bearish breakdown
+   */
+  private async checkForBreakout(candle: Candle): Promise<void> {
+    try {
+      const volumeMA = this.calculateVolumeMA();
+      
+      // Check if volume is higher than average
+      if (candle.volume <= volumeMA) {
+        return; // No high volume, skip
+      }
+
+      let signal: BreakoutSignal | null = null;
+
+      // Check for bullish breakout
+      if (this.strategyState.latestPivotHigh && 
+          candle.open < this.strategyState.latestPivotHigh.price && 
+          candle.close > this.strategyState.latestPivotHigh.price) {
+        
+        signal = {
+          timestamp: candle.timestamp,
+          type: 'bullish_breakout',
+          price: candle.close,
+          volume: candle.volume,
+          volumeMA: volumeMA,
+          pivotPrice: this.strategyState.latestPivotHigh.price,
+          candle: {
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
+            volume: candle.volume
+          }
+        };
+
+        this.logger.info(`🟢 BULLISH BREAKOUT DETECTED! Price: ₹${candle.close}, Pivot: ₹${this.strategyState.latestPivotHigh.price}, Volume: ${candle.volume} (MA: ${volumeMA.toFixed(0)})`);
+      }
+      
+      // Check for bearish breakdown
+      else if (this.strategyState.latestPivotLow && 
+               candle.open > this.strategyState.latestPivotLow.price && 
+               candle.close < this.strategyState.latestPivotLow.price) {
+        
+        signal = {
+          timestamp: candle.timestamp,
+          type: 'bearish_breakdown',
+          price: candle.close,
+          volume: candle.volume,
+          volumeMA: volumeMA,
+          pivotPrice: this.strategyState.latestPivotLow.price,
+          candle: {
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
+            volume: candle.volume
+          }
+        };
+
+        this.logger.info(`🔴 BEARISH BREAKDOWN DETECTED! Price: ₹${candle.close}, Pivot: ₹${this.strategyState.latestPivotLow.price}, Volume: ${candle.volume} (MA: ${volumeMA.toFixed(0)})`);
+      }
+
+      // Store the latest signal if detected
+      if (signal) {
+        this.strategyState.latestBreakoutSignal = signal;
+        this.strategyState.lastUpdateTime = new Date();
+      }
+
+    } catch (error) {
+      this.logger.error('Error checking for breakout:', error);
+    }
+  }
+
+  /**
+   * Get the current cached 50-period volume SMA (1-min candles)
+   */
+  public getCurrentVolumeSMA50(): number | undefined {
+    return this.strategyState.currentVolumeSMA50;
+  }
+
+  /**
+   * Get the latest 1-minute candle (if any)
+   */
+  public getLatestOneMinuteCandle(): Candle | undefined {
+    if (!this.strategyState.oneMinuteCandleData.length) return undefined;
+    return this.strategyState.oneMinuteCandleData[this.strategyState.oneMinuteCandleData.length - 1];
+  }
+
+  /**
+   * Start breakout detection
+   */
+  public async startBreakoutDetection(): Promise<void> {
+    try {
+      if (!this.strategyState.currentContract) {
+        throw new Error('No current contract available for breakout detection');
+      }
+
+      // Load 1-minute historical data
+      await this.loadOneMinuteHistoricalData();
+      
+      // Activate breakout detection
+      this.strategyState.breakoutDetectionActive = true;
+      
+      this.logger.info('Breakout detection started successfully');
+    } catch (error) {
+      this.logger.error('Error starting breakout detection:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process incoming ticks to generate 1-minute candles
+   */
+  private processTickForOneMinuteCandle(tick: TickData): void {
+    try {
+      const now = new Date();
+      const currentMinute = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0);
+
+      // Check if we need to start a new minute candle
+      if (!this.currentMinuteCandle || this.currentMinuteCandle.timestamp.getTime() !== currentMinute.getTime()) {
+        
+        // Save the previous minute candle if it exists
+        if (this.currentMinuteCandle) {
+          const completedCandle: Candle = {
+            timestamp: this.currentMinuteCandle.timestamp,
+            open: this.currentMinuteCandle.open,
+            high: this.currentMinuteCandle.high,
+            low: this.currentMinuteCandle.low,
+            close: this.currentMinuteCandle.close,
+            volume: this.currentMinuteCandle.volume
+          };
+          
+          // Add to 1-minute data and check for breakout
+          this.addOneMinuteCandle(completedCandle);
+        }
+
+        // Start new minute candle
+        this.currentMinuteCandle = {
+          timestamp: currentMinute,
+          open: tick.last_price,
+          high: tick.last_price,
+          low: tick.last_price,
+          close: tick.last_price,
+          volume: tick.volume || 0
+        };
+      } else {
+        // Update current minute candle
+        if (this.currentMinuteCandle) {
+          this.currentMinuteCandle.high = Math.max(this.currentMinuteCandle.high, tick.last_price);
+          this.currentMinuteCandle.low = Math.min(this.currentMinuteCandle.low, tick.last_price);
+          this.currentMinuteCandle.close = tick.last_price;
+          this.currentMinuteCandle.volume = tick.volume || 0; // Use latest volume (cumulative for the day)
+        }
+      }
+
+    } catch (error) {
+      this.logger.error('Error processing tick for 1-minute candle:', error);
+    }
+  }
+
+  /**
+   * Stop breakout detection
+   */
+  public stopBreakoutDetection(): void {
+    this.strategyState.breakoutDetectionActive = false;
+    this.logger.info('Breakout detection stopped');
   }
 
   /**
