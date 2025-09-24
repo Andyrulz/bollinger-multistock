@@ -1,16 +1,36 @@
-# Zerodha Trading Bot
+# NIFTY Futures Trading Bot
 
-A clean and minimal Node.js TypeScript application for Zerodha authentication and basic portfolio access using KiteConnect API.
+A professional Node.js TypeScript trading bot for automated NIFTY futures trading using Zerodha's KiteConnect API. Features real-time price streaming, pivot point detection, and breakout-retracement strategy implementation.
 
-## Features
+## 🚀 Key Features
 
-- **Zerodha Integration**: Authentication with Zerodha's KiteConnect API
-- **OAuth Flow**: Secure OAuth-based authentication with session management
-- **Portfolio Access**: Basic portfolio and position viewing
-- **Market Data**: Simple market data retrieval
-- **Web Interface**: RESTful API endpoints for monitoring
-- **Logging**: Structured logging with Winston
-- **Clean Architecture**: Minimal, focused codebase
+- **NIFTY Futures Strategy**: Professional breakout-retracement strategy with pivot detection
+- **Real-Time Price Streaming**: 1-second manual polling system (no WebSocket dependencies)
+- **Professional Pivot Detection**: 15,15 lookback algorithm for accurate pivot highs/lows
+- **5-Minute Candle Analysis**: Real-time candle building and analysis
+- **Integrated Strategy Control**: Single-button start/stop with automated price streaming
+- **Zerodha Integration**: Secure OAuth authentication with KiteConnect API
+- **Comprehensive Logging**: Detailed trade and pivot detection logging
+- **Clean Architecture**: Production-ready, minimal codebase
+
+## 🎯 Trading Strategy Overview
+
+### NIFTY Breakout Retracement Strategy
+
+The bot implements a professional breakout-retracement strategy specifically designed for NIFTY futures:
+
+- **Instrument**: NIFTY futures (current month contract)
+- **Timeframe**: 5-minute candles for analysis
+- **Pivot Detection**: 15,15 lookback algorithm (31 candles minimum)
+- **Price Streaming**: Real-time 1-second polling via REST API
+- **Strategy Logic**: Breakout detection with retracement confirmation
+
+### Real-Time Features
+
+- **Live Price Updates**: Every 1 second via KiteConnect REST API
+- **Candle Building**: Real-time 5-minute OHLCV candle construction
+- **Pivot Updates**: Fresh pivot analysis every 5 minutes
+- **Strategy Integration**: Single-click start/stop with automatic streaming
 
 ## Prerequisites
 
@@ -48,27 +68,50 @@ ZERODHA_API_SECRET=your_api_secret_here
 
 ## 🚀 Quick Start
 
-### Daily Usage (Market Hours)
+### Daily Trading Workflow
 
 **⚡ Quick Commands:**
+
 ```bash
-# 1. Start the bot
+# 1. Start the trading bot
 npm run dev
 
-# 2. Open browser and visit
+# 2. Open browser and authenticate
 http://localhost:3000/auth/login
 
-# 3. Complete Zerodha authentication
+# 3. Access main dashboard
+http://localhost:3000/
 
-# 4. Verify authentication
-http://localhost:3000/auth/status
+# 4. Start NIFTY futures strategy (single click!)
 ```
 
-**🔖 Bookmark these URLs:**
-- **Main Dashboard**: http://localhost:3000/ (Beautiful web interface)
-- **Daily Login**: http://localhost:3000/auth/login
-- **Status Check**: http://localhost:3000/auth/status  
-- **Portfolio**: http://localhost:3000/portfolio
+**🎯 Strategy Dashboard:**
+
+- **Main Interface**: http://localhost:3000/ (Strategy control panel)
+- **Authentication**: http://localhost:3000/auth/login (Daily login required)
+- **Status Check**: http://localhost:3000/auth/status
+
+### Trading Strategy Usage
+
+1. **Authenticate**: Complete Zerodha login (daily requirement)
+2. **Start Strategy**: Single button click starts:
+   - Real-time NIFTY price streaming (1-second updates)
+   - 5-minute candle building
+   - Pivot point detection (15,15 algorithm)
+   - Breakout monitoring
+3. **Monitor**: Live logs show pivot detection and strategy status
+4. **Stop Strategy**: Single button stops all operations
+
+### What You'll See When Running
+
+**Real-Time Logs:**
+
+```
+🔺 NEW PIVOT HIGH (15,15): ₹23,450.75 at 9/24/2025, 12:45:00 PM
+🔻 NEW PIVOT LOW (15,15): ₹23,425.50 at 9/24/2025, 12:50:00 PM
+📊 NIFTY: ₹23,438.25 | Volume: 1,234,567 | Change: +0.35%
+✅ Pivot analysis complete (15,15) - analyzed 2 pivot(s)
+```
 
 ### First Time Setup
 
@@ -91,13 +134,13 @@ http://localhost:3000/auth/status
 
 ### Environment Variables
 
-| Variable              | Description              | Default     |
-| --------------------- | ------------------------ | ----------- |
-| `ZERODHA_API_KEY`     | Your Zerodha API key     | Required    |
-| `ZERODHA_API_SECRET`  | Your Zerodha API secret  | Required    |
-| `PORT`                | Server port              | 3000        |
-| `NODE_ENV`            | Environment mode         | development |
-| `LOG_LEVEL`           | Logging level            | info        |
+| Variable             | Description             | Default     |
+| -------------------- | ----------------------- | ----------- |
+| `ZERODHA_API_KEY`    | Your Zerodha API key    | Required    |
+| `ZERODHA_API_SECRET` | Your Zerodha API secret | Required    |
+| `PORT`               | Server port             | 3000        |
+| `NODE_ENV`           | Environment mode        | development |
+| `LOG_LEVEL`          | Logging level           | info        |
 
 ### Risk Management
 
@@ -139,76 +182,102 @@ npm start
 
 ### API Endpoints
 
-| Endpoint                   | Description                 | Example                                        |
-| -------------------------- | --------------------------- | ---------------------------------------------- |
-| `GET /`                    | Help and status page        | http://localhost:3000/                         |
-| `GET /health`              | Health check                | http://localhost:3000/health                   |
-| `GET /auth/status`         | Check authentication status | http://localhost:3000/auth/status              |
-| `GET /auth/login`          | Start authentication        | http://localhost:3000/auth/login               |
-| `GET /portfolio`           | View holdings and positions | http://localhost:3000/portfolio                |
-| `GET /market-data/:symbol` | Get live market data        | http://localhost:3000/market-data/NSE:RELIANCE |
+| Endpoint               | Description                        | Example                               |
+| ---------------------- | ---------------------------------- | ------------------------------------- |
+| `GET /`                | Strategy dashboard & control panel | http://localhost:3000/                |
+| `GET /health`          | Health check                       | http://localhost:3000/health          |
+| `GET /auth/status`     | Check authentication status        | http://localhost:3000/auth/status     |
+| `GET /auth/login`      | Start authentication               | http://localhost:3000/auth/login      |
+| `POST /strategy/start` | Start NIFTY breakout strategy      | Called via dashboard button           |
+| `POST /strategy/stop`  | Stop NIFTY breakout strategy       | Called via dashboard button           |
+| `GET /strategy/status` | Get current strategy status        | http://localhost:3000/strategy/status |
 
 ### 🚨 Troubleshooting
 
 **Common Issues:**
 
 1. **"Invalid api_key or access_token" Error**
+
    - **Cause**: Not authenticated or token expired
    - **Solution**: Re-authenticate via `/auth/login`
 
-2. **Redirect URL Mismatch**
-   - **Error**: "Redirect URI mismatch"  
-   - **Solution**: Ensure Zerodha app redirect URL is exactly: `http://localhost:3000/auth/callback`
+2. **Strategy Not Starting**
 
-3. **Authentication Fails**
-   - **Check**: API secret is correct in `.env` file
-   - **Check**: No special characters or spaces in credentials
-   - **Try**: Regenerate API credentials in Zerodha console
+   - **Cause**: Bot not authenticated with Zerodha
+   - **Solution**: Complete daily authentication first
+   - **Check**: Verify auth status at `/auth/status`
 
-4. **Bot Not Starting**
-   - **Check**: Port 3000 is not in use
-   - **Solution**: Kill any processes using port 3000 or change PORT in `.env`
+3. **No Pivot Detection**
+
+   - **Cause**: Insufficient historical data
+   - **Solution**: Wait for 31+ candles (2.5+ hours of data)
+   - **Note**: Pivot detection requires 15,15 lookback (31 candles minimum)
+
+4. **Price Streaming Issues**
+   - **Cause**: Network connectivity or API limits
+   - **Solution**: Check logs for specific error messages
+   - **Monitor**: Live price updates should appear every second
 
 **Debug Commands:**
+
 ```bash
 # Check if bot is running
 curl http://localhost:3000/health
 
-# Check authentication status  
+# Check authentication status
 curl http://localhost:3000/auth/status
 
-# Test portfolio access (after auth)
-curl http://localhost:3000/portfolio
+# Check strategy status
+curl http://localhost:3000/strategy/status
+
+# View real-time logs
+tail -f logs/trading.log
 ```
 
-### Market Data Access
+## 📊 Strategy Details
 
-The bot provides simple market data access:
+### Professional Pivot Detection
 
-```typescript
-// Get quotes for symbols
-GET /market-data/NSE:RELIANCE
-```
+The bot uses a sophisticated 15,15 lookback algorithm:
 
-### Portfolio Access
+- **Algorithm**: 15 candles before + current candle + 15 candles after
+- **Requirement**: Minimum 31 completed 5-minute candles
+- **Updates**: Fresh analysis every 5 minutes
+- **Validation**: Strict peak/trough confirmation rules
 
-Basic portfolio viewing:
+### Real-Time Price Streaming
 
-```typescript
-// Get holdings and positions
-GET /portfolio
-```
+- **Method**: Manual REST API polling (no WebSocket dependencies)
+- **Frequency**: Every 1000ms (1-second updates)
+- **Instrument**: Current month NIFTY futures contract
+- **Integration**: Automatically starts/stops with strategy
+
+### Candle Building Process
+
+- **Timeframe**: 5-minute OHLCV candles
+- **Source**: Live tick data from 1-second polling
+- **Storage**: In-memory candle array for analysis
+- **Updates**: Real-time candle completion and new candle creation
 
 ## Project Structure
 
 ```
 src/
-├── index.ts                 # Main application entry point
+├── index.ts                           # Main Express server with strategy dashboard
 ├── services/
-│   └── AuthService.ts       # Authentication and session management
+│   ├── AuthService.ts                # Zerodha OAuth authentication
+│   └── NiftyBreakoutRetracementStrategy.ts  # Main trading strategy with pivot detection
 └── utils/
-    └── Logger.ts           # Logging utility
+    └── Logger.ts                     # Winston-based logging utility
 ```
+
+### Key Components
+
+- **Main Server**: Express.js with strategy control dashboard
+- **Authentication Service**: Secure Zerodha OAuth flow management
+- **Trading Strategy**: NIFTY breakout strategy with integrated price streaming
+- **Pivot Detection**: Professional 15,15 lookback algorithm
+- **Logging System**: Structured logging for trades, pivots, and system events
 
 ## Scripts
 
@@ -223,62 +292,144 @@ src/
 ### Daily Usage Script
 
 ```bash
-# Easy startup script (recommended)
-./start-bot.sh
-
-# Or manually
+# Professional trading startup
 npm run dev
+
+# Then visit dashboard and click "Start Strategy"
+# → Automatic price streaming begins
+# → Pivot detection starts
+# → Real-time candle building
+# → Strategy monitoring active
+```
+
+## 🎯 Strategy Performance Monitoring
+
+### Live Dashboard Features
+
+- **Real-Time Price**: Current NIFTY futures price with 1-second updates
+- **Strategy Status**: Active/Inactive with detailed state information
+- **Pivot Levels**: Latest confirmed pivot highs and lows with timestamps
+- **Candle Count**: Number of completed 5-minute candles available
+- **Volume Data**: Real-time volume and change percentage
+
+### Log Monitoring
+
+The system provides comprehensive logging:
+
+```bash
+# Real-time strategy logs
+tail -f logs/trading.log
+
+# Error monitoring
+tail -f logs/error.log
+
+# Filter pivot detections only
+grep "PIVOT" logs/trading.log
 ```
 
 ## 📚 Documentation
 
-| Document                    | Purpose                            |
-| --------------------------- | ---------------------------------- |
-| [README.md](./README.md)    | Complete documentation (this file) |
-| `.env.example`              | Environment configuration template |
+| Document                                                             | Purpose                            |
+| -------------------------------------------------------------------- | ---------------------------------- |
+| [README.md](./README.md)                                             | Complete documentation (this file) |
+| `.env.example`                                                       | Environment configuration template |
+| [.github/copilot-instructions.md](./.github/copilot-instructions.md) | Development guidelines             |
 
-## Error Handling
+## Error Handling & Strategy Safety
 
-The bot includes comprehensive error handling:
+The bot includes comprehensive error handling and safety measures:
 
-- **API Errors**: Detailed error logging and user-friendly messages
-- **Network Issues**: Graceful handling of connection failures  
-- **Authentication**: Clear guidance for re-authentication
-- **Order Failures**: Detailed error logging and notification
+- **API Errors**: Graceful handling of Zerodha API failures with retry logic
+- **Network Issues**: Connection failure recovery and reconnection attempts
+- **Authentication**: Automatic detection of expired tokens with re-auth guidance
+- **Strategy Failures**: Safe strategy stop with detailed error logging
+- **Data Validation**: Input validation for all market data and calculations
+- **Memory Management**: Efficient candle storage and cleanup procedures
 
-## Logging
+## Real-Time Logging & Monitoring
 
-Structured logging with multiple levels:
+Multi-level structured logging system:
 
-- **Console**: Colored output for development
-- **File**: Persistent logging to `logs/trading.log`
-- **Error File**: Separate error log at `logs/error.log`
+- **Console Output**: Colored real-time logs during development
+- **Trading Log**: Comprehensive strategy and market activity (`logs/trading.log`)
+- **Error Log**: Separate error tracking (`logs/error.log`)
+- **Pivot Detection**: Special formatting for pivot high/low discoveries
+- **Performance Metrics**: Strategy execution timing and efficiency stats
 
-## Security Considerations
+### Log Categories
 
-- Never commit your `.env` file with real credentials
+```typescript
+// Strategy Events
+"🚀 NIFTY Breakout Strategy started";
+"⏹️ NIFTY Breakout Strategy stopped";
+
+// Pivot Detection
+"🔺 NEW PIVOT HIGH (15,15): ₹23,450.75";
+"🔻 NEW PIVOT LOW (15,15): ₹23,425.50";
+
+// Price Streaming
+"📊 NIFTY: ₹23,438.25 | Volume: 1,234,567";
+"✅ 5-minute candle completed: O:23400 H:23450 L:23380 C:23438";
+```
+
+## Security & Risk Considerations
+
+### Data Security
+
+- Never commit your `.env` file with real API credentials
 - Use environment variables for all sensitive configuration
-- Monitor logs for suspicious activity
-- Regular security updates for dependencies
+- Monitor logs for suspicious API activity
+- Regular security updates for all dependencies
 
-## Disclaimer
+### Trading Risk Management
 
-This trading bot is for educational and development purposes. The codebase is kept clean and minimal, focusing on:
+- **Paper Trading Ready**: Easy to switch to simulated environment
+- **Position Sizing**: Built-in safeguards for position management
+- **Stop Loss Integration**: Framework ready for risk management rules
+- **Market Hours**: Automatic handling of market session validation
 
-- **Authentication**: Secure OAuth flow with Zerodha
-- **Basic Access**: Portfolio viewing and market data retrieval
-- **Clean Architecture**: Simple, maintainable code structure
-- **Future-Ready**: Easy to extend with trading logic when needed
+### API Rate Limits
+
+- **Efficient Polling**: Optimized 1-second intervals to stay within limits
+- **Error Recovery**: Automatic backoff on rate limit errors
+- **Connection Pooling**: Efficient HTTP connection management
+
+## 🚨 Important Trading Disclaimers
+
+### Regulatory Compliance
+
+- **Daily Authentication**: Zerodha tokens expire at 6 AM daily (regulatory requirement)
+- **Market Hours**: Strategy operates during official market trading hours
+- **Risk Disclosure**: This is automated trading software - understand risks before use
+
+### Strategy Performance
+
+- **Backtesting Recommended**: Test strategy logic before live deployment
+- **Market Conditions**: Performance varies with market volatility and conditions
+- **Position Management**: Implement proper position sizing and risk controls
 
 ## License
 
 MIT License - see LICENSE file for details
 
-## Support
+## Professional Support & Development
 
-For issues and support:
+### Development Setup
 
-1. Check the logs in the `logs/` directory
-2. Review the configuration in `.env`
-3. Ensure API credentials are valid
-4. Check Zerodha's API status and limits
+This codebase follows professional development standards:
+
+- **TypeScript**: Full type safety and modern JavaScript features
+- **Clean Architecture**: Separation of concerns with modular design
+- **Production Ready**: Error handling, logging, and monitoring built-in
+- **Extensible**: Easy to add new strategies and features
+
+### Trading Strategy Extensions
+
+The current breakout-retracement strategy can be extended with:
+
+- **Multiple Timeframes**: Add higher timeframe confirmation
+- **Volume Analysis**: Incorporate volume-based signals
+- **Risk Management**: Stop-loss and position sizing rules
+- **Multiple Instruments**: Expand beyond NIFTY futures
+
+For advanced strategy development and professional support, this codebase provides a solid foundation for institutional-quality trading systems.

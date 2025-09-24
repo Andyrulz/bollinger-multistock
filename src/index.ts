@@ -1,6 +1,5 @@
 import { KiteConnect } from 'kiteconnect';
 import { AuthService } from './services/AuthService';
-import { NiftyFuturesStrategy, TickData } from './services/NiftyFuturesStrategy';
 import { NiftyBreakoutRetracementStrategy } from './services/NiftyBreakoutRetracementStrategy';
 import { Logger } from './utils/Logger';
 import express, { Request, Response } from 'express';
@@ -12,11 +11,9 @@ dotenv.config();
 class TradingBot {
   private kiteConnect: any; // Using any for now due to type complexity
   private authService: AuthService;
-  private niftyStrategy: NiftyFuturesStrategy;
   private breakoutStrategy: NiftyBreakoutRetracementStrategy;
   private logger: Logger;
   private app: express.Application;
-  private latestTick?: TickData;
 
   constructor() {
     this.logger = new Logger();
@@ -31,13 +28,10 @@ class TradingBot {
     });
 
     this.authService = new AuthService(this.kiteConnect, this.logger);
-    this.niftyStrategy = new NiftyFuturesStrategy(this.kiteConnect, this.logger);
-    this.breakoutStrategy = new NiftyBreakoutRetracementStrategy(this.kiteConnect, this.logger, this.niftyStrategy);
+    this.breakoutStrategy = new NiftyBreakoutRetracementStrategy(this.kiteConnect, this.logger);
 
-    // Set up price update callback
-    this.niftyStrategy.onPriceUpdate((tick: TickData) => {
-      this.latestTick = tick;
-    });
+    // Price updates are now managed by the breakout strategy
+    // this.latestTick is populated through strategy.getLivePrice() calls
 
     this.setupRoutes();
   }
@@ -255,6 +249,17 @@ class TradingBot {
             transition: all 0.2s ease;
         }
         
+        .endpoint.deprecated {
+            background: #fef5e7;
+            border-color: #f6ad55;
+            opacity: 0.7;
+        }
+        
+        .endpoint.deprecated:hover {
+            background: #fed7aa;
+            border-color: #f6ad55;
+        }
+        
         .endpoint:hover {
             background: #f7fafc;
             border-color: #cbd5e0;
@@ -401,13 +406,13 @@ class TradingBot {
                     <span class="method">GET</span>
                     <span>/strategy/nifty/price (Live Nifty Price)</span>
                 </a>
-                <a href="/strategy/nifty/start-stream" class="endpoint">
+                <a href="/strategy/nifty/start-stream" class="endpoint deprecated">
                     <span class="method">POST</span>
-                    <span>/strategy/nifty/start-stream (Start Price Streaming)</span>
+                    <span>/strategy/nifty/start-stream (⚠️ DEPRECATED - Use Breakout Strategy)</span>
                 </a>
-                <a href="/strategy/nifty/stop-stream" class="endpoint">
+                <a href="/strategy/nifty/stop-stream" class="endpoint deprecated">
                     <span class="method">POST</span>
-                    <span>/strategy/nifty/stop-stream (Stop Price Streaming)</span>
+                    <span>/strategy/nifty/stop-stream (⚠️ DEPRECATED - Use Breakout Strategy)</span>
                 </a>
                 <a href="/strategy/status" class="endpoint">
                     <span class="method">GET</span>
@@ -556,7 +561,9 @@ class TradingBot {
           return;
         }
 
-        const contract = await this.niftyStrategy.findCurrentMonthNiftyFutures();
+        // Get contract from the breakout strategy state
+        const state = this.breakoutStrategy.getStrategyState();
+        const contract = state.currentContract;
         if (!contract) {
           res.status(404).json({ error: 'No current month Nifty futures found' });
           return;
@@ -583,12 +590,46 @@ class TradingBot {
           return;
         }
 
-        const price = await this.niftyStrategy.getCurrentPrice();
+        // Get live price from breakout strategy
+        const strategyLivePrice = this.breakoutStrategy.getLivePrice();
+        const state = this.breakoutStrategy.getStrategyState();
+        const contract = state.currentContract;
+        
+        // Use strategy's live price if available, otherwise fetch via REST API  
+        let price = null;
+        if (strategyLivePrice) {
+          price = {
+            last_price: strategyLivePrice.last_price,
+            volume: strategyLivePrice.volume,
+            ohlc: strategyLivePrice.ohlc
+          };
+        } else if (contract) {
+          // Fallback to REST API if no live price from strategy
+          try {
+            const quote = await this.kiteConnect.getQuote([contract.tradingsymbol]);
+            const contractQuote = quote[contract.tradingsymbol];
+            if (contractQuote) {
+              price = {
+                last_price: contractQuote.last_price,
+                volume: contractQuote.volume,
+                ohlc: contractQuote.ohlc
+              };
+            }
+          } catch (error) {
+            this.logger.warn('Failed to fetch quote via REST API:', error);
+          }
+        }
+        
+        // Log the price data for debugging
+        this.logger.info(`📊 Price Data: ${JSON.stringify(price)}`);
+        
         res.json({
           success: true,
-          price: price,
-          streaming_active: this.niftyStrategy.isStreamingActive(),
-          latest_tick: this.latestTick || null
+          price: price, // This is the actual market data from REST API
+          streaming_active: this.breakoutStrategy.isPriceStreamingActive(), // Get from strategy
+          latest_tick: strategyLivePrice || null, // Get from strategy (might be test data)
+          message: 'Live streaming data is managed by breakout strategy. Use /breakout-strategy/status for real-time updates.',
+          note: 'price = REST API data, latest_tick = WebSocket data (if available)'
         });
       } catch (error) {
         this.logger.error('Failed to get Nifty price:', error);
@@ -596,72 +637,37 @@ class TradingBot {
       }
     });
 
+    // ===== STANDALONE STREAMING ENDPOINTS REMOVED =====
+    // Price streaming is now handled exclusively by the breakout strategy
+    // Use /breakout-strategy/status to get live price data
+
+    // Redirect legacy streaming endpoints to strategy endpoints
     this.app.post('/strategy/nifty/start-stream', async (req: Request, res: Response): Promise<void> => {
-      try {
-        if (!this.authService.isAuthenticated()) {
-          res.status(401).json({ 
-            error: 'Not authenticated', 
-            message: 'Please visit /auth/login to authenticate first' 
-          });
-          return;
-        }
-
-        if (this.niftyStrategy.isStreamingActive()) {
-          res.json({
-            success: true,
-            message: 'Streaming is already active',
-            contract: this.niftyStrategy.getCurrentContract()
-          });
-          return;
-        }
-
-        await this.niftyStrategy.startPriceStreaming();
-        res.json({
-          success: true,
-          message: 'Price streaming started successfully',
-          contract: this.niftyStrategy.getCurrentContract()
-        });
-      } catch (error) {
-        this.logger.error('Failed to start price streaming:', error);
-        res.status(500).json({ 
-          error: 'Failed to start price streaming',
-          details: error instanceof Error ? error.message : 'Unknown error'
-        });
-      }
+      res.json({
+        success: false,
+        message: 'Standalone price streaming removed. Use /breakout-strategy/start to start strategy with integrated streaming.',
+        redirect: '/breakout-strategy/start'
+      });
     });
 
     this.app.post('/strategy/nifty/stop-stream', async (req: Request, res: Response): Promise<void> => {
-      try {
-        if (!this.niftyStrategy.isStreamingActive()) {
-          res.json({
-            success: true,
-            message: 'Streaming is not currently active'
-          });
-          return;
-        }
-
-        await this.niftyStrategy.stopPriceStreaming();
-        res.json({
-          success: true,
-          message: 'Price streaming stopped successfully'
-        });
-      } catch (error) {
-        this.logger.error('Failed to stop price streaming:', error);
-        res.status(500).json({ 
-          error: 'Failed to stop price streaming',
-          details: error instanceof Error ? error.message : 'Unknown error'
-        });
-      }
+      res.json({
+        success: false,
+        message: 'Standalone price streaming removed. Use /breakout-strategy/stop to stop strategy.',
+        redirect: '/breakout-strategy/stop'
+      });
     });
 
     this.app.get('/strategy/status', (req: Request, res: Response) => {
-      const contract = this.niftyStrategy.getCurrentContract();
+      const state = this.breakoutStrategy.getStrategyState();
+      const contract = state.currentContract;
       res.json({
         authenticated: this.authService.isAuthenticated(),
-        streaming_active: this.niftyStrategy.isStreamingActive(),
+        streaming_active: this.breakoutStrategy.isPriceStreamingActive(), // Get from strategy instead
         current_contract: contract || null,
-        latest_tick: this.latestTick || null,
-        timestamp: new Date().toISOString()
+        latest_tick: this.breakoutStrategy.getLivePrice() || null, // Get from strategy instead
+        timestamp: new Date().toISOString(),
+        message: 'For comprehensive streaming data, use /breakout-strategy/status'
       });
     });
 
@@ -814,8 +820,8 @@ class TradingBot {
       }
     });
 
-    // Price streaming control endpoints
-    this.app.post('/breakout-strategy/start-streaming', async (req: Request, res: Response): Promise<void> => {
+    // Streaming health check endpoint
+    this.app.get('/breakout-strategy/streaming-health', async (req: Request, res: Response): Promise<void> => {
       try {
         if (!this.authService.isAuthenticated()) {
           res.status(401).json({ 
@@ -825,49 +831,208 @@ class TradingBot {
           return;
         }
 
-        if (this.breakoutStrategy.isPriceStreamingActive()) {
-          res.json({
-            success: true,
-            message: 'Price streaming is already active'
-          });
-          return;
-        }
+        const livePrice = this.breakoutStrategy.getLivePrice();
+        const isStreamingActive = this.breakoutStrategy.isPriceStreamingActive();
+        const state = this.breakoutStrategy.getStrategyState();
+        const contract = state.currentContract;
+        const isMarketHours = this.breakoutStrategy.isMarketHours();
 
-        await this.breakoutStrategy.startManualPriceStreaming();
         res.json({
           success: true,
-          message: 'Price streaming started successfully'
+          timestamp: new Date().toISOString(),
+          streaming_health: {
+            strategy_streaming_active: isStreamingActive,
+            nifty_streaming_active: false, // Always false since we removed utility class
+            has_live_price: !!livePrice,
+            market_hours: isMarketHours,
+            contract: contract,
+            last_price: livePrice?.last_price || null,
+            last_volume: livePrice?.volume || null,
+            price_age_seconds: livePrice && livePrice.timestamp ? Math.round((new Date().getTime() - livePrice.timestamp.getTime()) / 1000) : null
+          },
+          diagnostics: {
+            strategy_active: this.breakoutStrategy.isStrategyActive(),
+            candle_count: this.breakoutStrategy.getCandleCount(),
+            one_minute_candle_count: this.breakoutStrategy.getOneMinuteCandleCount(),
+            breakout_detection_active: this.breakoutStrategy.isBreakoutDetectionActive()
+          }
         });
       } catch (error) {
-        this.logger.error('Failed to start price streaming:', error);
+        this.logger.error('Error getting streaming health:', error);
         res.status(500).json({ 
-          error: 'Failed to start price streaming',
+          error: 'Failed to get streaming health',
           details: error instanceof Error ? error.message : 'Unknown error'
         });
       }
     });
 
-    this.app.post('/breakout-strategy/stop-streaming', async (req: Request, res: Response): Promise<void> => {
+    // Test endpoint to simulate tick data (for debugging streaming)
+    this.app.post('/breakout-strategy/test-tick', async (req: Request, res: Response): Promise<void> => {
       try {
-        if (!this.breakoutStrategy.isPriceStreamingActive()) {
-          res.json({
-            success: true,
-            message: 'Price streaming is not currently active'
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
           });
           return;
         }
 
-        await this.breakoutStrategy.stopManualPriceStreaming();
+        // Legacy endpoint - redirects to direct strategy method
+        this.breakoutStrategy.simulateDirectTestTick();
+        
         res.json({
           success: true,
-          message: 'Price streaming stopped successfully'
+          message: 'Test tick simulated successfully (legacy endpoint - use /breakout-strategy/test-direct-tick instead)',
+          timestamp: new Date().toISOString()
         });
       } catch (error) {
-        this.logger.error('Failed to stop price streaming:', error);
+        this.logger.error('Error simulating test tick:', error);
         res.status(500).json({ 
-          error: 'Failed to stop price streaming',
+          error: 'Failed to simulate test tick',
           details: error instanceof Error ? error.message : 'Unknown error'
         });
+      }
+    });
+
+    // Direct strategy test tick endpoint
+    this.app.post('/breakout-strategy/test-direct-tick', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        // Simulate tick directly in our strategy
+        this.breakoutStrategy.simulateDirectTestTick();
+        
+        res.json({
+          success: true,
+          message: 'Direct strategy test tick simulated successfully',
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error simulating direct test tick:', error);
+        res.status(500).json({ 
+          error: 'Failed to simulate direct test tick',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Test with manual price fetch endpoint
+    this.app.post('/test/manual-price-fetch', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        this.logger.info('Testing manual price fetch');
+        
+        try {
+          await this.breakoutStrategy.testManualPriceFetch();
+          res.json({
+            success: true,
+            message: 'Manual price fetch test completed',
+            timestamp: new Date().toISOString()
+          });
+        } catch (error) {
+          this.logger.error('Error testing manual price fetch:', error);
+          res.json({
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        this.logger.error('Test manual price fetch endpoint error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Debug endpoint to test various NIFTY instruments
+    this.app.get('/debug/instruments', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        this.logger.info('Fetching NIFTY instruments');
+        
+        try {
+          // Try to get instruments for NFO (derivatives)
+          const instruments = await this.kiteConnect.getInstruments('NFO');
+          
+          // Filter for NIFTY futures
+          const niftyFutures = instruments.filter((instrument: any) => 
+            instrument.name === 'NIFTY' && 
+            instrument.instrument_type === 'FUT'
+          );
+
+          res.json({
+            success: true,
+            niftyFuturesCount: niftyFutures.length,
+            niftyFutures: niftyFutures.slice(0, 5), // First 5 only to avoid overwhelming output
+            timestamp: new Date().toISOString()
+          });
+        } catch (error) {
+          this.logger.error('Error fetching instruments:', error);
+          res.json({
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        this.logger.error('Debug instruments endpoint error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Debug endpoint to test quote fetching
+    this.app.get('/debug/quote/:symbol', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const symbol = req.params.symbol;
+        this.logger.info(`Fetching quote for symbol: ${symbol}`);
+        
+        try {
+          const quote = await this.kiteConnect.getQuote([symbol]);
+          res.json({
+            success: true,
+            symbol: symbol,
+            quote: quote,
+            timestamp: new Date().toISOString()
+          });
+        } catch (error) {
+          this.logger.error(`Error fetching quote for ${symbol}:`, error);
+          res.json({
+            success: false,
+            symbol: symbol,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        this.logger.error('Debug quote endpoint error:', error);
+        res.status(500).json({ error: 'Internal server error' });
       }
     });
 
@@ -1144,34 +1309,6 @@ class TradingBot {
                 alert('Error stopping strategy: ' + error.message);
             }
         }
-        
-        async function startStreaming() {
-            try {
-                const response = await fetch('/breakout-strategy/start-streaming', { method: 'POST' });
-                const result = await response.json();
-                if (result.success) {
-                    window.location.reload();
-                } else {
-                    alert('Failed to start streaming: ' + (result.error || 'Unknown error'));
-                }
-            } catch (error) {
-                alert('Error starting streaming: ' + error.message);
-            }
-        }
-        
-        async function stopStreaming() {
-            try {
-                const response = await fetch('/breakout-strategy/stop-streaming', { method: 'POST' });
-                const result = await response.json();
-                if (result.success) {
-                    window.location.reload();
-                } else {
-                    alert('Failed to stop streaming: ' + (result.error || 'Unknown error'));
-                }
-            } catch (error) {
-                alert('Error stopping streaming: ' + error.message);
-            }
-        }
     </script>
 </head>
 <body>
@@ -1268,16 +1405,6 @@ class TradingBot {
                 ` : `
                 <button onclick="stopStrategy()" class="action-btn danger">
                     ⏹️ Stop Strategy
-                </button>
-                `}
-                
-                ${!priceStreamingActive ? `
-                <button onclick="startStreaming()" class="action-btn success">
-                    📡 Start Live Streaming
-                </button>
-                ` : `
-                <button onclick="stopStreaming()" class="action-btn danger">
-                    📡 Stop Live Streaming
                 </button>
                 `}
                 
