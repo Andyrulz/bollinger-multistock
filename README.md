@@ -4,33 +4,27 @@ A professional Node.js TypeScript trading bot for automated NIFTY futures tradin
 
 ## 🚀 Key Features
 
-- **NIFTY Futures Strategy**: Professional breakout-retracement strategy with pivot detection
+- **NIFTY Breakout-Retracement Strategy**: Professional swing trading system with 15,15 pivot detection
 - **Real-Time Price Streaming**: 1-second manual polling system (no WebSocket dependencies)
-- **Professional Pivot Detection**: 15,15 lookback algorithm for accurate pivot highs/lows
-- **5-Minute Candle Analysis**: Real-time candle building and analysis
-- **Integrated Strategy Control**: Single-button start/stop with automated price streaming
-- **Zerodha Integration**: Secure OAuth authentication with KiteConnect API
-- **Comprehensive Logging**: Detailed trade and pivot detection logging
-- **Clean Architecture**: Production-ready, minimal codebase
+- **Memory-Optimized Operations**: Maintains exactly 50 1-minute candles for efficient long-running performance
+- **Integrated Dashboard**: Single-button strategy control with live monitoring
+- **Volume Confirmation**: 50-period SMA volume analysis prevents false breakouts
+- **Comprehensive Testing**: Manual testing framework for all strategy components
+- **Professional Logging**: Detailed real-time logging with structured output
 
-## 🎯 Trading Strategy Overview
+## 📊 Strategy Overview
 
 ### NIFTY Breakout Retracement Strategy
 
-The bot implements a professional breakout-retracement strategy specifically designed for NIFTY futures:
+The bot implements a professional momentum-based trading system:
 
-- **Instrument**: NIFTY futures (current month contract)
-- **Timeframe**: 5-minute candles for analysis
-- **Pivot Detection**: 15,15 lookback algorithm (31 candles minimum)
-- **Price Streaming**: Real-time 1-second polling via REST API
-- **Strategy Logic**: Breakout detection with retracement confirmation
+- **Market**: NIFTY futures (current month contract auto-detection)
+- **Signal Generation**: Breakouts above pivot highs or below pivot lows
+- **Volume Confirmation**: Breakout volume must exceed 50-period SMA
+- **Memory Optimized**: Maintains exactly 50 latest 1-minute candles
+- **Real-time Processing**: 1-second price updates with 1-minute breakout analysis
 
-### Real-Time Features
-
-- **Live Price Updates**: Every 1 second via KiteConnect REST API
-- **Candle Building**: Real-time 5-minute OHLCV candle construction
-- **Pivot Updates**: Fresh pivot analysis every 5 minutes
-- **Strategy Integration**: Single-click start/stop with automatic streaming
+**📚 For detailed strategy implementation, algorithm specifics, and debugging guide, see [STRATEGY-DOCUMENTATION.md](./STRATEGY-DOCUMENTATION.md)**
 
 ## Prerequisites
 
@@ -82,36 +76,46 @@ http://localhost:3000/auth/login
 # 3. Access main dashboard
 http://localhost:3000/
 
-# 4. Start NIFTY futures strategy (single click!)
+# 4. Start NIFTY breakout strategy (single click!)
 ```
 
 **🎯 Strategy Dashboard:**
 
 - **Main Interface**: http://localhost:3000/ (Strategy control panel)
+- **Breakout Strategy**: http://localhost:3000/breakout-strategy (Live strategy dashboard)
 - **Authentication**: http://localhost:3000/auth/login (Daily login required)
-- **Status Check**: http://localhost:3000/auth/status
 
-### Trading Strategy Usage
+### Strategy Operation
 
 1. **Authenticate**: Complete Zerodha login (daily requirement)
-2. **Start Strategy**: Single button click starts:
-   - Real-time NIFTY price streaming (1-second updates)
-   - 5-minute candle building
-   - Pivot point detection (15,15 algorithm)
-   - Breakout monitoring
-3. **Monitor**: Live logs show pivot detection and strategy status
-4. **Stop Strategy**: Single button stops all operations
+2. **Start Strategy**: Single button click automatically starts:
+   - Current month NIFTY futures contract detection
+   - Historical data loading (7 days 5m + 60 minutes 1m candles)
+   - Real-time price streaming (1-second updates)
+   - 15,15 pivot point detection
+   - Volume-confirmed breakout monitoring
+3. **Monitor**: Live dashboard shows pivot levels, breakout signals, and strategy status
+4. **Stop Strategy**: Single button stops all operations safely
 
 ### What You'll See When Running
 
 **Real-Time Logs:**
 
+```bash
+info: 🔺 NEW PIVOT HIGH (15,15): ₹25,198.00 at 9/24/2025, 1:15:00 PM
+info: 🔻 NEW PIVOT LOW (15,15): ₹25,078.00 at 9/24/2025, 11:05:00 AM
+info: � MANUAL POLL: NIFTY25SEPFUT | LTP: ₹25,119.00 | Vol: 4,133,250
+info: 📊 Volume SMA50 updated: 8,340 (based on 50 candles)
+info: 🚀 LONG BREAKOUT DETECTED! Price: ₹25,110.50 | Volume: 189% of SMA
 ```
-🔺 NEW PIVOT HIGH (15,15): ₹23,450.75 at 9/24/2025, 12:45:00 PM
-🔻 NEW PIVOT LOW (15,15): ₹23,425.50 at 9/24/2025, 12:50:00 PM
-📊 NIFTY: ₹23,438.25 | Volume: 1,234,567 | Change: +0.35%
-✅ Pivot analysis complete (15,15) - analyzed 2 pivot(s)
-```
+
+**Live Dashboard Features:**
+
+- Current NIFTY price with 1-second updates
+- Latest confirmed pivot HIGH and LOW levels
+- Breakout detection status and volume analysis
+- Memory optimization status (maintains exactly 50 1-minute candles)
+- One-click strategy start/stop controls
 
 ### First Time Setup
 
@@ -182,15 +186,27 @@ npm start
 
 ### API Endpoints
 
-| Endpoint               | Description                        | Example                               |
-| ---------------------- | ---------------------------------- | ------------------------------------- |
-| `GET /`                | Strategy dashboard & control panel | http://localhost:3000/                |
-| `GET /health`          | Health check                       | http://localhost:3000/health          |
-| `GET /auth/status`     | Check authentication status        | http://localhost:3000/auth/status     |
-| `GET /auth/login`      | Start authentication               | http://localhost:3000/auth/login      |
-| `POST /strategy/start` | Start NIFTY breakout strategy      | Called via dashboard button           |
-| `POST /strategy/stop`  | Stop NIFTY breakout strategy       | Called via dashboard button           |
-| `GET /strategy/status` | Get current strategy status        | http://localhost:3000/strategy/status |
+| Endpoint                             | Description                      | Purpose                            |
+| ------------------------------------ | -------------------------------- | ---------------------------------- |
+| `GET /`                              | Main dashboard & control panel   | Strategy overview and controls     |
+| `GET /breakout-strategy`             | Live strategy dashboard          | Real-time strategy monitoring      |
+| `GET /auth/login`                    | Start daily authentication       | Required daily login process       |
+| `GET /auth/status`                   | Check authentication status      | Verify login state                 |
+| `POST /breakout-strategy/start`      | Start complete breakout strategy | Begin automated trading strategy   |
+| `POST /breakout-strategy/stop`       | Stop all strategy operations     | Safely halt strategy and streaming |
+| `GET /breakout-strategy/status`      | Get detailed strategy state      | Monitor all strategy components    |
+| `GET /breakout-strategy/pivots`      | Get current pivot levels         | View latest HIGH/LOW pivot points  |
+| `GET /breakout-strategy/memory-info` | Check memory optimization        | Verify 50-candle limit enforcement |
+
+### Manual Testing Endpoints
+
+| Endpoint                        | Description                   | Purpose                        |
+| ------------------------------- | ----------------------------- | ------------------------------ |
+| `POST /test/volume-sma50`       | Test volume SMA50 calculation | Validate volume analysis logic |
+| `POST /test/breakout-detection` | Test breakout logic           | Verify signal generation       |
+| `POST /test/candle-building`    | Test 1-minute candle logic    | Validate OHLC construction     |
+| `POST /test/run-all-manual`     | Run comprehensive test suite  | Test all components together   |
+| `POST /test/clear-data`         | Clear test data               | Reset to clean state           |
 
 ### 🚨 Troubleshooting
 
@@ -412,24 +428,28 @@ Multi-level structured logging system:
 
 MIT License - see LICENSE file for details
 
-## Professional Support & Development
+## Strategy Details
 
-### Development Setup
+For comprehensive technical documentation, implementation details, algorithm specifications, and debugging guide, see:
+**[STRATEGY-DOCUMENTATION.md](./STRATEGY-DOCUMENTATION.md)**
 
-This codebase follows professional development standards:
+The strategy documentation includes:
 
-- **TypeScript**: Full type safety and modern JavaScript features
-- **Clean Architecture**: Separation of concerns with modular design
-- **Production Ready**: Error handling, logging, and monitoring built-in
-- **Extensible**: Easy to add new strategies and features
+- Complete 15,15 pivot detection algorithm
+- Breakout signal generation logic
+- Volume confirmation system (50-period SMA)
+- Memory optimization techniques
+- Real-time data processing architecture
+- Testing framework and debugging procedures
+- Performance metrics and troubleshooting guide
 
-### Trading Strategy Extensions
+## Support & Troubleshooting
 
-The current breakout-retracement strategy can be extended with:
+1. **Strategy Issues**: Check the comprehensive debugging guide in [STRATEGY-DOCUMENTATION.md](./STRATEGY-DOCUMENTATION.md)
+2. **API Connection Problems**: Verify your `api_key` and `api_secret` in environment variables
+3. **Authentication Failures**: Complete fresh login via `/auth/login` endpoint
+4. **Performance Issues**: Monitor memory usage via `/breakout-strategy/memory-info` endpoint
 
-- **Multiple Timeframes**: Add higher timeframe confirmation
-- **Volume Analysis**: Incorporate volume-based signals
-- **Risk Management**: Stop-loss and position sizing rules
-- **Multiple Instruments**: Expand beyond NIFTY futures
+## License
 
-For advanced strategy development and professional support, this codebase provides a solid foundation for institutional-quality trading systems.
+MIT License - See LICENSE file for details.

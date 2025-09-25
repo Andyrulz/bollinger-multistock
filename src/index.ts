@@ -62,6 +62,16 @@ class TradingBot {
       const isAuthenticated = this.authService.isAuthenticated();
       const sessionData = this.authService.getSessionData();
       
+      // Get trade state information if authenticated
+      let tradeStateInfo: any = null;
+      if (isAuthenticated) {
+        try {
+          tradeStateInfo = this.breakoutStrategy.getTradeStateInfo();
+        } catch (error) {
+          this.logger.error('Error getting trade state info for dashboard:', error);
+        }
+      }
+      
       const htmlResponse = `
 <!DOCTYPE html>
 <html lang="en">
@@ -345,6 +355,33 @@ class TradingBot {
                 </small>
             </div>
         </div>
+        <div class="status-card" style="border-left: 4px solid ${
+          tradeStateInfo?.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
+          tradeStateInfo?.tradeState === 'waiting_for_entry' ? '#F59E0B' :
+          tradeStateInfo?.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
+        };">
+            <div class="status-text">
+                🎯 <strong>Trade State:</strong> 
+                <span style="text-transform: capitalize; color: ${
+                  tradeStateInfo?.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
+                  tradeStateInfo?.tradeState === 'waiting_for_entry' ? '#F59E0B' :
+                  tradeStateInfo?.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
+                };">
+                    ${tradeStateInfo?.tradeState?.replace(/_/g, ' ') || 'Loading...'}
+                </span><br>
+                <small style="font-weight: normal; opacity: 0.8;">
+                    ${
+                      !tradeStateInfo ? 'Strategy initializing...' :
+                      tradeStateInfo.tradeState === 'waiting_for_breakout' ? 'Monitoring for breakout signals' :
+                      tradeStateInfo.tradeState === 'waiting_for_entry' && tradeStateInfo.tradeSetupRequest ? 
+                        `Entry: ₹${tradeStateInfo.tradeSetupRequest.entryLevel} | SL: ₹${tradeStateInfo.tradeSetupRequest.stopLossLevel} | Target: ₹${tradeStateInfo.tradeSetupRequest.targetLevel}` :
+                      tradeStateInfo.tradeState === 'in_trade' && tradeStateInfo.tradeSetupRequest ?
+                        `Active ${tradeStateInfo.tradeSetupRequest.direction} trade | SL: ₹${tradeStateInfo.tradeSetupRequest.stopLossLevel} | Target: ₹${tradeStateInfo.tradeSetupRequest.targetLevel}` :
+                      'Trade state active'
+                    }
+                </small>
+            </div>
+        </div>
         ` : ''}
 
         <div class="actions-grid">
@@ -430,16 +467,189 @@ class TradingBot {
                     <span class="method">GET</span>
                     <span>/breakout-strategy/pivots (Latest Pivot Points)</span>
                 </a>
+                <a href="/execution/status" class="endpoint">
+                    <span class="method">GET</span>
+                    <span>/execution/status (Trade Execution Status)</span>
+                </a>
+                
+                <div style="margin-top: 20px; padding-top: 20px; border-top: 2px solid #e1e5e9;">
+                    <h4 style="margin-bottom: 10px; color: #2563eb;">💼 Trade Execution</h4>
+                    <button onclick="runTest('/execution/initialize-instruments')" class="test-button">
+                        Initialize Instruments
+                    </button>
+                    <button onclick="toggleTradingMode()" class="test-button warning" id="trading-mode-btn">
+                        Toggle Paper/Live Trading
+                    </button>
+                </div>
+                
+                <div style="margin-top: 20px; padding-top: 20px; border-top: 2px solid #e1e5e9;">
+                    <h4 style="margin-bottom: 10px; color: #2563eb;">🧪 Manual Testing Endpoints</h4>
+                    <button onclick="runTest('/test/volume-sma50')" class="test-button">
+                        Test Volume SMA50
+                    </button>
+                    <button onclick="runTest('/test/breakout-detection')" class="test-button">
+                        Test Breakout Detection
+                    </button>
+                    <button onclick="runTest('/test/candle-building')" class="test-button">
+                        Test Candle Building
+                    </button>
+                    <button onclick="runTest('/test/run-all-manual')" class="test-button primary">
+                        🚀 Run All Tests
+                    </button>
+                    <button onclick="runTest('/test/clear-data')" class="test-button warning">
+                        🧹 Clear Test Data
+                    </button>
+                </div>
             </div>
         </div>
 
         <div class="footer">
             <div class="footer-text">
                 💡 <strong>Daily Routine:</strong> Start bot → Click "Daily Login" → Authenticate → Done!<br>
-                📖 This page refreshes automatically to show current status
+                📖 This page refreshes automatically to show current status<br>
+                🧪 <strong>Testing:</strong> Use the test buttons above to validate strategy logic components
             </div>
         </div>
     </div>
+
+    <script>
+        async function runTest(endpoint) {
+            const button = event.target;
+            const originalText = button.textContent;
+            
+            button.textContent = 'Running...';
+            button.disabled = true;
+            
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    button.textContent = '✅ Success';
+                    button.style.backgroundColor = '#10b981';
+                    alert('Test completed successfully! Check the console logs for detailed results.');
+                } else {
+                    button.textContent = '❌ Failed';
+                    button.style.backgroundColor = '#ef4444';
+                    alert('Test failed: ' + result.message);
+                }
+            } catch (error) {
+                button.textContent = '❌ Error';
+                button.style.backgroundColor = '#ef4444';
+                alert('Test error: ' + error.message);
+            }
+            
+            setTimeout(() => {
+                button.textContent = originalText;
+                button.disabled = false;
+                button.style.backgroundColor = '';
+            }, 3000);
+        }
+
+        async function toggleTradingMode() {
+            const button = document.getElementById('trading-mode-btn');
+            const originalText = button.textContent;
+            
+            button.textContent = 'Updating...';
+            button.disabled = true;
+            
+            try {
+                // First get current config
+                const statusResponse = await fetch('/execution/status');
+                const statusData = await statusResponse.json();
+                const currentMode = statusData.trading_config?.paperTradingMode;
+                const newMode = !currentMode;
+                
+                // Update config
+                const updateResponse = await fetch('/execution/config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        paperTradingMode: newMode
+                    })
+                });
+                
+                const result = await updateResponse.json();
+                
+                if (result.success) {
+                    button.textContent = newMode ? '📝 Paper Trading' : '🚀 Live Trading';
+                    button.className = newMode ? 'test-button warning' : 'test-button success';
+                    alert('Trading mode switched to: ' + (newMode ? 'Paper Trading' : 'Live Trading'));
+                } else {
+                    button.textContent = '❌ Failed';
+                    alert('Failed to update trading mode: ' + result.message);
+                }
+            } catch (error) {
+                button.textContent = '❌ Error';
+                alert('Error updating trading mode: ' + error.message);
+            }
+            
+            setTimeout(() => {
+                button.disabled = false;
+                if (button.textContent.includes('❌')) {
+                    button.textContent = originalText;
+                }
+            }, 3000);
+        }
+    </script>
+
+    <style>
+        .test-button {
+            display: inline-block;
+            margin: 5px;
+            padding: 10px 16px;
+            background: #6366f1;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .test-button:hover {
+            background: #4f46e5;
+        }
+        
+        .test-button:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+        
+        .test-button.primary {
+            background: #059669;
+            font-weight: 600;
+        }
+        
+        .test-button.primary:hover {
+            background: #047857;
+        }
+        
+        .test-button.warning {
+            background: #dc2626;
+        }
+        
+        .test-button.warning:hover {
+            background: #b91c1c;
+        }
+        
+        .test-button.info {
+            background: #0ea5e9;
+        }
+        
+        .test-button.info:hover {
+            background: #0284c7;
+        }
+    </style>
 </body>
 </html>
       `;
@@ -697,6 +907,7 @@ class TradingBot {
         let oneMinuteCandleCount = 0;
   let volumeSMA50: number | undefined;
   let latestOneMinuteCandle: any;
+  let tradeStateInfo: any;
         
         try {
           strategyState = this.breakoutStrategy.getStrategyState();
@@ -709,8 +920,21 @@ class TradingBot {
           oneMinuteCandleCount = this.breakoutStrategy.getOneMinuteCandleCount();
           volumeSMA50 = this.breakoutStrategy.getCurrentVolumeSMA50();
           latestOneMinuteCandle = this.breakoutStrategy.getLatestOneMinuteCandle();
+          tradeStateInfo = this.breakoutStrategy.getTradeStateInfo();
         } catch (error) {
           this.logger.error('Error getting detailed strategy data:', error);
+        }
+
+        // Get execution service data
+        let executionStatus: any;
+        let currentCapital: number | undefined;
+        let activePosition: any;
+        try {
+          executionStatus = this.breakoutStrategy.getExecutionStatus();
+          currentCapital = this.breakoutStrategy.getCurrentCapital();
+          activePosition = this.breakoutStrategy.getActivePosition();
+        } catch (error) {
+          this.logger.error('Error getting execution service data:', error);
         }
 
         res.json({
@@ -728,6 +952,14 @@ class TradingBot {
           one_minute_candle_count: oneMinuteCandleCount,
           volume_sma_50: typeof volumeSMA50 === 'number' ? volumeSMA50 : null,
             latest_one_minute_candle: latestOneMinuteCandle || null,
+          // Trade State Information
+          trade_state: tradeStateInfo?.tradeState || 'waiting_for_breakout',
+          trade_setup: tradeStateInfo?.tradeSetupRequest || null,
+          current_trade_id: tradeStateInfo?.currentTradeId || null,
+          // Execution Service Information
+          execution_status: executionStatus || null,
+          current_capital: currentCapital || null,
+          active_position: activePosition || null,
           timestamp: new Date().toISOString()
         });
       } catch (error) {
@@ -754,6 +986,19 @@ class TradingBot {
             success: true,
             message: 'Breakout strategy is already active',
             strategy_state: this.breakoutStrategy.getStrategyState()
+          });
+          return;
+        }
+
+        // Initialize instruments before starting strategy
+        try {
+          await this.breakoutStrategy.initializeInstruments();
+          this.logger.info('✅ Option instruments initialized');
+        } catch (error) {
+          this.logger.error('Failed to initialize instruments:', error);
+          res.status(500).json({ 
+            error: 'Failed to initialize option instruments',
+            details: error instanceof Error ? error.message : 'Unknown error'
           });
           return;
         }
@@ -866,6 +1111,29 @@ class TradingBot {
       }
     });
 
+    // Memory info endpoint for 1-minute candle storage optimization
+    this.app.get('/breakout-strategy/memory-info', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const memoryInfo = this.breakoutStrategy.getCandleMemoryInfo();
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          memory_optimization: memoryInfo
+        });
+      } catch (error) {
+        this.logger.error('Error getting memory info:', error);
+        res.status(500).json({ error: 'Failed to get memory info' });
+      }
+    });
+
     // Test endpoint to simulate tick data (for debugging streaming)
     this.app.post('/breakout-strategy/test-tick', async (req: Request, res: Response): Promise<void> => {
       try {
@@ -922,6 +1190,106 @@ class TradingBot {
       }
     });
 
+    // ===========================
+    // TRADE EXECUTION SERVICE ENDPOINTS
+    // ===========================
+
+    // Get execution service status
+    this.app.get('/execution/status', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const executionStatus = this.breakoutStrategy.getExecutionStatus();
+        const currentCapital = this.breakoutStrategy.getCurrentCapital();
+        const activePosition = this.breakoutStrategy.getActivePosition();
+        const tradeHistory = this.breakoutStrategy.getTradeHistory();
+        const tradingConfig = this.breakoutStrategy.getTradingConfig();
+
+        res.json({
+          success: true,
+          execution_status: executionStatus,
+          current_capital: currentCapital,
+          active_position: activePosition,
+          trade_history: tradeHistory.slice(-10), // Last 10 trades only
+          trading_config: tradingConfig,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error getting execution status:', error);
+        res.status(500).json({ 
+          error: 'Failed to get execution status',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Initialize instruments
+    this.app.post('/execution/initialize-instruments', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        this.logger.info('Initializing option instruments...');
+        await this.breakoutStrategy.initializeInstruments();
+        
+        res.json({
+          success: true,
+          message: 'Option instruments initialized successfully',
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error initializing instruments:', error);
+        res.status(500).json({ 
+          error: 'Failed to initialize instruments',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Update trading configuration
+    this.app.post('/execution/config', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const updates = req.body;
+        this.breakoutStrategy.updateTradingConfig(updates);
+        
+        res.json({
+          success: true,
+          message: 'Trading configuration updated successfully',
+          new_config: this.breakoutStrategy.getTradingConfig(),
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error updating trading configuration:', error);
+        res.status(500).json({ 
+          error: 'Failed to update trading configuration',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // ===========================
+    // TESTING ENDPOINTS
+    // ===========================
+
     // Test with manual price fetch endpoint
     this.app.post('/test/manual-price-fetch', async (req: Request, res: Response): Promise<void> => {
       try {
@@ -953,6 +1321,94 @@ class TradingBot {
       } catch (error) {
         this.logger.error('Test manual price fetch endpoint error:', error);
         res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Manual Testing Endpoints for Strategy Logic
+    this.app.post('/test/volume-sma50', (req: Request, res: Response) => {
+      try {
+        if (this.breakoutStrategy) {
+          this.breakoutStrategy.testVolumeSMA50Calculation();
+          res.json({ success: true, message: 'Volume SMA50 test completed. Check logs for results.' });
+        } else {
+          res.status(400).json({ success: false, message: 'Strategy not initialized' });
+        }
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Test failed', error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    this.app.post('/test/breakout-detection', (req: Request, res: Response) => {
+      try {
+        if (this.breakoutStrategy) {
+          this.breakoutStrategy.testBreakoutDetectionLogic();
+          res.json({ success: true, message: 'Breakout detection test completed. Check logs for results.' });
+        } else {
+          res.status(400).json({ success: false, message: 'Strategy not initialized' });
+        }
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Test failed', error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    this.app.post('/test/candle-building', (req: Request, res: Response) => {
+      try {
+        if (this.breakoutStrategy) {
+          this.breakoutStrategy.testCandleBuildingLogic();
+          res.json({ success: true, message: 'Candle building test completed. Check logs for results.' });
+        } else {
+          res.status(400).json({ success: false, message: 'Strategy not initialized' });
+        }
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Test failed', error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    this.app.post('/test/run-all-manual', (req: Request, res: Response) => {
+      try {
+        if (this.breakoutStrategy) {
+          this.breakoutStrategy.runAllManualTests();
+          res.json({ success: true, message: 'All manual tests completed. Check logs for detailed results.' });
+        } else {
+          res.status(400).json({ success: false, message: 'Strategy not initialized' });
+        }
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'All tests failed', error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    this.app.post('/test/clear-data', (req: Request, res: Response) => {
+      try {
+        if (this.breakoutStrategy) {
+          this.breakoutStrategy.clearTestData();
+          res.json({ success: true, message: 'Test data cleared successfully. Strategy reset to clean state.' });
+        } else {
+          res.status(400).json({ success: false, message: 'Strategy not initialized' });
+        }
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Clear data failed', error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    this.app.get('/breakout-strategy/marking-candle', (req: Request, res: Response) => {
+      try {
+        if (this.breakoutStrategy) {
+          const markingCandleState = this.breakoutStrategy.getMarkingCandleState();
+          
+          res.json({ 
+            success: true, 
+            message: 'Marking candle state retrieved',
+            data: markingCandleState
+          });
+        } else {
+          res.status(400).json({ success: false, message: 'Strategy not initialized' });
+        }
+      } catch (error) {
+        res.status(500).json({ 
+          success: false, 
+          message: 'Marking candle state retrieval failed', 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
       }
     });
 
@@ -1041,6 +1497,8 @@ class TradingBot {
       const isAuthenticated = this.authService.isAuthenticated();
       const sessionData = this.authService.getSessionData();
       const strategyActive = this.breakoutStrategy.isStrategyActive();
+      const strategyState = this.breakoutStrategy.getStrategyState();
+      const currentContract = strategyState?.currentContract;
       const latestPivots = this.breakoutStrategy.getLatestPivots();
       const livePrice = this.breakoutStrategy.getLivePrice();
       const priceStreamingActive = this.breakoutStrategy.isPriceStreamingActive();
@@ -1048,8 +1506,16 @@ class TradingBot {
       const breakoutDetectionActive = this.breakoutStrategy.isBreakoutDetectionActive();
       const latestBreakoutSignal = this.breakoutStrategy.getLatestBreakoutSignal();
       const oneMinuteCandleCount = this.breakoutStrategy.getOneMinuteCandleCount();
-  const volumeSMA50 = this.breakoutStrategy.getCurrentVolumeSMA50();
-  const latestOneMinuteCandle = this.breakoutStrategy.getLatestOneMinuteCandle();
+      const volumeSMA50 = this.breakoutStrategy.getCurrentVolumeSMA50();
+      const latestOneMinuteCandle = this.breakoutStrategy.getLatestOneMinuteCandle();
+      const markingCandleState = this.breakoutStrategy.getMarkingCandleState();
+      const tradeStateInfo = this.breakoutStrategy.getTradeStateInfo();
+      
+      // Get execution service data
+      const executionStatus = this.breakoutStrategy.getExecutionStatus();
+      const currentCapital = this.breakoutStrategy.getCurrentCapital();
+      const activePosition = this.breakoutStrategy.getActivePosition();
+      const tradingConfig = this.breakoutStrategy.getTradingConfig();
       
       const htmlResponse = `
 <!DOCTYPE html>
@@ -1149,6 +1615,14 @@ class TradingBot {
             background: linear-gradient(90deg, #f56565, #e53e3e);
         }
         
+        .status-card.info::before {
+            background: linear-gradient(90deg, #4299e1, #3182ce);
+        }
+        
+        .status-card.neutral::before {
+            background: linear-gradient(90deg, #a0aec0, #718096);
+        }
+        
         .card-title {
             font-size: 1.2rem;
             font-weight: 700;
@@ -1180,12 +1654,12 @@ class TradingBot {
             border-left: 4px solid;
         }
         
-        .breakout-signal.bullish_breakout {
+        .breakout-signal.long_breakout {
             background: linear-gradient(135deg, #f0fff4, #e6fffa);
             border-color: #48bb78;
         }
         
-        .breakout-signal.bearish_breakdown {
+        .breakout-signal.short_breakout {
             background: linear-gradient(135deg, #fff5f5, #fed7d7);
             border-color: #f56565;
         }
@@ -1344,10 +1818,63 @@ class TradingBot {
                     </div>
                 </div>
 
+                <div class="status-card" style="border-left: 4px solid ${
+                  tradeStateInfo.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
+                  tradeStateInfo.tradeState === 'waiting_for_entry' ? '#F59E0B' :
+                  tradeStateInfo.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
+                };">
+                    <div class="card-title">🎯 Trade State</div>
+                    <div class="card-content">
+                        <div style="font-weight: 600; color: ${
+                          tradeStateInfo.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
+                          tradeStateInfo.tradeState === 'waiting_for_entry' ? '#F59E0B' :
+                          tradeStateInfo.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
+                        }; font-size: 18px; text-transform: capitalize; margin-bottom: 10px;">
+                            ${tradeStateInfo.tradeState.replace(/_/g, ' ')}
+                        </div>
+                        ${
+                          tradeStateInfo.tradeState === 'waiting_for_breakout' ? 
+                            '<div style="color: #6b7280;">Monitoring for breakout signals</div>' :
+                          tradeStateInfo.tradeState === 'waiting_for_entry' && tradeStateInfo.tradeSetupRequest ?
+                            `<div style="font-size: 14px;">
+                               <strong>Direction:</strong> ${tradeStateInfo.tradeSetupRequest.direction}<br>
+                               <strong>Entry:</strong> ₹${tradeStateInfo.tradeSetupRequest.entryLevel}<br>
+                               <strong>Stop Loss:</strong> ₹${tradeStateInfo.tradeSetupRequest.stopLossLevel}<br>
+                               <strong>Target:</strong> ₹${tradeStateInfo.tradeSetupRequest.targetLevel}
+                             </div>` :
+                          tradeStateInfo.tradeState === 'in_trade' && tradeStateInfo.tradeSetupRequest ?
+                            `<div style="font-size: 14px;">
+                               <strong>Active ${tradeStateInfo.tradeSetupRequest.direction} Trade</strong><br>
+                               <strong>Entry:</strong> ₹${tradeStateInfo.tradeSetupRequest.entryLevel}<br>
+                               <strong>Stop Loss:</strong> ₹${tradeStateInfo.tradeSetupRequest.stopLossLevel}<br>
+                               <strong>Target:</strong> ₹${tradeStateInfo.tradeSetupRequest.targetLevel}<br>
+                               ${tradeStateInfo.currentTradeId ? `<strong>Trade ID:</strong> ${tradeStateInfo.currentTradeId}` : ''}
+                             </div>` :
+                          '<div style="color: #6b7280;">Trade state active</div>'
+                        }
+                    </div>
+                </div>
+
+                <div class="status-card" style="border-left: 4px solid ${tradingConfig?.paperTradingMode ? '#F59E0B' : '#10B981'};">
+                    <div class="card-title">💼 Execution Service</div>
+                    <div class="card-content">
+                        <div style="font-weight: 600; color: ${tradingConfig?.paperTradingMode ? '#F59E0B' : '#10B981'}; font-size: 16px; margin-bottom: 10px;">
+                            ${tradingConfig?.paperTradingMode ? '📝 PAPER TRADING' : '🚀 LIVE TRADING'}
+                        </div>
+                        <div style="font-size: 14px;">
+                            <strong>Capital:</strong> ₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}<br>
+                            <strong>Risk per Trade:</strong> ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}%<br>
+                            <strong>Active Position:</strong> ${activePosition ? 'YES' : 'NO'}<br>
+                            <strong>Total Trades:</strong> ${executionStatus?.totalTrades || 0}
+                        </div>
+                    </div>
+                </div>
+
                 <div class="status-card ${livePrice ? 'success' : 'warning'}">
                     <div class="card-title">💰 Live Price</div>
                     <div class="card-content">
                         ${livePrice ? `
+                            <div class="pivot-time" style="margin-bottom: 5px; font-weight: 600; color: #1f2937;">📊 ${currentContract ? currentContract.tradingsymbol : 'NIFTY FUTURES'}</div>
                             <div class="pivot-price">₹${livePrice.last_price.toFixed(2)}</div>
                             <div class="pivot-time">Volume: ${livePrice.volume.toLocaleString()}</div>
                             <div class="pivot-time">OHLC: ${livePrice.ohlc.open.toFixed(2)} | ${livePrice.ohlc.high.toFixed(2)} | ${livePrice.ohlc.low.toFixed(2)} | ${livePrice.ohlc.close.toFixed(2)}</div>
@@ -1355,23 +1882,28 @@ class TradingBot {
                     </div>
                 </div>
 
-                <div class="status-card ${latestPivots.pivotHigh ? 'success' : 'warning'}">
-                    <div class="card-title">📈 Latest Pivot HIGH</div>
+                <div class="status-card ${(latestPivots.pivotHigh && latestPivots.pivotLow) ? 'success' : 'warning'}">
+                    <div class="card-title">� 5-Minute Pivot Levels</div>
                     <div class="card-content">
-                        ${latestPivots.pivotHigh ? `
-                            <div class="pivot-price">₹${latestPivots.pivotHigh.price.toFixed(2)}</div>
-                            <div class="pivot-time">${new Date(latestPivots.pivotHigh.timestamp).toLocaleString()}</div>
-                        ` : 'No pivot high detected yet'}
-                    </div>
-                </div>
-
-                <div class="status-card ${latestPivots.pivotLow ? 'success' : 'warning'}">
-                    <div class="card-title">📉 Latest Pivot LOW</div>
-                    <div class="card-content">
-                        ${latestPivots.pivotLow ? `
-                            <div class="pivot-price">₹${latestPivots.pivotLow.price.toFixed(2)}</div>
-                            <div class="pivot-time">${new Date(latestPivots.pivotLow.timestamp).toLocaleString()}</div>
-                        ` : 'No pivot low detected yet'}
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <div>
+                                <div style="font-weight: 600; color: #16a34a; margin-bottom: 5px;">📈 Pivot HIGH</div>
+                                ${latestPivots.pivotHigh ? `
+                                    <div class="pivot-price" style="font-size: 16px;">₹${latestPivots.pivotHigh.price.toFixed(2)}</div>
+                                    <div class="pivot-time" style="font-size: 12px;">${new Date(latestPivots.pivotHigh.timestamp).toLocaleString()}</div>
+                                ` : '<div style="color: #9ca3af;">Not detected</div>'}
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #dc2626; margin-bottom: 5px;">📉 Pivot LOW</div>
+                                ${latestPivots.pivotLow ? `
+                                    <div class="pivot-price" style="font-size: 16px;">₹${latestPivots.pivotLow.price.toFixed(2)}</div>
+                                    <div class="pivot-time" style="font-size: 12px;">${new Date(latestPivots.pivotLow.timestamp).toLocaleString()}</div>
+                                ` : '<div style="color: #9ca3af;">Not detected</div>'}
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #6b7280;">
+                            📅 Updates every 5 minutes • 15,15 lookback algorithm
+                        </div>
                     </div>
                 </div>
 
@@ -1384,15 +1916,44 @@ class TradingBot {
             ${latestOneMinuteCandle ? `<strong>Last 1m Vol:</strong> ${latestOneMinuteCandle.volume.toLocaleString()}${volumeSMA50 ? ` (${((latestOneMinuteCandle.volume / volumeSMA50) * 100).toFixed(0)}% of SMA)` : ''}<br>` : ''}
                         ${latestBreakoutSignal ? `
                             <div class="breakout-signal ${latestBreakoutSignal.type}">
-                                <div class="signal-title">${latestBreakoutSignal.type === 'bullish_breakout' ? '🟢 BULLISH BREAKOUT' : '🔴 BEARISH BREAKDOWN'}</div>
+                                <div class="signal-title">${latestBreakoutSignal.type === 'long_breakout' ? '🟢 LONG BREAKOUT' : '🔴 SHORT BREAKOUT'}</div>
                                 <div class="signal-details">
-                                    <div>Price: ₹${latestBreakoutSignal.price.toFixed(2)}</div>
-                                    <div>Pivot: ₹${latestBreakoutSignal.pivotPrice.toFixed(2)}</div>
-                                    <div>Volume: ${latestBreakoutSignal.volume.toLocaleString()} (MA: ${latestBreakoutSignal.volumeMA.toFixed(0)})</div>
+                                    <div>Breakout Price: ₹${latestBreakoutSignal.price.toFixed(2)}</div>
+                                    <div>Pivot ${latestBreakoutSignal.pivotType.toUpperCase()}: ₹${latestBreakoutSignal.pivotPrice.toFixed(2)}</div>
+                                    <div>Candle: O:${latestBreakoutSignal.candleOpen.toFixed(2)} C:${latestBreakoutSignal.candleClose.toFixed(2)}</div>
+                                    <div>Volume: ${latestBreakoutSignal.volume.toLocaleString()} (${latestBreakoutSignal.volumeRatio.toFixed(2)}x SMA50)</div>
                                     <div>Time: ${new Date(latestBreakoutSignal.timestamp).toLocaleString()}</div>
                                 </div>
                             </div>
                         ` : breakoutDetectionActive ? 'Monitoring for breakouts...' : 'Detection not active'}
+                    </div>
+                </div>
+
+                <div class="status-card ${markingCandleState.isActive ? 'info' : 'neutral'}">
+                    <div class="card-title">🕯️ Marking Candle</div>
+                    <div class="card-content">
+                        <strong>Status:</strong> ${markingCandleState.isActive ? '🟡 TRACKING' : '⚪ INACTIVE'}<br>
+                        ${markingCandleState.isActive ? `
+                            <strong>Search Phase:</strong> ${markingCandleState.searchPhase.toUpperCase()}<br>
+                            <strong>Update Count:</strong> ${markingCandleState.currentMarkingCandle?.updateCount || 0}/3<br>
+                            ${markingCandleState.currentMarkingCandle ? `
+                                <div class="marking-candle-details" style="margin-top: 8px; padding: 8px; background: #f8fafc; border-radius: 4px; font-size: 13px;">
+                                    <div><strong>Entry Price:</strong> ₹${markingCandleState.currentMarkingCandle.entryPrice.toFixed(2)}</div>
+                                    <div><strong>Stop Loss:</strong> ₹${markingCandleState.currentMarkingCandle.stopLoss.toFixed(2)}</div>
+                                    <div><strong>Candle:</strong> O:${markingCandleState.currentMarkingCandle.candle.open.toFixed(2)} H:${markingCandleState.currentMarkingCandle.candle.high.toFixed(2)} L:${markingCandleState.currentMarkingCandle.candle.low.toFixed(2)} C:${markingCandleState.currentMarkingCandle.candle.close.toFixed(2)}</div>
+                                    <div><strong>Time:</strong> ${new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleString()}</div>
+                                </div>
+                            ` : markingCandleState.searchPhase === 'initial' ? `
+                                <div><strong>Bars Processed:</strong> ${markingCandleState.barsProcessedSinceBreakout}/5</div>
+                                <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">Looking for opposite direction candle...</div>
+                            ` : ''}
+                            ${markingCandleState.breakoutReference ? `
+                                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb; font-size: 12px;">
+                                    <strong>Breakout Type:</strong> ${markingCandleState.breakoutReference.type === 'long_breakout' ? '📈 LONG' : '📉 SHORT'} | 
+                                    <strong>Time Limit:</strong> ${markingCandleState.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))}/18 min` : 'N/A'}
+                                </div>
+                            ` : ''}
+                        ` : markingCandleState.tradeSkipped ? 'Trade skipped - waiting for next breakout' : 'Waiting for breakout signal...'}
                     </div>
                 </div>
             </div>
@@ -1414,6 +1975,10 @@ class TradingBot {
                 
                 <a href="/breakout-strategy/pivots" class="action-btn">
                     📍 Pivot Data API
+                </a>
+                
+                <a href="/breakout-strategy/marking-candle" class="action-btn">
+                    🕯️ Marking Candle API
                 </a>
             </div>
             `}
