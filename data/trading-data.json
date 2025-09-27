@@ -1,0 +1,37 @@
+{
+  "config": {
+    "capital": 98511.5299749251,
+    "riskPerTrade": 0.05,
+    "maxRetries": 3,
+    "orderTimeout": 5000,
+    "paperTradingMode": true,
+    "niftyLotSize": 75
+  },
+  "tradeHistory": [
+    {
+      "tradeId": "TRADE_1758791405465",
+      "entryOrderId": "PAPER_1758791405466",
+      "exitOrderId": "PAPER_EXIT_1758792667514",
+      "instrument": {
+        "instrument_token": "16561922",
+        "tradingsymbol": "NIFTY25SEP25000PE",
+        "name": "NIFTY",
+        "exchange": "NFO",
+        "strike": 25000,
+        "expiry": "2025-09-30T00:00:00.000Z",
+        "instrument_type": "PE",
+        "lot_size": 75
+      },
+      "direction": "SHORT",
+      "quantity": 600,
+      "entryPrice": 100.03318317654511,
+      "exitPrice": 102.51396655166995,
+      "entryTime": "2025-09-25T09:10:05.466Z",
+      "exitTime": "2025-09-25T09:31:07.514Z",
+      "pnl": -1488.4700250749063,
+      "exitReason": "TARGET",
+      "status": "CLOSED"
+    }
+  ],
+  "lastUpdated": "2025-09-25T09:31:07.514Z"
+}

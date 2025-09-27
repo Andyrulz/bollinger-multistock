@@ -1229,6 +1229,46 @@ class TradingBot {
       }
     });
 
+    // Paginated trade history endpoint
+    this.app.get('/api/trades', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = Math.min(parseInt(req.query.limit as string) || 20, 100); // Max 100 per page
+        const offset = (page - 1) * limit;
+        
+        const allTrades = this.breakoutStrategy.getTradeHistory();
+        const totalTrades = allTrades.length;
+        const paginatedTrades = allTrades.slice(offset, offset + limit);
+        
+        res.json({
+          success: true,
+          trades: paginatedTrades,
+          pagination: {
+            currentPage: page,
+            totalPages: Math.ceil(totalTrades / limit),
+            totalTrades,
+            hasMore: offset + limit < totalTrades,
+            limit
+          },
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error fetching paginated trade history:', error);
+        res.status(500).json({ 
+          error: 'Failed to fetch trade history',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
     // Initialize instruments
     this.app.post('/execution/initialize-instruments', async (req: Request, res: Response): Promise<void> => {
       try {
@@ -1252,6 +1292,170 @@ class TradingBot {
         this.logger.error('Error initializing instruments:', error);
         res.status(500).json({ 
           error: 'Failed to initialize instruments',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Get trading configuration page
+    this.app.get('/execution/config', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const tradingConfig = this.breakoutStrategy.getTradingConfig();
+        const currentCapital = this.breakoutStrategy.getCurrentCapital();
+        
+        res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Configuration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh; padding: 20px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        .dashboard { 
+            background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(20px);
+            border-radius: 24px; padding: 40px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+        }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: 600; color: #374151; }
+        .form-group input, .form-group select { 
+            width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px;
+            font-size: 14px; transition: border-color 0.2s;
+        }
+        .form-group input:focus, .form-group select:focus { 
+            outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        .btn { 
+            padding: 12px 24px; background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white; border: none; border-radius: 8px; font-weight: 600;
+            cursor: pointer; transition: transform 0.2s;
+        }
+        .btn:hover { transform: translateY(-2px); }
+        .back-link { color: #667eea; text-decoration: none; margin-bottom: 20px; display: inline-block; }
+        .warning { background: #fef3cd; color: #856404; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .info { background: #d1ecf1; color: #0c5460; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="dashboard">
+            <a href="/breakout-strategy" class="back-link">← Back to Strategy Dashboard</a>
+            
+            <h1>⚙️ Trading Configuration</h1>
+            
+            ${tradingConfig.paperTradingMode ? `
+            <div class="warning">
+                <strong>⚠️ Paper Trading Mode Active</strong><br>
+                No real trades will be placed. All trades are simulated for testing purposes.
+            </div>
+            ` : `
+            <div class="warning">
+                <strong>🚀 Live Trading Mode Active</strong><br>
+                Real trades will be placed using your Zerodha account. Ensure sufficient funds are available.
+            </div>
+            `}
+            
+            <div class="info">
+                <strong>💰 Current Capital:</strong> ₹${currentCapital.toLocaleString()}
+            </div>
+            
+            <form id="configForm">
+                <div class="form-group">
+                    <label for="capital">Capital (₹)</label>
+                    <input type="number" id="capital" name="capital" value="${tradingConfig.capital}" min="10000" step="1000" required>
+                    <small style="color: #6b7280;">Minimum: ₹10,000</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="riskPerTrade">Risk per Trade (%)</label>
+                    <input type="number" id="riskPerTrade" name="riskPerTrade" value="${(tradingConfig.riskPerTrade * 100).toFixed(1)}" min="0.5" max="10" step="0.1" required>
+                    <small style="color: #6b7280;">Recommended: 2-5% per trade</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="paperTradingMode">Trading Mode</label>
+                    <select id="paperTradingMode" name="paperTradingMode" required>
+                        <option value="true" ${tradingConfig.paperTradingMode ? 'selected' : ''}>📝 Paper Trading (Simulation)</option>
+                        <option value="false" ${!tradingConfig.paperTradingMode ? 'selected' : ''}>🚀 Live Trading (Real Money)</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="niftyLotSize">NIFTY Lot Size</label>
+                    <input type="number" id="niftyLotSize" name="niftyLotSize" value="${tradingConfig.niftyLotSize}" min="25" max="200" required>
+                    <small style="color: #6b7280;">Standard NIFTY lot size is 75</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="maxRetries">Max Order Retries</label>
+                    <input type="number" id="maxRetries" name="maxRetries" value="${tradingConfig.maxRetries}" min="1" max="10" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="orderTimeout">Order Timeout (ms)</label>
+                    <input type="number" id="orderTimeout" name="orderTimeout" value="${tradingConfig.orderTimeout}" min="1000" max="30000" step="1000" required>
+                </div>
+                
+                <button type="submit" class="btn">💾 Update Configuration</button>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        document.getElementById('configForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const config = {
+                capital: parseInt(formData.get('capital')),
+                riskPerTrade: parseFloat(formData.get('riskPerTrade')) / 100,
+                paperTradingMode: formData.get('paperTradingMode') === 'true',
+                niftyLotSize: parseInt(formData.get('niftyLotSize')),
+                maxRetries: parseInt(formData.get('maxRetries')),
+                orderTimeout: parseInt(formData.get('orderTimeout'))
+            };
+            
+            try {
+                const response = await fetch('/execution/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('✅ Configuration updated successfully!');
+                    window.location.reload();
+                } else {
+                    alert('❌ Error: ' + result.error);
+                }
+            } catch (error) {
+                alert('❌ Network error: ' + error.message);
+            }
+        });
+    </script>
+</body>
+</html>
+        `);
+      } catch (error) {
+        this.logger.error('Error serving execution config page:', error);
+        res.status(500).json({ 
+          error: 'Failed to load configuration page',
           details: error instanceof Error ? error.message : 'Unknown error'
         });
       }
@@ -1516,6 +1720,30 @@ class TradingBot {
       const currentCapital = this.breakoutStrategy.getCurrentCapital();
       const activePosition = this.breakoutStrategy.getActivePosition();
       const tradingConfig = this.breakoutStrategy.getTradingConfig();
+      const tradeHistory = this.breakoutStrategy.getTradeHistory();
+      
+      // Calculate performance metrics
+      const totalTrades = tradeHistory.length;
+      const closedTrades = tradeHistory.filter(trade => trade.status === 'CLOSED');
+      
+      // Separate paper and live trades for accurate P&L calculation
+      const isPaperMode = tradingConfig?.paperTradingMode;
+      const liveTrades = closedTrades.filter(trade => !trade.isPaperTrade);
+      const paperTrades = closedTrades.filter(trade => trade.isPaperTrade);
+      
+      // Calculate P&L based on trading mode
+      const totalPnL = isPaperMode ? 
+        paperTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0) : // Paper mode: show paper P&L
+        liveTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);    // Live mode: show only live P&L
+      
+      // Use appropriate trade set for metrics calculation
+      const relevantTrades = isPaperMode ? paperTrades : liveTrades;
+      const winningTrades = relevantTrades.filter(trade => (trade.pnl || 0) > 0);
+      const losingTrades = relevantTrades.filter(trade => (trade.pnl || 0) < 0);
+      const winRate = relevantTrades.length > 0 ? (winningTrades.length / relevantTrades.length) * 100 : 0;
+      const avgWin = winningTrades.length > 0 ? winningTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0) / winningTrades.length : 0;
+      const avgLoss = losingTrades.length > 0 ? losingTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0) / losingTrades.length : 0;
+      const profitFactor = Math.abs(avgLoss) > 0 ? Math.abs(avgWin * winningTrades.length) / Math.abs(avgLoss * losingTrades.length) : 0;
       
       const htmlResponse = `
 <!DOCTYPE html>
@@ -1854,6 +2082,34 @@ class TradingBot {
                         }
                     </div>
                 </div>
+                <div class="status-card info">
+                    <div class="card-title">📝 Option Instrument & Trade Execution</div>
+                    <div class="card-content">
+                        ${activePosition && activePosition.instrument ? `
+                        <div style="font-size: 14px; margin-bottom: 10px;">
+                            <strong>Instrument:</strong> ${activePosition.instrument.tradingsymbol} (${activePosition.instrument.instrument_type})<br>
+                            <strong>Strike:</strong> ₹${activePosition.instrument.strike}<br>
+                            <strong>Expiry:</strong> ${new Date(activePosition.instrument.expiry).toLocaleDateString()}<br>
+                            <strong>Lot Size:</strong> ${activePosition.instrument.lot_size}<br>
+                        </div>
+                        <div style="font-size: 14px;">
+                            <strong>Order ID:</strong> ${activePosition.entryOrderId}<br>
+                            <strong>Direction:</strong> ${activePosition.direction}<br>
+                            <strong>Quantity:</strong> ${activePosition.quantity}<br>
+                            <strong>Entry Price:</strong> ₹${activePosition.entryPrice}<br>
+                            <strong>Status:</strong> OPEN<br>
+                        </div>
+                        ` : '<div style="color: #6b7280;">No active option trade</div>'}
+                        ${activePosition && activePosition.pnl !== undefined ? `
+                        <div style="font-size: 14px; margin-top: 10px;">
+                            <strong>P&L:</strong> ₹${activePosition.pnl.toLocaleString()}<br>
+                            <strong>Exit Price:</strong> ₹${activePosition.exitPrice || '-'}<br>
+                            <strong>Exit Reason:</strong> ${activePosition.exitReason || '-'}<br>
+                            <strong>Status:</strong> CLOSED
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
 
                 <div class="status-card" style="border-left: 4px solid ${tradingConfig?.paperTradingMode ? '#F59E0B' : '#10B981'};">
                     <div class="card-title">💼 Execution Service</div>
@@ -1954,6 +2210,84 @@ class TradingBot {
                                 </div>
                             ` : ''}
                         ` : markingCandleState.tradeSkipped ? 'Trade skipped - waiting for next breakout' : 'Waiting for breakout signal...'}
+                    </div>
+                </div>
+
+                <div class="status-card ${totalPnL >= 0 ? 'success' : 'danger'}">
+                    <div class="card-title">📈 Performance Analytics ${isPaperMode ? '(Paper Trading)' : '(Live Trading)'}</div>
+                    <div class="card-content">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; font-size: 14px;">
+                            <div>
+                                <div><strong>Total P&L:</strong> <span style="color: ${totalPnL >= 0 ? '#10B981' : '#EF4444'}; font-weight: 600;">₹${totalPnL.toLocaleString()}</span></div>
+                                <div><strong>Relevant Trades:</strong> ${relevantTrades.length}${isPaperMode ? ' (Paper)' : ' (Live)'}</div>
+                                <div><strong>Win Rate:</strong> ${winRate.toFixed(1)}% (${winningTrades.length}W/${losingTrades.length}L)</div>
+                                <div><strong>Profit Factor:</strong> ${profitFactor > 0 ? profitFactor.toFixed(2) : 'N/A'}</div>
+                            </div>
+                            <div>
+                                <div><strong>Avg Win:</strong> <span style="color: #10B981;">₹${avgWin.toLocaleString()}</span></div>
+                                <div><strong>Avg Loss:</strong> <span style="color: #EF4444;">₹${avgLoss.toLocaleString()}</span></div>
+                                <div><strong>ROI:</strong> ${((totalPnL / 100000) * 100).toFixed(2)}%</div>
+                                <div><strong>All Trades:</strong> ${totalTrades} (${paperTrades.length}P/${liveTrades.length}L)</div>
+                            </div>
+                        </div>
+                        ${!isPaperMode && paperTrades.length > 0 ? `
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #6b7280;">
+                            📝 ${paperTrades.length} paper trades (₹${paperTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0).toLocaleString()}) excluded from live P&L
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+
+                <div class="status-card info">
+                    <div class="card-title">📋 Recent Trade History</div>
+                    <div class="card-content">
+                        ${tradeHistory.length > 0 ? `
+                            <div style="max-height: 200px; overflow-y: auto;">
+                                ${tradeHistory.slice(-5).reverse().map(trade => `
+                                    <div style="padding: 8px; margin: 4px 0; background: #f8fafc; border-radius: 4px; border-left: 3px solid ${(trade.pnl || 0) >= 0 ? '#10B981' : '#EF4444'}; font-size: 12px;">
+                                        <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 4px;">
+                                            <div style="font-weight: 600; color: #1f2937;">${trade.instrument.tradingsymbol} (${trade.direction})</div>
+                                            <div style="color: ${(trade.pnl || 0) >= 0 ? '#10B981' : '#EF4444'}; font-weight: 600;">₹${(trade.pnl || 0).toLocaleString()}</div>
+                                        </div>
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; color: #6b7280;">
+                                            <div><strong>Entry:</strong> ₹${trade.entryPrice}</div>
+                                            <div><strong>Exit:</strong> ₹${trade.exitPrice || '-'}</div>
+                                            <div><strong>Qty:</strong> ${trade.quantity}</div>
+                                        </div>
+                                        <div style="display: flex; justify-content: space-between; margin-top: 4px; color: #6b7280;">
+                                            <div><strong>Reason:</strong> ${trade.exitReason || trade.status}</div>
+                                            <div><strong>Date:</strong> ${new Date(trade.entryTime).toLocaleDateString()}</div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                            <div style="text-align: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb;">
+                                <small style="color: #6b7280;">Showing last 5 trades • <a href="/execution/status" style="color: #3B82F6;">View all trades</a></small>
+                            </div>
+                        ` : '<div style="color: #6b7280;">No trades executed yet</div>'}
+                    </div>
+                </div>
+
+                <div class="status-card warning">
+                    <div class="card-title">⚙️ System Configuration</div>
+                    <div class="card-content">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; font-size: 14px;">
+                            <div>
+                                <div><strong>NIFTY Contract:</strong> ${currentContract ? currentContract.tradingsymbol : 'Loading...'}</div>
+                                <div><strong>Lot Size:</strong> ${tradingConfig?.niftyLotSize || 75}</div>
+                                <div><strong>Max Retries:</strong> ${tradingConfig?.maxRetries || 3}</div>
+                                <div><strong>Order Timeout:</strong> ${tradingConfig?.orderTimeout || 5000}ms</div>
+                            </div>
+                            <div>
+                                <div><strong>Data File:</strong> trading-data.json</div>
+                                <div><strong>Log Level:</strong> INFO</div>
+                                <div><strong>Pivot Algorithm:</strong> 15,15 lookback</div>
+                                <div><strong>Volume SMA:</strong> 50-period</div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #6b7280;">
+                            💡 Toggle paper trading mode in <a href="/execution/config" style="color: #3B82F6;">execution config</a>
+                        </div>
                     </div>
                 </div>
             </div>

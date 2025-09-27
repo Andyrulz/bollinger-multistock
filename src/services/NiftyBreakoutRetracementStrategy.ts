@@ -64,6 +64,8 @@ export interface BreakoutSignal {
   pivotType: 'high' | 'low'; // which pivot was broken
   candleOpen: number; // breakout candle open price
   candleClose: number; // breakout candle close price
+  candleHigh: number; // breakout candle high price
+  candleLow: number; // breakout candle low price
   volumeRatio: number; // volume / volumeMA50 (for analysis)
 }
 
@@ -937,6 +939,8 @@ export class NiftyBreakoutRetracementStrategy {
             pivotType: 'high',
             candleOpen: completedCandle.open,
             candleClose: completedCandle.close,
+            candleHigh: completedCandle.high,
+            candleLow: completedCandle.low,
             volumeRatio: volumeRatio
           };
           
@@ -976,6 +980,8 @@ export class NiftyBreakoutRetracementStrategy {
             pivotType: 'low',
             candleOpen: completedCandle.open,
             candleClose: completedCandle.close,
+            candleHigh: completedCandle.high,
+            candleLow: completedCandle.low,
             volumeRatio: volumeRatio
           };
           
@@ -1023,6 +1029,9 @@ export class NiftyBreakoutRetracementStrategy {
     
     this.logger.info(`🔄 Trade State Transition: ${previousState} → ${newState}${reason ? ` (${reason})` : ''}`);
     
+    // Perform state synchronization check and recovery
+    this.performStateRecovery(newState, previousState);
+    
     // Handle state-specific actions
     switch (newState) {
       case TradeState.WAITING_FOR_BREAKOUT:
@@ -1038,6 +1047,39 @@ export class NiftyBreakoutRetracementStrategy {
         this.disableBreakoutDetection();
         this.disableMarkingCandleSystem();
         break;
+    }
+  }
+
+  private performStateRecovery(newState: TradeState, previousState: TradeState): void {
+    try {
+      const activePosition = this.tradeExecutionService.getActivePosition();
+      const hasStrategyTradeId = !!this.strategyState.currentTradeId;
+      const hasServicePosition = !!activePosition;
+
+      // Check for state mismatches and recover
+      if (newState === TradeState.WAITING_FOR_BREAKOUT) {
+        if (hasServicePosition) {
+          this.logger.warn(`🔧 State Recovery: Found orphaned position ${activePosition.tradeId} - attempting cleanup`);
+          // Don't automatically close - log for manual intervention
+          this.logger.error(`🚨 MANUAL INTERVENTION REQUIRED: Orphaned position detected`);
+        }
+      }
+
+      if (newState === TradeState.IN_TRADE) {
+        if (!hasServicePosition && hasStrategyTradeId) {
+          this.logger.warn(`🔧 State Recovery: Strategy has trade ID but no service position - clearing strategy state`);
+          delete this.strategyState.currentTradeId;
+        }
+      }
+
+      if (hasStrategyTradeId && hasServicePosition && activePosition.tradeId !== this.strategyState.currentTradeId) {
+        this.logger.warn(`🔧 State Recovery: ID mismatch - Strategy: ${this.strategyState.currentTradeId}, Service: ${activePosition.tradeId}`);
+        // Use service position as source of truth
+        this.strategyState.currentTradeId = activePosition.tradeId;
+      }
+
+    } catch (error) {
+      this.logger.error('❌ Error in state recovery:', error);
     }
   }
 
@@ -1253,9 +1295,21 @@ export class NiftyBreakoutRetracementStrategy {
         throw new Error('No trade setup request available for entry execution');
       }
 
+      // Verify no active position exists before placing new order
+      const activePosition = this.tradeExecutionService.getActivePosition();
+      if (activePosition) {
+        throw new Error(`Cannot place order: Active position exists ${activePosition.tradeId}`);
+      }
+
       // Call TradeExecutionService to place market order
       const tradeId = await this.tradeExecutionService.placeMarketOrder(this.strategyState.tradeSetupRequest);
       this.strategyState.currentTradeId = tradeId;
+      
+      // Verify state synchronization
+      const newActivePosition = this.tradeExecutionService.getActivePosition();
+      if (!newActivePosition || newActivePosition.tradeId !== tradeId) {
+        this.logger.warn(`⚠️ State sync warning: Strategy ID ${tradeId} != Service position ${newActivePosition?.tradeId}`);
+      }
       
       // Transition to IN_TRADE state after successful order placement
       this.transitionToState(TradeState.IN_TRADE, 'Entry level crossed - Order placed');
@@ -1280,6 +1334,20 @@ export class NiftyBreakoutRetracementStrategy {
         throw new Error('No active trade ID available for exit execution');
       }
 
+      // Verify active position exists before closing
+      const activePosition = this.tradeExecutionService.getActivePosition();
+      if (!activePosition) {
+        this.logger.warn(`⚠️ No active position found in service for trade ID: ${this.strategyState.currentTradeId}`);
+        // Clear strategy state and continue
+        delete this.strategyState.currentTradeId;
+        this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade ID cleared: ${reason}`);
+        return;
+      }
+
+      if (activePosition.tradeId !== this.strategyState.currentTradeId) {
+        this.logger.warn(`⚠️ State sync mismatch: Strategy ID ${this.strategyState.currentTradeId} != Service ID ${activePosition.tradeId}`);
+      }
+
       // Call TradeExecutionService to close position
       const exitReason = reason.includes('TARGET') ? 'TARGET' : 
                         reason.includes('STOP_LOSS') ? 'STOP_LOSS' : 'MANUAL';
@@ -1288,6 +1356,12 @@ export class NiftyBreakoutRetracementStrategy {
       // Clear trade data
       delete this.strategyState.currentTradeId;
       
+      // Verify position was closed
+      const remainingPosition = this.tradeExecutionService.getActivePosition();
+      if (remainingPosition) {
+        this.logger.warn(`⚠️ Position still active after close: ${remainingPosition.tradeId}`);
+      }
+      
       // Transition back to WAITING_FOR_BREAKOUT
       this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade closed: ${reason}`);
       
@@ -1295,6 +1369,7 @@ export class NiftyBreakoutRetracementStrategy {
     } catch (error) {
       this.logger.error('❌ Error executing trade exit:', error);
       // Even on error, try to reset state to avoid being stuck
+      delete this.strategyState.currentTradeId;
       this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade exit error: ${reason}`);
     }
   }
@@ -1307,6 +1382,7 @@ export class NiftyBreakoutRetracementStrategy {
    */
   private startMarkingCandleTracking(breakoutSignal: BreakoutSignal): void {
     this.logger.info(`🔍 Starting marking candle tracking for ${breakoutSignal.type}`);
+    this.logger.info(`📊 Breakout Candle OHLC: O:${breakoutSignal.candleOpen} H:${breakoutSignal.candleHigh} L:${breakoutSignal.candleLow} C:${breakoutSignal.candleClose}`);
     
     this.strategyState.markingCandleState = {
       isActive: true,
@@ -1319,6 +1395,8 @@ export class NiftyBreakoutRetracementStrategy {
       timeExpired: false,
       tradeSkipped: false
     };
+    
+    this.logger.info(`✅ Marking candle tracking ACTIVATED - isActive: ${this.strategyState.markingCandleState.isActive}`);
   }
 
   /**
@@ -1330,14 +1408,18 @@ export class NiftyBreakoutRetracementStrategy {
    */
   private processMarkingCandle(completedCandle: Candle): void {
     if (!this.strategyState.markingCandleState.isActive) {
+      this.logger.debug(`🔒 Marking candle tracking not active, skipping processing`);
       return; // Not tracking marking candles
     }
+
+    this.logger.debug(`🕯️ Processing marking candle: O:${completedCandle.open} H:${completedCandle.high} L:${completedCandle.low} C:${completedCandle.close}`);
 
     const markingState = this.strategyState.markingCandleState;
 
     // Check 18-minute time limit
     if (markingState.startTime) {
       const minutesElapsed = (completedCandle.timestamp.getTime() - markingState.startTime.getTime()) / (1000 * 60);
+      this.logger.debug(`⏰ Time elapsed since breakout: ${minutesElapsed.toFixed(1)} minutes (limit: 18 minutes)`);
       if (minutesElapsed > 18) {
         this.logger.info(`⏰ 18-minute time limit exceeded for marking candle tracking`);
         this.skipMarkingCandleTrade('time_limit_exceeded');
@@ -1346,10 +1428,12 @@ export class NiftyBreakoutRetracementStrategy {
     }
 
     markingState.barsProcessedSinceBreakout++;
+    this.logger.debug(`📊 Bars processed since breakout: ${markingState.barsProcessedSinceBreakout} (phase: ${markingState.searchPhase})`);
 
     if (markingState.searchPhase === 'initial') {
       // Initial search phase - looking for first marking candle within 5 bars
       if (markingState.barsProcessedSinceBreakout <= 5) {
+        this.logger.debug(`🔍 Looking for initial marking candle (bar ${markingState.barsProcessedSinceBreakout}/5)`);
         const markingCandle = this.checkForInitialMarkingCandle(completedCandle);
         if (markingCandle) {
           markingState.currentMarkingCandle = markingCandle;
@@ -1359,6 +1443,8 @@ export class NiftyBreakoutRetracementStrategy {
           
           // Create trade setup request with marking candle levels
           this.createAndStoreTradeSetup(markingCandle);
+        } else {
+          this.logger.debug(`❌ No marking candle found in bar ${markingState.barsProcessedSinceBreakout}`);
         }
       } else {
         // 5 bars elapsed without finding marking candle
@@ -1383,6 +1469,8 @@ export class NiftyBreakoutRetracementStrategy {
             this.logger.info(`🚫 Maximum 3 updates reached`);
           }
         }
+      } else {
+        this.logger.debug(`🚫 Maximum updates reached, no more marking candle updates allowed`);
       }
     }
   }
@@ -1407,25 +1495,33 @@ export class NiftyBreakoutRetracementStrategy {
     const breakoutCandle = {
       open: breakoutRef.candleOpen,
       close: breakoutRef.candleClose,
-      high: Math.max(breakoutRef.candleOpen, breakoutRef.candleClose),
-      low: Math.min(breakoutRef.candleOpen, breakoutRef.candleClose)
+      high: breakoutRef.candleHigh,
+      low: breakoutRef.candleLow
     };
+
+    this.logger.debug(`🔍 Checking marking candle: Candle OHLC: O:${candle.open} H:${candle.high} L:${candle.low} C:${candle.close}`);
+    this.logger.debug(`📊 Breakout Candle Range: H:${breakoutCandle.high} L:${breakoutCandle.low}`);
 
     // Check opposite direction requirement
     const candleIsRed = candle.close < candle.open;
     const candleIsGreen = candle.close > candle.open;
 
     if (isLongBreakout && !candleIsRed) {
+      this.logger.debug(`❌ Long breakout needs RED marking candle, but candle is ${candleIsRed ? 'RED' : 'GREEN'}`);
       return null; // For long breakout, need red marking candle
     }
     if (!isLongBreakout && !candleIsGreen) {
+      this.logger.debug(`❌ Short breakout needs GREEN marking candle, but candle is ${candleIsGreen ? 'GREEN' : 'RED'}`);
       return null; // For short breakout, need green marking candle
     }
 
     // Check intra-range close requirement
     if (candle.close < breakoutCandle.low || candle.close > breakoutCandle.high) {
+      this.logger.debug(`❌ Candle close ${candle.close} outside breakout range [${breakoutCandle.low}, ${breakoutCandle.high}]`);
       return null; // Closing price must be within breakout candle's range
     }
+
+    this.logger.info(`✅ VALID MARKING CANDLE FOUND! Close: ${candle.close} within range [${breakoutCandle.low}, ${breakoutCandle.high}]`);
 
     // Create marking candle
     const markingCandle: MarkingCandle = {
@@ -1496,6 +1592,7 @@ export class NiftyBreakoutRetracementStrategy {
    */
   private skipMarkingCandleTrade(reason: string): void {
     this.logger.info(`🚫 Skipping marking candle trade - Reason: ${reason}`);
+    this.logger.info(`🚫 MARKING CANDLE TRACKING DEACTIVATED - isActive: false`);
     
     this.strategyState.markingCandleState.tradeSkipped = true;
     this.strategyState.markingCandleState.isActive = false;

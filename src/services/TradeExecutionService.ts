@@ -45,6 +45,7 @@ export interface TradeRecord {
   pnl?: number;
   exitReason?: 'TARGET' | 'STOP_LOSS' | 'MANUAL';
   status: 'OPEN' | 'CLOSED';
+  isPaperTrade: boolean; // Track if this was a paper trade
 }
 
 export interface TradingConfig {
@@ -86,10 +87,101 @@ export class TradeExecutionService {
     // Ensure data directory exists
     this.ensureDataDirectory();
     
+    // Setup graceful shutdown handlers
+    this.setupGracefulShutdown();
+    
     this.logger.info('🚀 TradeExecutionService initialized');
     this.logger.info(`💰 Current Capital: ₹${this.persistedData.config.capital.toLocaleString()}`);
     if (this.persistedData.activePosition) {
       this.logger.info(`📊 Active Position Found: ${this.persistedData.activePosition.tradeId}`);
+      this.logger.info(`⚠️ System restarted with active position - monitoring required`);
+    }
+  }
+
+  // ===========================
+  // GRACEFUL SHUTDOWN HANDLING
+  // ===========================
+
+  private setupGracefulShutdown(): void {
+    // Handle process termination signals
+    const shutdownSignals = ['SIGTERM', 'SIGINT', 'SIGUSR2'];
+    
+    shutdownSignals.forEach((signal) => {
+      process.on(signal, () => {
+        this.logger.info(`🔄 Received ${signal} - initiating graceful shutdown...`);
+        this.gracefulShutdown().then(() => {
+          process.exit(0);
+        }).catch((error) => {
+          this.logger.error(`❌ Error during graceful shutdown:`, error);
+          process.exit(1);
+        });
+      });
+    });
+
+    // Handle uncaught exceptions
+    process.on('uncaughtException', (error) => {
+      this.logger.error(`❌ Uncaught Exception:`, error);
+      this.gracefulShutdown().then(() => {
+        process.exit(1);
+      });
+    });
+
+    // Handle unhandled promise rejections
+    process.on('unhandledRejection', (reason, promise) => {
+      this.logger.error(`❌ Unhandled Rejection:`, { reason, promise });
+      this.gracefulShutdown().then(() => {
+        process.exit(1);
+      });
+    });
+  }
+
+  private async gracefulShutdown(): Promise<void> {
+    try {
+      this.logger.info('🔄 Starting graceful shutdown sequence...');
+      
+      if (this.persistedData.activePosition) {
+        this.logger.warn('⚠️ Active position detected during shutdown!');
+        this.logger.info(`📊 Position: ${this.persistedData.activePosition.tradeId}`);
+        this.logger.info(`📈 Instrument: ${this.persistedData.activePosition.instrument.tradingsymbol}`);
+        this.logger.info(`🎲 Quantity: ${this.persistedData.activePosition.quantity}`);
+        this.logger.info(`💰 Entry Price: ₹${this.persistedData.activePosition.entryPrice}`);
+        
+        if (!this.persistedData.config.paperTradingMode) {
+          // Verify position still exists in broker account
+          await this.syncWithBrokerState();
+          this.logger.warn('🚨 IMPORTANT: Monitor position manually in Zerodha account');
+          this.logger.warn('🚨 Position will persist after system shutdown');
+        } else {
+          this.logger.info('📝 Paper trading position - no action required');
+        }
+      } else {
+        this.logger.info('✅ No active positions - safe to shutdown');
+      }
+
+      // Save final state
+      this.savePersistedData();
+      this.logger.info('💾 Final state saved successfully');
+      
+      this.logger.info('✅ Graceful shutdown completed');
+    } catch (error) {
+      this.logger.error('❌ Error during graceful shutdown:', error);
+      throw error;
+    }
+  }
+
+  public async forceCloseAllPositions(reason: string = 'SYSTEM_SHUTDOWN'): Promise<void> {
+    try {
+      if (!this.persistedData.activePosition) {
+        this.logger.info('📋 No active positions to close');
+        return;
+      }
+
+      this.logger.warn(`🚨 FORCE CLOSING POSITION - Reason: ${reason}`);
+      await this.closePosition(this.persistedData.activePosition.tradeId, 'MANUAL');
+      this.logger.info('✅ Position force closed successfully');
+    } catch (error) {
+      this.logger.error('❌ Error force closing positions:', error);
+      throw error;
     }
   }
 
@@ -255,7 +347,7 @@ export class TradeExecutionService {
     const { capital, riskPerTrade, niftyLotSize } = this.persistedData.config;
     const maxRiskAmount = capital * riskPerTrade; // ₹5,000 for 5% of ₹1,00,000
     
-    // Risk per lot = SL points × lot size
+    // Risk per lot = SL points × lot size (your original method)
     const riskPerLot = stopLossPoints * niftyLotSize;
     
     // Maximum lots we can afford
@@ -286,6 +378,12 @@ export class TradeExecutionService {
         throw new Error(`Cannot place new order - active position exists: ${this.persistedData.activePosition.tradeId}`);
       }
 
+      // Validate minimum capital requirements
+      const minCapitalRequired = 10000; // Minimum ₹10,000 required
+      if (this.persistedData.config.capital < minCapitalRequired) {
+        throw new Error(`Insufficient capital: ₹${this.persistedData.config.capital.toLocaleString()} < ₹${minCapitalRequired.toLocaleString()}`);
+      }
+
       // Select ATM option based on underlying price
       const selectedOption = await this.selectATMOption(tradeSetup.direction, tradeSetup.underlyingPrice);
       
@@ -295,9 +393,16 @@ export class TradeExecutionService {
       // Calculate stop loss points (difference between entry and stop loss levels)
       const stopLossPoints = Math.abs(tradeSetup.entryLevel - tradeSetup.stopLossLevel);
       
-      // Calculate position size
+      // Calculate position size - SIMPLIFIED FOR OPTIONS
+      // Note: Using conservative approach since option deltas vary
       const lotSize = this.calculatePositionSize(stopLossPoints, optionPrice);
       const quantity = lotSize * this.persistedData.config.niftyLotSize;
+
+      // Additional capital validation for trade cost
+      const estimatedTradeCost = optionPrice * quantity;
+      if (estimatedTradeCost > this.persistedData.config.capital) {
+        throw new Error(`Trade cost ₹${estimatedTradeCost.toLocaleString()} exceeds available capital ₹${this.persistedData.config.capital.toLocaleString()}`);
+      }
 
       // Generate trade ID
       const tradeId = `TRADE_${Date.now()}`;
@@ -350,14 +455,28 @@ export class TradeExecutionService {
         // Wait for order confirmation
         await this.waitForOrderConfirmation(orderId);
 
-        // Create active position record
+        // Get actual fill price and quantity from executed order
+        const actualEntryPrice = await this.getActualFillPrice(orderId);
+        const actualQuantity = await this.getActualFillQuantity(orderId);
+        
+        // Check for partial fill
+        if (actualQuantity < quantity) {
+          this.logger.warn(`⚠️ Partial fill detected: ${actualQuantity}/${quantity} filled`);
+          this.logger.info(`📊 Adjusting position size to actual filled quantity`);
+        } else if (actualQuantity === quantity) {
+          this.logger.info(`✅ Complete fill: ${actualQuantity} units executed`);
+        }
+
+        this.logger.info(`💰 Actual entry price: ₹${actualEntryPrice} (vs quote: ₹${optionPrice})`);
+
+        // Create active position record with actual fill price and quantity
         this.persistedData.activePosition = {
           tradeId,
           entryOrderId: orderId,
           instrument: selectedOption,
           direction: tradeSetup.direction,
-          quantity,
-          entryPrice: optionPrice, // Will be updated with actual fill price
+          quantity: actualQuantity, // Using actual filled quantity
+          entryPrice: actualEntryPrice, // Using actual fill price for accurate P&L
           entryTime: new Date(),
           stopLoss: tradeSetup.stopLossLevel,
           target: tradeSetup.targetLevel
@@ -365,11 +484,14 @@ export class TradeExecutionService {
 
         this.savePersistedData();
 
+        // Verify position was created correctly in broker account
+        await this.syncWithBrokerState();
+
         this.logger.info(`✅ Real order placed successfully`);
         this.logger.info(`   📋 Trade ID: ${tradeId}`);
         this.logger.info(`   🎫 Zerodha Order ID: ${orderId}`);
         this.logger.info(`   📊 Instrument: ${selectedOption.tradingsymbol}`);
-        this.logger.info(`   🎲 Quantity: ${quantity} (${lotSize} lots)`);
+        this.logger.info(`   🎲 Quantity: ${actualQuantity} (${Math.round(actualQuantity / this.persistedData.config.niftyLotSize)} lots)`);
 
         return tradeId;
       }
@@ -395,8 +517,8 @@ export class TradeExecutionService {
         const currentPrice = await this.getOptionPrice(position.instrument);
         const pnl = this.calculatePnL(position, currentPrice);
 
-        // Update capital based on P&L
-        this.updateCapitalAfterTrade(pnl);
+        // NOTE: Capital is NOT updated in paper trading mode - only for real trades
+        this.logger.info(`📝 Paper Trade P&L: ₹${pnl > 0 ? '+' : ''}${pnl.toLocaleString()} (not affecting real capital)`);
 
         // Create trade record
         const tradeRecord: TradeRecord = {
@@ -412,7 +534,8 @@ export class TradeExecutionService {
           exitTime: new Date(),
           pnl,
           exitReason,
-          status: 'CLOSED'
+          status: 'CLOSED',
+          isPaperTrade: true
         };
 
         this.persistedData.tradeHistory.push(tradeRecord);
@@ -421,8 +544,8 @@ export class TradeExecutionService {
 
         this.logger.info(`✅ Paper position closed successfully`);
         this.logger.info(`   💰 Exit Price: ₹${currentPrice}`);
-        this.logger.info(`   📈 P&L: ₹${pnl > 0 ? '+' : ''}${pnl.toLocaleString()}`);
-        this.logger.info(`   💰 New Capital: ₹${this.persistedData.config.capital.toLocaleString()}`);
+        this.logger.info(`   📈 Simulated P&L: ₹${pnl > 0 ? '+' : ''}${pnl.toLocaleString()} (paper only)`);
+        this.logger.info(`   💰 Real Capital Unchanged: ₹${this.persistedData.config.capital.toLocaleString()}`);
 
       } else {
         // Real order to close position
@@ -463,7 +586,8 @@ export class TradeExecutionService {
           exitTime: new Date(),
           pnl,
           exitReason,
-          status: 'CLOSED'
+          status: 'CLOSED',
+          isPaperTrade: false
         };
 
         this.persistedData.tradeHistory.push(tradeRecord);
@@ -483,14 +607,80 @@ export class TradeExecutionService {
   }
 
   // ===========================
+  // POSITION VERIFICATION METHODS
+  // ===========================
+
+  private async verifyBrokerPosition(instrument: OptionInstrument, expectedQuantity: number): Promise<boolean> {
+    try {
+      if (this.persistedData.config.paperTradingMode) {
+        this.logger.info('📝 Paper trading mode - skipping broker position verification');
+        return true;
+      }
+
+      const positions = await this.kiteConnect.getPositions();
+      const netPositions = positions.net || [];
+      
+      const matchingPosition = netPositions.find((pos: any) => 
+        pos.tradingsymbol === instrument.tradingsymbol && 
+        pos.exchange === instrument.exchange
+      );
+
+      if (!matchingPosition) {
+        this.logger.warn(`⚠️ No position found in Zerodha for ${instrument.tradingsymbol}`);
+        return false;
+      }
+
+      const brokerQuantity = Math.abs(matchingPosition.quantity);
+      if (brokerQuantity !== expectedQuantity) {
+        this.logger.warn(`⚠️ Position size mismatch: System=${expectedQuantity}, Zerodha=${brokerQuantity}`);
+        return false;
+      }
+
+      this.logger.info(`✅ Position verified: ${instrument.tradingsymbol} = ${brokerQuantity} units`);
+      return true;
+    } catch (error) {
+      this.logger.error(`❌ Error verifying broker position:`, error);
+      return false;
+    }
+  }
+
+  public async syncWithBrokerState(): Promise<void> {
+    try {
+      if (this.persistedData.config.paperTradingMode) {
+        this.logger.info('📝 Paper trading mode - skipping broker sync');
+        return;
+      }
+
+      if (!this.persistedData.activePosition) {
+        this.logger.info('📋 No active position to sync');
+        return;
+      }
+
+      const position = this.persistedData.activePosition;
+      const isVerified = await this.verifyBrokerPosition(position.instrument, position.quantity);
+      
+      if (!isVerified) {
+        this.logger.warn('⚠️ Position mismatch detected with broker - manual intervention may be required');
+        // Could implement auto-reconciliation here if needed
+      }
+    } catch (error) {
+      this.logger.error('❌ Error syncing with broker state:', error);
+    }
+  }
+
+  // ===========================
   // HELPER METHODS
   // ===========================
 
   private async getOptionPrice(option: OptionInstrument): Promise<number> {
     try {
       if (this.persistedData.config.paperTradingMode) {
-        // Return simulated price for paper trading
-        return 100 + Math.random() * 50; // ₹100-150 random price
+        // More realistic paper trading simulation based on option characteristics
+        // CE options typically ₹50-200 range, PE options similar
+        const basePrice = option.instrument_type === 'CE' ? 120 : 80;
+        const volatility = 0.2; // 20% random movement
+        const randomFactor = 1 + (Math.random() - 0.5) * volatility;
+        return Math.round(basePrice * randomFactor * 100) / 100; // Round to 2 decimal places
       } else {
         const quote = await this.kiteConnect.getQuote([`${option.exchange}:${option.tradingsymbol}`]);
         const optionQuote = quote[`${option.exchange}:${option.tradingsymbol}`];
@@ -514,8 +704,22 @@ export class TradeExecutionService {
         if (latestOrder.status === 'COMPLETE') {
           this.logger.info(`✅ Order ${orderId} confirmed as COMPLETE`);
           return;
-        } else if (latestOrder.status === 'REJECTED' || latestOrder.status === 'CANCELLED') {
-          throw new Error(`Order ${orderId} was ${latestOrder.status}: ${latestOrder.status_message}`);
+        } else if (latestOrder.status === 'REJECTED') {
+          const rejectionReason = latestOrder.status_message || 'Unknown rejection reason';
+          this.logger.error(`❌ Order ${orderId} REJECTED: ${rejectionReason}`);
+          
+          // Check if rejection is due to insufficient margin or limits
+          if (rejectionReason.toLowerCase().includes('margin') || 
+              rejectionReason.toLowerCase().includes('limit') ||
+              rejectionReason.toLowerCase().includes('fund')) {
+            this.logger.error(`💰 Margin/Fund related rejection - cannot retry automatically`);
+            throw new Error(`Order rejected due to insufficient funds: ${rejectionReason}`);
+          } else {
+            this.logger.warn(`⚠️ Non-margin rejection: ${rejectionReason} - could be temporary`);
+            throw new Error(`Order rejected: ${rejectionReason}`);
+          }
+        } else if (latestOrder.status === 'CANCELLED') {
+          throw new Error(`Order ${orderId} was CANCELLED: ${latestOrder.status_message}`);
         }
         
         this.logger.info(`⏳ Order ${orderId} status: ${latestOrder.status}, retrying in ${retryInterval}ms...`);
@@ -539,14 +743,23 @@ export class TradeExecutionService {
     }
   }
 
-  private calculatePnL(position: ActivePosition, exitPrice: number): number {
-    const { entryPrice, quantity, direction } = position;
-    
-    if (direction === 'LONG') {
-      return (exitPrice - entryPrice) * quantity;
-    } else {
-      return (entryPrice - exitPrice) * quantity;
+  private async getActualFillQuantity(orderId: string): Promise<number> {
+    try {
+      const orderDetails = await this.kiteConnect.getOrderHistory(orderId);
+      const completedOrder = orderDetails.find((order: any) => order.status === 'COMPLETE');
+      return completedOrder?.filled_quantity || 0;
+    } catch (error) {
+      this.logger.error(`❌ Error getting fill quantity for order ${orderId}:`, error);
+      return 0;
     }
+  }
+
+  private calculatePnL(position: ActivePosition, exitPrice: number): number {
+    const { entryPrice, quantity } = position;
+    
+    // For options: We always BUY (both CE and PE), so P&L = (exit - entry) * quantity
+    // Direction field indicates market expectation, not position direction
+    return (exitPrice - entryPrice) * quantity;
   }
 
   private updateCapitalAfterTrade(pnl: number): void {
