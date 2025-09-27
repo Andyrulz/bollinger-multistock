@@ -9,7 +9,7 @@
 9. Waiting for trade state -> Need additional "Marking candle update" state
 10. manual trade exit
 11. Max time in trade
-12. MIS trade instead of CNC
+12. MIS trade instead of CNC - fixed
 
 ---
 

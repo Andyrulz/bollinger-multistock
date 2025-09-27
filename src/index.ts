@@ -221,6 +221,18 @@ class TradingBot {
             box-shadow: 0 4px 20px rgba(56, 178, 172, 0.3);
         }
         
+        .action-btn.danger {
+            background: linear-gradient(135deg, #e53e3e, #c53030);
+            box-shadow: 0 4px 20px rgba(229, 62, 62, 0.3);
+            border: none;
+            cursor: pointer;
+        }
+        
+        .action-btn.danger:hover {
+            background: linear-gradient(135deg, #c53030, #9c2626);
+            box-shadow: 0 8px 30px rgba(229, 62, 62, 0.5);
+        }
+        
         .endpoints-section {
             background: #f8fafc;
             border-radius: 20px;
@@ -407,6 +419,9 @@ class TradingBot {
             <a href="/breakout-strategy" class="action-btn" style="background: linear-gradient(135deg, #a8edea, #fed6e3);">
                 📊 Breakout Strategy
             </a>
+            <button onclick="executeManualExit()" class="action-btn danger">
+                🚨 Manual Exit
+            </button>
             ` : ''}
         </div>
 
@@ -513,6 +528,41 @@ class TradingBot {
     </div>
 
     <script>
+        async function executeManualExit() {
+            if (!confirm('WARNING: This will immediately close all open positions!\\n\\nAre you sure you want to execute manual exit?')) {
+                return;
+            }
+            
+            const button = event.target;
+            const originalText = button.textContent;
+            
+            try {
+                button.textContent = 'Exiting...';
+                button.disabled = true;
+                
+                const response = await fetch('/execution/manual-exit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert('Manual exit executed successfully!');
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + data.error + '\\n' + (data.details || ''));
+                }
+            } catch (error) {
+                alert('Network error: ' + error.message);
+            } finally {
+                button.textContent = originalText;
+                button.disabled = false;
+            }
+        }
+        
         async function runTest(endpoint) {
             const button = event.target;
             const originalText = button.textContent;
@@ -1485,6 +1535,44 @@ class TradingBot {
         this.logger.error('Error updating trading configuration:', error);
         res.status(500).json({ 
           error: 'Failed to update trading configuration',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Manual trade exit endpoint
+    this.app.post('/execution/manual-exit', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const tradeExecutionService = this.breakoutStrategy.getTradeExecutionService();
+        if (!tradeExecutionService) {
+          res.status(500).json({ 
+            error: 'Trade execution service not available',
+            message: 'Strategy not properly initialized'
+          });
+          return;
+        }
+
+        this.logger.info('Manual exit requested - forcing close of all positions');
+        const result = await tradeExecutionService.forceCloseAllPositions();
+        
+        res.json({
+          success: true,
+          message: 'Manual exit executed successfully',
+          result: result,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error executing manual exit:', error);
+        res.status(500).json({ 
+          error: 'Failed to execute manual exit',
           details: error instanceof Error ? error.message : 'Unknown error'
         });
       }

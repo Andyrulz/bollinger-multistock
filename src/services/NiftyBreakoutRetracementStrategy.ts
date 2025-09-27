@@ -668,6 +668,13 @@ export class NiftyBreakoutRetracementStrategy {
     return this.strategyState.oneMinuteCandles[this.strategyState.oneMinuteCandles.length - 1];
   }
 
+  /**
+   * Get trade execution service instance for manual operations
+   */
+  public getTradeExecutionService(): TradeExecutionService {
+    return this.tradeExecutionService;
+  }
+
   // Pivot detection constants
   private readonly LOOKBACK_PERIOD = 15; // 15,15 pivot detection as per requirements
 
