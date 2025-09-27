@@ -42,7 +42,7 @@ The NIFTY Breakout Retracement Strategy is a professional swing trading system d
 
 1. **Pivot Detection**: Identifies significant highs and lows using 15,15 lookback
 2. **Breakout Validation**: Price + volume confirmation system
-3. **Marking Candle System**: Post-breakout entry and stop-loss level calculation
+3. **Marking Candle System**: Two-phase post-breakout analysis (5-bar initial + 18-minute updates)
 4. **Volume Analysis**: 50-period SMA of 1-minute candle volumes
 5. **Memory Management**: Optimized storage for long-running operations
 6. **Real-time Dashboard**: Integrated monitoring and control interface
@@ -244,8 +244,9 @@ private isPivotLow(index: number, candles: Candle[]): boolean {
 
 ### **Pivot Update Strategy**
 
-- **Frequency**: Analysis runs every 5 minutes
+- **Frequency**: Analysis runs 1 second after each 5-minute candle closes (synchronized timing)
 - **Requirements**: Minimum 31 completed 5-minute candles
+- **Synchronization**: Automatically schedules for XX:00:01, XX:05:01, XX:10:01, etc.
 - **Updates**: Only when new pivots are higher (for highs) or lower (for lows)
 - **Validation**: Strict confirmation prevents false signals
 
@@ -340,7 +341,19 @@ The Marking Candle System is a sophisticated post-breakout analysis module desig
 
 ### **Core Concept**
 
-A "marking candle" is the **first candle after breakout** that meets specific criteria for opposite-direction movement and intra-range closes. This candle provides critical reference levels for:
+A "marking candle" is the **first candle after breakout** that meets specific criteria for opposite-direction movement and intra-range closes. The system operates in **two distinct phases** with different timing constraints:
+
+**Phase 1 - Initial Detection (First 5 Bars):**
+
+- Must find the first marking candle within **5 bars (25 minutes)** after breakout
+- If no marking candle found within 5 bars, the trade opportunity is abandoned
+
+**Phase 2 - Dynamic Updates (18-minute Window):**
+
+- Once initial marking candle is found, system can make up to 3 updates
+- All updates must occur within **18 minutes total** from the original breakout
+
+This candle provides critical reference levels for:
 
 1. **Entry Levels**: Precise points for trade entry based on marking candle boundaries
 2. **Stop-Loss Levels**: Dynamic SL adjustments based on candle updates
@@ -350,23 +363,25 @@ A "marking candle" is the **first candle after breakout** that meets specific cr
 
 #### **LONG Breakout Marking Candle**
 
-For a LONG breakout (upward move), the marking candle must satisfy **ALL** conditions:
+For a LONG breakout (upward move), the **initial** marking candle must satisfy **ALL** conditions:
 
 ```typescript
-// Condition 1: Opposite direction (bearish body)
+// Condition 1: Opposite direction (bearish body) to the breakout candle
 markingCandle.close < markingCandle.open
 
 // Condition 2: Intra-range close (within breakout candle)
 markingCandle.close >= breakoutCandle.low &&
 markingCandle.close <= breakoutCandle.high
 
-// Condition 3: Timing constraint
-withinTimeLimit(18 minutes from breakout)
+// Condition 3: Initial timing constraint (CRITICAL)
+withinFirstFiveBars(5 bars = 25 minutes from breakout)
+
+// Note: If no marking candle found within 5 bars, trade is abandoned
 ```
 
 #### **SHORT Breakout Marking Candle**
 
-For a SHORT breakout (downward move), the marking candle must satisfy **ALL** conditions:
+For a SHORT breakout (downward move), the **initial** marking candle must satisfy **ALL** conditions:
 
 ```typescript
 // Condition 1: Opposite direction (bullish body)
@@ -376,8 +391,10 @@ markingCandle.close > markingCandle.open
 markingCandle.close >= breakoutCandle.low &&
 markingCandle.close <= breakoutCandle.high
 
-// Condition 3: Timing constraint
-withinTimeLimit(18 minutes from breakout)
+// Condition 3: Initial timing constraint (CRITICAL)
+withinFirstFiveBars(5 bars = 25 minutes from breakout)
+
+// Note: If no marking candle found within 5 bars, trade is abandoned
 ```
 
 ### **Entry & Stop Loss Calculation**
@@ -408,21 +425,59 @@ stopLossLevel = markingCandle.high + 1;
 
 ### **Dynamic Stop Loss Updates**
 
-The system allows up to **3 updates** within **18 minutes** of the initial breakout:
+After the **initial marking candle is found within 5 bars**, the system allows up to **3 updates** within **18 minutes total** from the original breakout:
+
+#### **Two-Phase System Summary**
+
+**Phase 1 - Initial Detection:**
+
+- **Timeframe**: First 5 bars (25 minutes) after breakout
+- **Requirement**: Must find at least one valid marking candle
+- **Failure**: If no marking candle found in 5 bars → Trade abandoned
+
+**Phase 2 - Update Optimization:**
+
+- **Timeframe**: 18 minutes total from original breakout
+- **Limit**: Maximum 3 updates allowed
+- **Criteria**: Any candle that extends stop-loss by ≥1 point
 
 #### **Update Conditions**
 
-1. **Time Constraint**: Within 18 minutes of breakout signal
-2. **Update Limit**: Maximum 3 updates allowed
-3. **Improvement Requirement**: New SL must be at least 1 point better than current
+1. **Time Constraint**: Within 18 minutes of original breakout signal
+2. **Update Limit**: Maximum 3 updates allowed after initial marking candle
+3. **Improvement Requirement**: New SL must extend by at least 1 point (adverse direction)
+
+### **Complete Timing Flow**
+
+```mermaid
+flowchart TD
+    A[Breakout Detected] --> B[Start 5-Bar Search]
+    B --> C{Marking Candle Found\\nWithin 5 Bars?}
+    C -->|No| D[❌ Trade Abandoned]
+    C -->|Yes| E[✅ Initial Marking Candle Set]
+    E --> F[Enter Update Phase]
+    F --> G{Within 18min Total\\n& Updates < 3?}
+    G -->|No| H[🏁 Finalize Trade Setup]
+    G -->|Yes| I{New Candle Extends\\nSL by ≥1 point?}
+    I -->|No| G
+    I -->|Yes| J[🔄 Update Marking Candle]
+    J --> G
+```
+
+**Critical Timing Rules:**
+
+- ⏰ **First 5 bars**: Must find initial marking candle or abandon trade
+- ⏰ **18 minutes total**: All updates must complete within this window from original breakout
+- 🔢 **Maximum 3 updates**: After initial marking candle is found
 
 #### **LONG Trade SL Updates**
 
 ```typescript
-// New marking candle detected
-if (newMarkingCandle.low - 1 > currentStopLoss) {
-  // SL improvement: move SL higher (reduce risk)
-  stopLossLevel = newMarkingCandle.low - 1;
+// Check if new candle extends SL in adverse direction (down) by at least 1 point
+if (currentStopLoss - newMarkingCandle.low >= 1) {
+  // SL extension: move SL lower (extends risk, but better entry)
+  stopLossLevel = newMarkingCandle.low;
+  entryLevel = newMarkingCandle.high;
   updateCount++;
 }
 ```
@@ -430,13 +485,33 @@ if (newMarkingCandle.low - 1 > currentStopLoss) {
 #### **SHORT Trade SL Updates**
 
 ```typescript
-// New marking candle detected
-if (newMarkingCandle.high + 1 < currentStopLoss) {
-  // SL improvement: move SL lower (reduce risk)
-  stopLossLevel = newMarkingCandle.high + 1;
+// Check if new candle extends SL in adverse direction (up) by at least 1 point
+if (newMarkingCandle.high - currentStopLoss >= 1) {
+  // SL extension: move SL higher (extends risk, but better entry)
+  stopLossLevel = newMarkingCandle.high;
+  entryLevel = newMarkingCandle.low;
   updateCount++;
 }
 ```
+
+#### **Understanding SL Extension vs SL Improvement**
+
+**Important Concept:** Marking candle updates **extend** stop-loss in the **adverse direction**, not improve it:
+
+- **LONG Breakouts**: SL moves **DOWN** (extends risk) but entry level also moves **DOWN** (better entry)
+- **SHORT Breakouts**: SL moves **UP** (extends risk) but entry level also moves **UP** (better entry)
+
+**Example for LONG:**
+
+- Current: Entry = 24805, SL = 24800 (Risk = 5 points)
+- Update: Entry = 24803, SL = 24798 (Risk = 5 points, but better entry level)
+
+**Example for SHORT:**
+
+- Current: Entry = 24795, SL = 24800 (Risk = 5 points)
+- Update: Entry = 24797, SL = 24802 (Risk = 5 points, but better entry level)
+
+**Trade-off:** Higher absolute risk but potentially better entry execution.
 
 ### **State Management**
 

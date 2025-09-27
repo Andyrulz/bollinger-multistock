@@ -180,6 +180,7 @@ export class NiftyBreakoutRetracementStrategy {
 
   /**
    * Fetch historical 1-minute candles for volume SMA50 initialization
+   * Uses progressive date range expansion to ensure we get at least 50 trading candles
    */
   private async fetchHistorical1MinuteCandles(): Promise<void> {
     try {
@@ -190,54 +191,97 @@ export class NiftyBreakoutRetracementStrategy {
 
       const instrumentToken = this.strategyState.currentContract.instrument_token;
       const toDate = new Date();
-      const fromDate = new Date();
-      fromDate.setMinutes(fromDate.getMinutes() - 60); // Get last 60 minutes to ensure we have 50+ candles
+      let allHistoricalCandles: Candle[] = [];
+      
+      // Progressive date range expansion to ensure we get at least 50 candles
+      const dateRanges = [
+        { hours: 2, description: '2 hours' },
+        { hours: 6, description: '6 hours' },
+        { hours: 12, description: '12 hours' },
+        { hours: 24, description: '1 day' },
+        { hours: 48, description: '2 days' },
+        { hours: 72, description: '3 days' },
+        { hours: 96, description: '4 days' },
+        { hours: 120, description: '5 days' }
+      ];
 
       this.logger.info(`📈 Fetching historical 1-minute candles for ${this.strategyState.currentContract.tradingsymbol}`);
-      this.logger.info(`📅 From: ${fromDate.toISOString()} To: ${toDate.toISOString()}`);
+      this.logger.info(`🎯 Target: At least 50 trading candles for Volume SMA50 calculation`);
 
-      const historicalData = await this.kiteConnect.getHistoricalData(
-        instrumentToken,
-        'minute',
-        fromDate,
-        toDate
-      );
+      for (const range of dateRanges) {
+        const fromDate = new Date();
+        fromDate.setHours(fromDate.getHours() - range.hours);
+        
+        this.logger.info(`📅 Trying ${range.description} range: ${fromDate.toISOString()} to ${toDate.toISOString()}`);
 
-      if (!historicalData || historicalData.length === 0) {
-        this.logger.warn('No historical 1-minute data received');
+        try {
+          const historicalData = await this.kiteConnect.getHistoricalData(
+            instrumentToken,
+            'minute',
+            fromDate,
+            toDate
+          );
+
+          if (historicalData && historicalData.length > 0) {
+            // Convert to our Candle format
+            const historicalCandles: Candle[] = historicalData.map((kiteCandle: any) => ({
+              timestamp: new Date(kiteCandle.date),
+              open: kiteCandle.open,
+              high: kiteCandle.high,
+              low: kiteCandle.low,
+              close: kiteCandle.close,
+              volume: kiteCandle.volume
+            }));
+
+            // Sort by timestamp to ensure proper order
+            historicalCandles.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            
+            allHistoricalCandles = historicalCandles;
+            this.logger.info(`📊 Retrieved ${historicalCandles.length} candles from ${range.description} range`);
+
+            // Check if we have enough candles for SMA50
+            if (historicalCandles.length >= 50) {
+              this.logger.info(`✅ Success! Got ${historicalCandles.length} candles (≥50 required)`);
+              break;
+            } else {
+              this.logger.warn(`⚠️ Only ${historicalCandles.length} candles from ${range.description}, expanding range...`);
+            }
+          } else {
+            this.logger.warn(`⚠️ No data returned for ${range.description} range`);
+          }
+        } catch (rangeError) {
+          this.logger.error(`❌ Failed to fetch ${range.description} range:`, rangeError);
+          continue; // Try next range
+        }
+      }
+
+      if (allHistoricalCandles.length === 0) {
+        this.logger.error('❌ Failed to retrieve any historical 1-minute data after trying all date ranges');
         return;
       }
 
-      // Convert to our Candle format and add to oneMinuteCandles
-      const historicalCandles: Candle[] = historicalData.map((kiteCandle: any) => ({
-        timestamp: new Date(kiteCandle.date),
-        open: kiteCandle.open,
-        high: kiteCandle.high,
-        low: kiteCandle.low,
-        close: kiteCandle.close,
-        volume: kiteCandle.volume
-      }));
-
-      // Sort by timestamp to ensure proper order
-      historicalCandles.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-
       // Keep only the latest 50 candles for memory optimization
-      const candlesToKeep = historicalCandles.slice(-50);
+      const candlesToKeep = allHistoricalCandles.slice(-50);
       this.strategyState.oneMinuteCandles = candlesToKeep;
 
-      this.logger.info(`✅ Loaded ${historicalCandles.length} historical 1-minute candles (keeping latest ${candlesToKeep.length})`);
+      this.logger.info(`✅ Loaded ${allHistoricalCandles.length} historical candles (keeping latest ${candlesToKeep.length})`);
       
       // Calculate initial volume SMA50 if we have enough data
       if (candlesToKeep.length >= 50) {
         this.updateVolumeSMA50();
         this.logger.info(`📊 Initial Volume SMA50 calculated: ${this.strategyState.currentVolumeSMA50.toFixed(2)}`);
       } else {
-        this.logger.warn(`⚠️ Only ${candlesToKeep.length} candles available, need 50 for SMA50. Volume confirmation will be unavailable initially.`);
+        this.logger.warn(`⚠️ Only ${candlesToKeep.length} candles available after all attempts. Volume confirmation will be limited initially.`);
+        // Still calculate SMA with available data
+        if (candlesToKeep.length > 0) {
+          this.updateVolumeSMA50();
+          this.logger.info(`📊 Partial Volume SMA${candlesToKeep.length} calculated: ${this.strategyState.currentVolumeSMA50.toFixed(2)}`);
+        }
       }
 
       // Set last processed time to the last historical candle
-      if (historicalCandles.length > 0) {
-        const lastCandle = historicalCandles[historicalCandles.length - 1];
+      if (allHistoricalCandles.length > 0) {
+        const lastCandle = allHistoricalCandles[allHistoricalCandles.length - 1];
         if (lastCandle) {
           this.strategyState.lastProcessedOneMinuteCandleTime = lastCandle.timestamp;
           this.logger.info(`🕐 Last processed 1m candle time set to: ${lastCandle.timestamp.toLocaleString()}`);
@@ -635,16 +679,72 @@ export class NiftyBreakoutRetracementStrategy {
     // Start pivot detection immediately with current candles
     this.detectPivotPoints();
     
-    // Set up periodic pivot detection (every 5 minutes)
-    this.breakoutDetectionInterval = setInterval(() => {
+    // Set up periodic pivot detection synchronized to 5-minute candle closes
+    this.scheduleNext5MinutePivotDetection();
+  }
+
+  private scheduleNext5MinutePivotDetection(): void {
+    if (!this.strategyState.breakoutDetectionActive) {
+      return; // Don't schedule if detection is not active
+    }
+
+    const now = new Date();
+    const currentMinutes = now.getMinutes();
+    const currentSeconds = now.getSeconds();
+    const currentMs = now.getMilliseconds();
+    
+    // Calculate next 5-minute boundary (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55)
+    let nextCandleMinute: number;
+    
+    // If we're exactly at a 5-minute boundary and past 1 second, or past any boundary, go to NEXT boundary
+    if ((currentMinutes % 5 === 0 && currentSeconds >= 1) || (currentMinutes % 5 !== 0)) {
+      // We're past the current boundary, calculate the next one
+      nextCandleMinute = (Math.floor(currentMinutes / 5) + 1) * 5;
+    } else {
+      // We're before the 1-second mark of current boundary, use current boundary
+      nextCandleMinute = Math.ceil(currentMinutes / 5) * 5;
+    }
+    
+    const nextCandleTime = new Date(now);
+    
+    if (nextCandleMinute >= 60) {
+      // Roll over to next hour
+      nextCandleTime.setHours(nextCandleTime.getHours() + 1);
+      nextCandleTime.setMinutes(0);
+    } else {
+      nextCandleTime.setMinutes(nextCandleMinute);
+    }
+    
+    nextCandleTime.setSeconds(1); // Run 1 second after candle closes
+    nextCandleTime.setMilliseconds(0);
+    
+    const timeUntilNext = nextCandleTime.getTime() - now.getTime();
+    
+    // Ensure we never schedule for a negative time (safety check)
+    if (timeUntilNext <= 0) {
+      this.logger.warn(`⚠️ Timing calculation error - timeUntilNext: ${timeUntilNext}ms. Forcing 5min delay.`);
+      // Force next detection to be 5 minutes from now
+      const fallbackTime = new Date(now.getTime() + (5 * 60 * 1000));
+      this.breakoutDetectionInterval = setTimeout(() => {
+        this.detectPivotPoints();
+        this.scheduleNext5MinutePivotDetection();
+      }, 5 * 60 * 1000);
+      return;
+    }
+    
+    this.logger.info(`📅 Next 5m pivot detection scheduled for: ${nextCandleTime.toLocaleTimeString()} (in ${Math.round(timeUntilNext/1000)}s)`);
+    
+    this.breakoutDetectionInterval = setTimeout(() => {
       this.detectPivotPoints();
-    }, 5 * 60 * 1000); // Run every 5 minutes
+      // Schedule the next detection
+      this.scheduleNext5MinutePivotDetection();
+    }, timeUntilNext);
   }
 
   private stopBreakoutDetection(): void {
     this.strategyState.breakoutDetectionActive = false;
     if (this.breakoutDetectionInterval) {
-      clearInterval(this.breakoutDetectionInterval);
+      clearTimeout(this.breakoutDetectionInterval); // Changed from clearInterval to clearTimeout
       this.breakoutDetectionInterval = null;
     }
     this.logger.info('Breakout detection stopped');
@@ -1012,10 +1112,11 @@ export class NiftyBreakoutRetracementStrategy {
   // This module handles the marking candle detection and management system
   // which provides precise entry and stop-loss levels after a breakout is detected.
   //
-  // Key Features:
-  // - Detects opposite-direction marking candles within 5 bars after breakout
-  // - Updates entry/SL levels dynamically when SL extends by ≥1 point  
-  // - Enforces 18-minute time limit and maximum 3 updates per breakout
+  // Two-Phase System:
+  // Phase 1 (Initial): Detects opposite-direction marking candles within 5 bars after breakout
+  // Phase 2 (Updates): Updates entry/SL levels dynamically when SL extends by ≥1 point  
+  //                   - Enforces 18-minute total time limit and maximum 3 updates per breakout
+  //                   - Trade abandoned if no marking candle found in first 5 bars
   // - Provides real-time entry and stop-loss levels for trade execution
   // ================================================================================
 

@@ -258,7 +258,8 @@ The bot uses a sophisticated 15,15 lookback algorithm:
 
 - **Algorithm**: 15 candles before + current candle + 15 candles after
 - **Requirement**: Minimum 31 completed 5-minute candles
-- **Updates**: Fresh analysis every 5 minutes
+- **Updates**: Synchronized analysis 1 second after each 5-minute candle closes
+- **Timing**: Runs at XX:00:01, XX:05:01, XX:10:01, XX:15:01, etc.
 - **Validation**: Strict peak/trough confirmation rules
 
 ### Real-Time Price Streaming
