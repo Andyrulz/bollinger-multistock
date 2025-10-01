@@ -37,24 +37,45 @@ class TradingBot {
   }
 
   private setupRoutes(): void {
+    // Add middleware for parsing JSON bodies
+    this.app.use(express.json());
+    this.app.use(express.urlencoded({ extended: true }));
+
     // Health check endpoint
     this.app.get('/health', (req: Request, res: Response) => {
       res.json({ status: 'OK', timestamp: new Date().toISOString() });
     });
 
     // Authentication status endpoint
-    this.app.get('/auth/status', (req: Request, res: Response) => {
-      const isAuthenticated = this.authService.isAuthenticated();
-      const sessionData = this.authService.getSessionData();
-      
-      res.json({
-        authenticated: isAuthenticated,
-        user: sessionData ? sessionData.user_name : null,
-        loginTime: sessionData ? sessionData.login_time : null,
-        message: isAuthenticated 
-          ? 'Bot is authenticated and ready for trading'
-          : 'Bot is not authenticated. Visit /auth/login to authenticate.'
-      });
+    this.app.get('/auth/status', async (req: Request, res: Response): Promise<void> => {
+      try {
+        const isAuthenticated = this.authService.isAuthenticated();
+        const sessionData = this.authService.getSessionData();
+        const sessionInfo = await this.authService.getSessionInfo();
+        
+        res.json({
+          authenticated: isAuthenticated,
+          user: sessionData ? sessionData.user_name : null,
+          loginTime: sessionData ? sessionData.login_time : null,
+          sessionPersistence: {
+            enabled: true,
+            hasPersistedSession: sessionInfo.persistedSession.exists,
+            expiresAt: sessionInfo.persistedSession.expiresAt,
+            createdAt: sessionInfo.persistedSession.createdAt
+          },
+          message: isAuthenticated 
+            ? sessionInfo.persistedSession.exists
+              ? `Bot authenticated with persistent session (expires ${sessionInfo.persistedSession.expiresAt?.toLocaleString()})`
+              : 'Bot is authenticated and session will be persisted'
+            : 'Bot is not authenticated. Visit /auth/login to authenticate.'
+        });
+      } catch (error) {
+        this.logger.error('Error getting auth status:', error);
+        res.status(500).json({ 
+          error: 'Failed to get authentication status',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     });
 
     // Help endpoint - now serves beautiful HTML instead of JSON
@@ -763,6 +784,44 @@ class TradingBot {
       }
     });
 
+    // Clear session endpoint (logout)
+    this.app.post('/auth/logout', async (req: Request, res: Response): Promise<void> => {
+      try {
+        await this.authService.invalidateSession();
+        
+        res.json({
+          success: true,
+          message: 'Session cleared successfully. Authentication required for trading.',
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error clearing session:', error);
+        res.status(500).json({ 
+          error: 'Failed to clear session',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Session info endpoint (detailed debugging)
+    this.app.get('/auth/session-info', async (req: Request, res: Response): Promise<void> => {
+      try {
+        const sessionInfo = await this.authService.getSessionInfo();
+        
+        res.json({
+          success: true,
+          sessionInfo,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error getting session info:', error);
+        res.status(500).json({ 
+          error: 'Failed to get session info',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
     // Portfolio endpoint (placeholder)
     this.app.get('/portfolio', async (req: Request, res: Response): Promise<void> => {
       try {
@@ -979,10 +1038,12 @@ class TradingBot {
         let executionStatus: any;
         let currentCapital: number | undefined;
         let activePosition: any;
+        let selectedInstrument: any;
         try {
           executionStatus = this.breakoutStrategy.getExecutionStatus();
           currentCapital = this.breakoutStrategy.getCurrentCapital();
           activePosition = this.breakoutStrategy.getActivePosition();
+          selectedInstrument = this.breakoutStrategy.getSelectedInstrument();
         } catch (error) {
           this.logger.error('Error getting execution service data:', error);
         }
@@ -1010,6 +1071,7 @@ class TradingBot {
           execution_status: executionStatus || null,
           current_capital: currentCapital || null,
           active_position: activePosition || null,
+          selected_instrument: selectedInstrument || null,
           timestamp: new Date().toISOString()
         });
       } catch (error) {
@@ -1578,6 +1640,120 @@ class TradingBot {
       }
     });
 
+    // Instrument selection endpoint for breakout strategy UI
+    this.app.post('/execution/select-instrument', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const { direction, niftyPrice } = req.body;
+        
+        if (!direction || !niftyPrice) {
+          res.status(400).json({ 
+            error: 'Missing required parameters',
+            message: 'direction and niftyPrice are required' 
+          });
+          return;
+        }
+
+        const tradeExecutionService = this.breakoutStrategy.getTradeExecutionService();
+        
+        // This will load instruments if not already loaded
+        await tradeExecutionService.loadInstruments();
+        
+        // Select ATM option and save it (simulate breakout detection)
+        const instrument = await tradeExecutionService.selectATMOption(direction, niftyPrice);
+        
+        // Save the selected instrument for UI display (simulate breakout detection flow)
+        await tradeExecutionService.onBreakoutDetected(direction, niftyPrice, new Date());
+        
+        res.json({
+          success: true,
+          instrument: instrument,
+          direction: direction,
+          underlying_price: niftyPrice,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error selecting instrument:', error);
+        res.status(500).json({ 
+          error: 'Failed to select instrument',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Option price endpoint for UI
+    this.app.get('/execution/option-price/:token', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const instrumentToken = req.params.token;
+        
+        if (!instrumentToken) {
+          res.status(400).json({ 
+            error: 'Missing instrument token' 
+          });
+          return;
+        }
+
+        const tradeExecutionService = this.breakoutStrategy.getTradeExecutionService();
+        const price = await tradeExecutionService.getOptionPriceByToken(instrumentToken);
+        
+        res.json({
+          success: true,
+          price: price,
+          instrument_token: instrumentToken,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error getting option price:', error);
+        res.status(500).json({ 
+          error: 'Failed to get option price',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Instruments status endpoint
+    this.app.get('/execution/instruments-status', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const tradeExecutionService = this.breakoutStrategy.getTradeExecutionService();
+        const instrumentsStatus = tradeExecutionService.getInstrumentsStatus();
+        
+        res.json({
+          success: true,
+          instruments_status: instrumentsStatus,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error getting instruments status:', error);
+        res.status(500).json({ 
+          error: 'Failed to get instruments status',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
     // ===========================
     // TESTING ENDPOINTS
     // ===========================
@@ -2099,6 +2275,140 @@ class TradingBot {
                 alert('Error stopping strategy: ' + error.message);
             }
         }
+        
+        async function toggleTradingMode() {
+            const button = document.getElementById('trading-mode-btn');
+            const originalText = button.textContent;
+            
+            button.textContent = 'Updating...';
+            button.disabled = true;
+            
+            try {
+                // First get current config
+                const statusResponse = await fetch('/execution/status');
+                const statusData = await statusResponse.json();
+                const currentMode = statusData.trading_config?.paperTradingMode;
+                const newMode = !currentMode;
+                
+                // Update config
+                const updateResponse = await fetch('/execution/config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        paperTradingMode: newMode
+                    })
+                });
+                
+                const result = await updateResponse.json();
+                
+                if (result.success) {
+                    // Show confirmation with clear mode indication
+                    const modeName = newMode ? 'Paper Trading (Safe Mode)' : 'Live Trading (Real Money)';
+                    const warning = newMode ? '' : '\\n\\n⚠️ WARNING: Live trading uses real money!';
+                    alert('Trading mode switched to: ' + modeName + warning);
+                    
+                    // Reload page to reflect changes
+                    window.location.reload();
+                } else {
+                    button.textContent = '❌ Failed';
+                    alert('Failed to update trading mode: ' + result.message);
+                }
+            } catch (error) {
+                button.textContent = '❌ Error';
+                alert('Error updating trading mode: ' + error.message);
+            }
+            
+            setTimeout(() => {
+                button.disabled = false;
+                if (button.textContent.includes('❌')) {
+                    button.textContent = originalText;
+                }
+            }, 3000);
+        }
+        
+        // Load instrument information when instrument is selected (breakout or manual)
+        async function loadInstrumentInfo() {
+            const instrumentCard = document.getElementById('instrumentCard');
+            if (!instrumentCard) return;
+            
+            try {
+                const statusResponse = await fetch('/breakout-strategy/status');
+                const statusData = await statusResponse.json();
+                
+                let instrument = null;
+                
+                // Check if we have a selected instrument (from breakout or manual selection)
+                if (statusData.selected_instrument) {
+                    instrument = statusData.selected_instrument;
+                } else if (statusData.latest_breakout_signal) {
+                    // Fallback: If no selected instrument but breakout signal exists, select instrument
+                    const signal = statusData.latest_breakout_signal;
+                    const direction = signal.type === 'long_breakout' ? 'LONG' : 'SHORT';
+                    
+                    const instrumentResponse = await fetch('/execution/select-instrument', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            direction: direction,
+                            niftyPrice: signal.price
+                        })
+                    });
+                    
+                    if (instrumentResponse.ok) {
+                        const instrumentData = await instrumentResponse.json();
+                        instrument = instrumentData.instrument;
+                    }
+                }
+                
+                // Display instrument information if available
+                if (instrument) {
+                        
+                    // Display instrument information
+                    document.getElementById('instrumentInfo').innerHTML = \`
+                        <div style="font-size: 14px;">
+                            <strong>Symbol:</strong> \${instrument.tradingsymbol}<br>
+                            <strong>Type:</strong> \${instrument.instrument_type} (ATM)<br>
+                            <strong>Strike:</strong> ₹\${instrument.strike}<br>
+                            <strong>Expiry:</strong> \${new Date(instrument.expiry).toLocaleDateString()}<br>
+                            <strong>Lot Size:</strong> \${instrument.lot_size}
+                        </div>
+                    \`;
+                    
+                    // Get live price for the option using the correct instrument token
+                    if (instrument.instrument_token) {
+                        const priceResponse = await fetch(\`/execution/option-price/\${instrument.instrument_token}\`);
+                        if (priceResponse.ok) {
+                            const priceData = await priceResponse.json();
+                            document.getElementById('instrumentLTP').innerHTML = \`
+                                <strong>Option LTP:</strong> ₹\${priceData.price.toFixed(2)}
+                                <span style="margin-left: 10px; color: #6b7280; font-size: 12px;">
+                                    Updated: \${new Date().toLocaleTimeString()}
+                                </span>
+                            \`;
+                        } else {
+                            document.getElementById('instrumentLTP').innerHTML = \`
+                                <span style="color: #ef4444;">Failed to load option price</span>
+                            \`;
+                        }
+                    }
+                } else {
+                    // No instrument selected
+                    document.getElementById('instrumentInfo').innerHTML = \`
+                        <div style="color: #6b7280; font-style: italic;">No instrument selected</div>
+                    \`;
+                    document.getElementById('instrumentLTP').innerHTML = '';
+                }
+            } catch (error) {
+                console.error('Error loading instrument info:', error);
+            }
+        }
+        
+        // Load instrument info on page load if breakout exists
+        document.addEventListener('DOMContentLoaded', loadInstrumentInfo);
     </script>
 </head>
 <body>
@@ -2378,6 +2688,61 @@ class TradingBot {
                         </div>
                     </div>
                 </div>
+                
+                ${latestBreakoutSignal ? `
+                <div class="status-card warning" style="border-left: 4px solid #F59E0B;">
+                    <div class="card-title">🎯 Selected Option Instrument</div>
+                    <div class="card-content" id="instrumentCard">
+                        <div id="instrumentInfo">Loading instrument information...</div>
+                        <div id="instrumentLTP" style="margin-top: 10px;">LTP: Loading...</div>
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+
+            <div class="status-card" style="border-left: 4px solid ${tradingConfig?.paperTradingMode ? '#F59E0B' : '#10B981'};">
+                <div class="card-title">⚙️ Trading Mode Control</div>
+                <div class="card-content">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                        <div>
+                            <div style="font-weight: 600; color: ${tradingConfig?.paperTradingMode ? '#F59E0B' : '#10B981'}; font-size: 18px;">
+                                ${tradingConfig?.paperTradingMode ? '📝 PAPER TRADING MODE' : '🚀 LIVE TRADING MODE'}
+                            </div>
+                            <div style="font-size: 14px; color: #6b7280; margin-top: 5px;">
+                                ${tradingConfig?.paperTradingMode ? 
+                                    'Simulated trades • Capital not affected • Safe for testing' : 
+                                    'Real money trading • All trades executed live • Use with caution'
+                                }
+                            </div>
+                        </div>
+                        <button onclick="toggleTradingMode()" 
+                                class="action-btn ${tradingConfig?.paperTradingMode ? 'warning' : 'success'}" 
+                                id="trading-mode-btn"
+                                style="min-width: 140px;">
+                            ${tradingConfig?.paperTradingMode ? '🚀 Go Live' : '📝 Go Paper'}
+                        </button>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; font-size: 14px; padding: 15px; background: #f8fafc; border-radius: 8px;">
+                        <div>
+                            <strong>Capital:</strong><br>
+                            <span style="font-size: 16px; font-weight: 600; color: ${tradingConfig?.paperTradingMode ? '#F59E0B' : '#10B981'};">
+                                ₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}
+                            </span>
+                        </div>
+                        <div>
+                            <strong>Risk per Trade:</strong><br>
+                            <span style="font-size: 16px; font-weight: 600;">
+                                ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}%
+                            </span>
+                        </div>
+                        <div>
+                            <strong>Max Risk:</strong><br>
+                            <span style="font-size: 16px; font-weight: 600;">
+                                ₹${currentCapital && tradingConfig ? (currentCapital * tradingConfig.riskPerTrade).toLocaleString() : 'Loading...'}
+                            </span>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="actions-grid">
@@ -2417,10 +2782,63 @@ class TradingBot {
       
       res.send(htmlResponse);
     });
+
+    // Debug endpoint to test different quote formats
+    this.app.get('/debug/test-quote-formats/:instrumentToken', async (req, res) => {
+      try {
+        const { instrumentToken } = req.params;
+        
+        if (!this.kiteConnect) {
+          return res.status(401).json({ error: 'KiteConnect not initialized' });
+        }
+
+        const testFormats: (string | number)[] = [
+          instrumentToken,  // Raw token
+          `NFO:${instrumentToken}`,  // Current implementation
+          `NIFTY${new Date().toISOString().slice(2, 10).replace(/-/g, '')}${instrumentToken}`,  // With date
+          `${instrumentToken}`,  // String token
+          parseInt(instrumentToken, 10)  // Numeric token
+        ];
+
+        const results: Record<string, any> = {};
+        
+        for (const format of testFormats) {
+          try {
+            this.logger.info(`Testing quote format: ${format}`);
+            const quote = await this.kiteConnect.getQuote([format]);
+            results[`format_${format}`] = {
+              success: true,
+              data: quote
+            };
+          } catch (error) {
+            results[`format_${format}`] = {
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            };
+          }
+        }
+
+        return res.json({
+          instrument_token: instrumentToken,
+          test_results: results,
+          timestamp: new Date().toISOString()
+        });
+
+      } catch (error) {
+        this.logger.error('Error testing quote formats:', error);
+        return res.status(500).json({ 
+          error: 'Failed to test quote formats',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
   }
 
   public async start(): Promise<void> {
     try {
+      // Wait for session initialization to complete before checking authentication
+      await this.authService.waitForInitialization();
+
       // Check if we have a valid access token
       if (!this.authService.isAuthenticated()) {
         this.logger.warn('Bot is not authenticated. Please visit /auth/login to authenticate.');

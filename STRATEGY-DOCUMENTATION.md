@@ -1421,11 +1421,14 @@ tail -f logs/error.log
 
 **Issue:** Zerodha tokens expire at 6 AM daily
 
-**Solution:**
+**✅ Solution - AUTOMATED SESSION PERSISTENCE:**
 
-- Built-in authentication detection
-- Clear error messages with login instructions
-- Dashboard shows authentication status
+- **Auto-Save**: Sessions automatically saved with AES-256 encryption
+- **Auto-Restore**: Bot restarts with previous session if still valid
+- **One-Time Login**: Only need to login once per day
+- **Seamless Experience**: No interruption during bot restarts
+- **Built-in Detection**: Automatic authentication status monitoring
+- **Dashboard Integration**: Real-time session status and expiry info
 
 ### **2. Market Hours Dependency**
 
@@ -1590,13 +1593,16 @@ grep "PIVOT\|pivot" logs/trading.log | tail -20
 ### **Status Verification Checklist**
 
 ```bash
-# 1. Authentication
+# 1. Authentication Status
 curl http://localhost:3000/auth/status
 
-# 2. Strategy Status
+# 2. Detailed Session Info (NEW - Session Persistence)
+curl http://localhost:3000/auth/session-info
+
+# 3. Strategy Status
 curl http://localhost:3000/breakout-strategy/status
 
-# 3. Memory Optimization
+# 4. Memory Optimization
 curl http://localhost:3000/breakout-strategy/memory-info
 
 # 4. Current Pivots

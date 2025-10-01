@@ -61,6 +61,11 @@ export interface PersistedData {
   config: TradingConfig;
   activePosition?: ActivePosition;
   tradeHistory: TradeRecord[];
+  activeInstrument?: OptionInstrument & {
+    selectedAt: Date;
+    direction: 'LONG' | 'SHORT';
+    underlyingPrice: number;
+  };
   lastUpdated: Date;
 }
 
@@ -229,7 +234,7 @@ export class TradeExecutionService {
     // Return default data if file doesn't exist or error occurred
     const defaultData: PersistedData = {
       config: {
-        capital: 100000,           // ₹1,00,000
+        capital: 200000,           // ₹2,00,000
         riskPerTrade: 0.05,       // 5%
         maxRetries: 3,
         orderTimeout: 5000,
@@ -307,7 +312,7 @@ export class TradeExecutionService {
     return nextTuesday;
   }
 
-  private async selectATMOption(direction: 'LONG' | 'SHORT', niftyPrice: number): Promise<OptionInstrument> {
+  public async selectATMOption(direction: 'LONG' | 'SHORT', niftyPrice: number): Promise<OptionInstrument> {
     if (this.niftyInstruments.length === 0) {
       await this.loadInstruments();
     }
@@ -805,5 +810,85 @@ export class TradeExecutionService {
       totalTrades: this.persistedData.tradeHistory.length,
       paperTradingMode: this.persistedData.config.paperTradingMode
     };
+  }
+
+  public async getOptionPriceByToken(instrumentToken: string): Promise<number> {
+    try {
+      // KiteConnect getQuote API expects raw numeric instrument token, not prefixed with exchange
+      const tokenNumber = parseInt(instrumentToken, 10);
+      const quotes = await this.kiteConnect.getQuote([tokenNumber]);
+      const quote = quotes[tokenNumber];
+      
+      if (!quote) {
+        throw new Error(`No quote data found for token: ${instrumentToken}`);
+      }
+      
+      return quote.last_price || 0;
+    } catch (error) {
+      this.logger.error(`Error fetching option price for token ${instrumentToken}:`, error);
+      throw error;
+    }
+  }
+
+  public getInstrumentsStatus(): {
+    loaded: boolean;
+    count: number;
+    loadedAt?: Date;
+    sampleInstruments?: any[];
+  } {
+    const loaded = this.niftyInstruments.length > 0;
+    const result: any = {
+      loaded: loaded,
+      count: this.niftyInstruments.length
+    };
+    
+    if (loaded) {
+      result.loadedAt = new Date();
+      result.sampleInstruments = this.niftyInstruments.slice(0, 5);
+    }
+    
+    return result;
+  }
+
+  // ===========================
+  // BREAKOUT NOTIFICATION HANDLER
+  // ===========================
+
+  /**
+   * Called by strategy when a breakout is detected
+   * Automatically selects ATM option for UI display
+   */
+  public async onBreakoutDetected(direction: 'LONG' | 'SHORT', underlyingPrice: number, timestamp: Date): Promise<void> {
+    try {
+      this.logger.info(`🎯 Breakout detected - Auto-selecting ${direction} ATM option for price: ₹${underlyingPrice}`);
+      
+      // Select ATM option immediately for UI display
+      const selectedOption = await this.selectATMOption(direction, underlyingPrice);
+      
+      // Store for later use when order is placed
+      this.persistedData.activeInstrument = {
+        ...selectedOption,
+        selectedAt: timestamp,
+        direction: direction,
+        underlyingPrice: underlyingPrice
+      };
+      
+      // Save to disk
+      this.savePersistedData();
+      
+      this.logger.info(`✅ ATM Option auto-selected: ${selectedOption.tradingsymbol}`);
+      this.logger.info(`   📊 Strike: ₹${selectedOption.strike} | Token: ${selectedOption.instrument_token}`);
+      
+    } catch (error) {
+      this.logger.error(`❌ Failed to auto-select ATM option after breakout:`, error);
+      // Don't throw - this is just for UI display, not critical for trading
+    }
+  }
+
+  /**
+   * Get currently selected instrument for UI display
+   */
+  public getSelectedInstrument(): any {
+    return this.persistedData.activeInstrument || null;
   }
 }

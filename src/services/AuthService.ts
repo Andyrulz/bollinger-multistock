@@ -1,5 +1,6 @@
 import { KiteConnect } from 'kiteconnect';
 import { Logger } from '../utils/Logger';
+import { SessionPersistence } from './SessionPersistence';
 
 export interface SessionData {
   user_type: string;
@@ -22,11 +23,80 @@ export interface SessionData {
 export class AuthService {
   private accessToken?: string;
   private sessionData?: SessionData;
+  private sessionPersistence: SessionPersistence;
+  private initializationPromise: Promise<void>;
 
   constructor(
     private kiteConnect: any, // Using any for compatibility
     private logger: Logger
-  ) {}
+  ) {
+    this.sessionPersistence = new SessionPersistence(logger);
+    
+    // Start session initialization and store the promise
+    this.initializationPromise = this.initializeSession().catch(error => {
+      this.logger.warn('Failed to initialize session on startup:', error);
+    });
+  }
+
+  /**
+   * Wait for initialization to complete
+   */
+  public async waitForInitialization(): Promise<void> {
+    return this.initializationPromise;
+  }
+
+  /**
+   * Initialize session on startup - try to restore from persisted storage
+   */
+  private async initializeSession(): Promise<void> {
+    try {
+      const persistedSession = await this.sessionPersistence.loadSession();
+      
+      if (persistedSession) {
+        this.accessToken = persistedSession.accessToken;
+        this.sessionData = persistedSession.sessionData;
+        
+        // Set the access token for KiteConnect
+        this.kiteConnect.setAccessToken(this.accessToken);
+        
+        // Validate the token by making a test API call
+        await this.validateToken();
+        
+        this.logger.info(`🔑 Session restored successfully for user: ${this.sessionData.user_name}`);
+        this.logger.info(`⏰ Session expires at: ${persistedSession.expiryTime.toLocaleString()}`);
+      } else {
+        this.logger.info('📝 No valid persisted session found - authentication required');
+      }
+    } catch (error) {
+      this.logger.error('Failed to initialize session:', error);
+      // Clear invalid session data
+      delete this.accessToken;
+      delete this.sessionData;
+      await this.sessionPersistence.clearSession();
+    }
+  }
+
+  /**
+   * Validate current token by making a test API call
+   */
+  private async validateToken(): Promise<void> {
+    try {
+      if (!this.accessToken) {
+        throw new Error('No access token to validate');
+      }
+
+      // Test the token with a lightweight API call
+      await this.kiteConnect.getProfile();
+      this.logger.debug('✅ Token validation successful');
+    } catch (error) {
+      this.logger.warn('❌ Token validation failed:', error);
+      // Clear invalid token
+      delete this.accessToken;
+      delete this.sessionData;
+      await this.sessionPersistence.clearSession();
+      throw error;
+    }
+  }
 
   public getLoginUrl(): string {
     return this.kiteConnect.getLoginURL();
@@ -48,7 +118,12 @@ export class AuthService {
       // Set the access token for future API calls
       this.kiteConnect.setAccessToken(this.accessToken);
       
-      this.logger.info(`Session generated successfully for user: ${response.user_name}`);
+      // Persist the session for future use
+      if (this.accessToken && this.sessionData) {
+        await this.sessionPersistence.saveSession(this.accessToken, this.sessionData);
+      }
+      
+      this.logger.info(`Session generated and saved successfully for user: ${response.user_name}`);
       return response;
     } catch (error) {
       this.logger.error('Failed to generate session:', error);
@@ -89,11 +164,41 @@ export class AuthService {
         await this.kiteConnect.invalidateAccessToken(this.accessToken);
         delete this.accessToken;
         delete this.sessionData;
-        this.logger.info('Session invalidated successfully');
+        
+        // Clear persisted session
+        await this.sessionPersistence.clearSession();
+        
+        this.logger.info('Session invalidated and cleared successfully');
       }
     } catch (error) {
       this.logger.error('Failed to invalidate session:', error);
       throw error;
     }
+  }
+
+  /**
+   * Get session persistence info for debugging
+   */
+  public async getSessionInfo(): Promise<{ 
+    authenticated: boolean; 
+    userName?: string; 
+    persistedSession: { exists: boolean; expiresAt?: Date; createdAt?: Date } 
+  }> {
+    const persistedInfo = await this.sessionPersistence.getSessionInfo();
+    
+    const result: {
+      authenticated: boolean; 
+      userName?: string; 
+      persistedSession: { exists: boolean; expiresAt?: Date; createdAt?: Date } 
+    } = {
+      authenticated: this.isAuthenticated(),
+      persistedSession: persistedInfo
+    };
+
+    if (this.sessionData?.user_name) {
+      result.userName = this.sessionData.user_name;
+    }
+
+    return result;
   }
 }

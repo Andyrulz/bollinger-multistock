@@ -675,6 +675,25 @@ export class NiftyBreakoutRetracementStrategy {
     return this.tradeExecutionService;
   }
 
+  /**
+   * Delegation methods for UI to access selected instrument info
+   */
+  public async selectATMOption(direction: 'LONG' | 'SHORT', niftyPrice: number) {
+    return await this.tradeExecutionService.selectATMOption(direction, niftyPrice);
+  }
+
+  public getSelectedInstrument() {
+    return this.tradeExecutionService.getSelectedInstrument();  
+  }
+
+  public async getOptionPriceByToken(instrumentToken: string): Promise<number> {
+    return await this.tradeExecutionService.getOptionPriceByToken(instrumentToken);
+  }
+
+  public getInstrumentsStatus() {
+    return this.tradeExecutionService.getInstrumentsStatus();
+  }
+
   // Pivot detection constants
   private readonly LOOKBACK_PERIOD = 15; // 15,15 pivot detection as per requirements
 
@@ -1505,6 +1524,13 @@ export class NiftyBreakoutRetracementStrategy {
     };
     
     this.logger.info(`✅ Marking candle tracking ACTIVATED - isActive: ${this.strategyState.markingCandleState.isActive}`);
+
+    // 🎯 NOTIFY EXECUTION SERVICE OF BREAKOUT FOR INSTRUMENT SELECTION
+    const direction = breakoutSignal.type === 'long_breakout' ? 'LONG' : 'SHORT';
+    const underlyingPrice = breakoutSignal.price; // Use breakout candle close price
+    
+    // Let execution service handle instrument selection upon breakout notification
+    this.tradeExecutionService.onBreakoutDetected(direction, underlyingPrice, breakoutSignal.timestamp);
   }
 
   /**

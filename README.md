@@ -47,17 +47,14 @@ cd zerodha-trading-bot
 npm install
 ```
 
-3. Set up environment variables:
-
-```bash
-cp .env.example .env
-```
-
-4. Edit the `.env` file with your Zerodha API credentials:
+3. Configure your environment variables in the existing `.env` file:
 
 ```env
 ZERODHA_API_KEY=your_api_key_here
 ZERODHA_API_SECRET=your_api_secret_here
+PORT=3000
+NODE_ENV=development
+LOG_LEVEL=info
 ```
 
 ## 🚀 Quick Start
@@ -123,16 +120,34 @@ info: 🚀 LONG BREAKOUT DETECTED! Price: ₹25,110.50 | Volume: 189% of SMA
 2. **Configure Redirect URL**: Set to `http://localhost:3000/auth/callback` in your Zerodha app settings
 3. **Install and Configure**: Follow installation steps below
 
-### Daily Authentication Process
+### Authentication Process
 
-**⚠️ IMPORTANT**: Zerodha access tokens expire daily at 6 AM (regulatory requirement). You must re-authenticate every trading day.
+**✅ SESSION PERSISTENCE**: The bot now automatically saves your authentication session securely. You only need to login once per day!
+
+**🔄 Automatic Session Restoration**: When you restart the bot, it automatically restores your previous session if still valid.
 
 1. **Start the Bot**: `npm run dev`
-2. **Check Status**: Visit http://localhost:3000/ - you'll see authentication status
-3. **Authenticate**: Click login link or visit http://localhost:3000/auth/login
-4. **Complete Zerodha Login**: Enter credentials, PIN, complete 2FA if required
-5. **Verify**: You'll be redirected back with success confirmation
-6. **Ready**: Bot is now authenticated for the trading session!
+2. **First Time Setup**:
+   - Visit http://localhost:3000/ - you'll see authentication status
+   - Click login link or visit http://localhost:3000/auth/login
+   - Complete Zerodha login (credentials, PIN, 2FA)
+   - Session is automatically saved and encrypted
+3. **Subsequent Starts**: Bot automatically authenticates using saved session
+4. **Session Expiry**: Tokens expire daily at 6 AM - bot will prompt for re-authentication
+
+**🔐 Security Features**:
+
+- **AES-256-CBC Encryption**: Sessions encrypted using API credentials as key derivation
+- **Secure Storage**: Encrypted data stored in `data/auth/session.json`
+- **File Permissions**: Restricted to 0o600 (owner read/write only)
+- **Automatic Cleanup**: Sessions cleared on logout, expiry, or corruption
+- **Session Validation**: Automatic token validation on restoration
+- **Graceful Fallback**: Seamless re-authentication if session invalid
+
+**🔧 New API Endpoints**:
+
+- `GET /auth/session-info`: View detailed session information and expiry
+- `POST /auth/logout`: Manual logout with secure session cleanup
 
 ## Configuration
 
@@ -190,8 +205,10 @@ npm start
 | ------------------------------------ | -------------------------------- | ---------------------------------- |
 | `GET /`                              | Main dashboard & control panel   | Strategy overview and controls     |
 | `GET /breakout-strategy`             | Live strategy dashboard          | Real-time strategy monitoring      |
-| `GET /auth/login`                    | Start daily authentication       | Required daily login process       |
-| `GET /auth/status`                   | Check authentication status      | Verify login state                 |
+| `GET /auth/login`                    | Start authentication process     | Redirects to Zerodha login         |
+| `GET /auth/status`                   | Check authentication status      | Shows session persistence info     |
+| `POST /auth/logout`                  | Clear saved session              | Logout and clear persistent data   |
+| `GET /auth/session-info`             | Detailed session information     | Debug session persistence          |
 | `POST /breakout-strategy/start`      | Start complete breakout strategy | Begin automated trading strategy   |
 | `POST /breakout-strategy/stop`       | Stop all strategy operations     | Safely halt strategy and streaming |
 | `GET /breakout-strategy/status`      | Get detailed strategy state      | Monitor all strategy components    |

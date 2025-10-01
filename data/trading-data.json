@@ -33,5 +33,18 @@
       "status": "CLOSED"
     }
   ],
-  "lastUpdated": "2025-09-25T09:31:07.514Z"
+  "lastUpdated": "2025-10-01T14:53:41.935Z",
+  "activeInstrument": {
+    "instrument_token": "9832706",
+    "tradingsymbol": "NIFTY25O0725400CE",
+    "name": "NIFTY",
+    "exchange": "NFO",
+    "strike": 25400,
+    "expiry": "2025-10-07T00:00:00.000Z",
+    "instrument_type": "CE",
+    "lot_size": 75,
+    "selectedAt": "2025-10-01T14:53:41.934Z",
+    "direction": "LONG",
+    "underlyingPrice": 25400
+  }
 }

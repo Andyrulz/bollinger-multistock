@@ -7,7 +7,8 @@ Professional Node.js TypeScript NIFTY futures trading bot using Zerodha's KiteCo
 ## Project Structure
 
 - `src/index.ts` - Main Express server with strategy dashboard and simplified UX
-- `src/services/AuthService.ts` - Zerodha OAuth authentication handling
+- `src/services/AuthService.ts` - Zerodha OAuth authentication handling with session persistence
+- `src/services/SessionPersistence.ts` - Encrypted session storage and restoration system
 - `src/services/NiftyBreakoutRetracementStrategy.ts` - Main trading strategy with pivot detection
 - `src/utils/Logger.ts` - Winston-based logging utility
 
@@ -15,6 +16,7 @@ Professional Node.js TypeScript NIFTY futures trading bot using Zerodha's KiteCo
 
 - **NIFTY Breakout Strategy**: Professional breakout-retracement with 15,15 pivot detection
 - **Real-time Price Streaming**: 1-second manual polling (no WebSocket dependencies)
+- **Session Persistence**: Encrypted daily session storage with automatic restoration
 - **Integrated UX**: Single-button strategy control with automatic price streaming
 - **Professional Pivot Detection**: 15,15 lookback algorithm for reliable pivot points
 - **5-minute Candle Analysis**: Real-time candle building and breakout monitoring
