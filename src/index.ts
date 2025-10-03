@@ -438,7 +438,10 @@ class TradingBot {
                 🎯 Strategy Status
             </a>
             <a href="/breakout-strategy" class="action-btn" style="background: linear-gradient(135deg, #a8edea, #fed6e3);">
-                📊 Breakout Strategy
+                📊 Breakout Strategy (Classic)
+            </a>
+            <a href="/breakout-strategy-v2" class="action-btn" style="background: linear-gradient(135deg, #22c55e, #16a34a); color: white;">
+                🚀 Modern Dashboard
             </a>
             <button onclick="executeManualExit()" class="action-btn danger">
                 🚨 Manual Exit
@@ -494,6 +497,10 @@ class TradingBot {
                 <a href="/breakout-strategy" class="endpoint">
                     <span class="method">GET</span>
                     <span>/breakout-strategy (Breakout Strategy Dashboard)</span>
+                </a>
+                <a href="/breakout-strategy-v2" class="endpoint" style="background: linear-gradient(135deg, #22c55e, #16a34a); color: white; border-color: #22c55e;">
+                    <span class="method" style="background: rgba(255,255,255,0.2);">NEW</span>
+                    <span>/breakout-strategy-v2 (Modern Dashboard)</span>
                 </a>
                 <a href="/breakout-strategy/status" class="endpoint">
                     <span class="method">GET</span>
@@ -2912,6 +2919,1513 @@ class TradingBot {
       `;
       
       res.send(htmlResponse);
+    });
+
+    // Modern breakout strategy dashboard page
+    this.app.get('/breakout-strategy-v2', (req: Request, res: Response) => {
+      const isAuthenticated = this.authService.isAuthenticated();
+      const sessionData = this.authService.getSessionData();
+      const strategyActive = this.breakoutStrategy.isStrategyActive();
+      const strategyState = this.breakoutStrategy.getStrategyState();
+      const currentContract = strategyState?.currentContract;
+      const latestPivots = this.breakoutStrategy.getLatestPivots();
+      const livePrice = this.breakoutStrategy.getLivePrice();
+      const priceStreamingActive = this.breakoutStrategy.isPriceStreamingActive();
+      const isMarketHours = this.breakoutStrategy.isMarketHours();
+      const breakoutDetectionActive = this.breakoutStrategy.isBreakoutDetectionActive();
+      const latestBreakoutSignal = this.breakoutStrategy.getLatestBreakoutSignal();
+      const oneMinuteCandleCount = this.breakoutStrategy.getOneMinuteCandleCount();
+      const volumeSMA50 = this.breakoutStrategy.getCurrentVolumeSMA50();
+      const latestOneMinuteCandle = this.breakoutStrategy.getLatestOneMinuteCandle();
+      const markingCandleState = this.breakoutStrategy.getMarkingCandleState();
+      const tradeStateInfo = this.breakoutStrategy.getTradeStateInfo();
+      
+      // Get execution service data
+      const executionStatus = this.breakoutStrategy.getExecutionStatus();
+      const currentCapital = this.breakoutStrategy.getCurrentCapital();
+      const activePosition = this.breakoutStrategy.getActivePosition();
+      const tradingConfig = this.breakoutStrategy.getTradingConfig();
+      const tradeHistory = this.breakoutStrategy.getTradeHistory();
+      
+      // Calculate performance metrics
+      const totalTrades = tradeHistory.length;
+      const closedTrades = tradeHistory.filter(trade => trade.status === 'CLOSED');
+      
+      // Separate paper and live trades for accurate P&L calculation
+      const isPaperMode = tradingConfig?.paperTradingMode;
+      const liveTrades = closedTrades.filter(trade => !trade.isPaperTrade);
+      const paperTrades = closedTrades.filter(trade => trade.isPaperTrade);
+      
+      // Calculate P&L based on trading mode
+      const totalPnL = isPaperMode ? 
+        paperTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0) : // Paper mode: show paper P&L
+        liveTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0);    // Live mode: show only live P&L
+      
+      // Use appropriate trade set for metrics calculation
+      const relevantTrades = isPaperMode ? paperTrades : liveTrades;
+      const winningTrades = relevantTrades.filter(trade => (trade.pnl || 0) > 0);
+      const losingTrades = relevantTrades.filter(trade => (trade.pnl || 0) < 0);
+      const winRate = relevantTrades.length > 0 ? (winningTrades.length / relevantTrades.length) * 100 : 0;
+      const avgWin = winningTrades.length > 0 ? winningTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0) / winningTrades.length : 0;
+      const avgLoss = losingTrades.length > 0 ? losingTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0) / losingTrades.length : 0;
+      const profitFactor = Math.abs(avgLoss) > 0 ? Math.abs(avgWin * winningTrades.length) / Math.abs(avgLoss * losingTrades.length) : 0;
+
+      const modernHtmlResponse = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NIFTY Breakout Strategy Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, system-ui, sans-serif;
+            background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 50%, #cbd5e1 100%);
+            min-height: 100vh;
+            color: #1e293b;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .back-link {
+            display: inline-flex;
+            color: #06b6d4;
+            text-decoration: none;
+            font-weight: 600;
+            margin-bottom: 20px;
+            padding: 8px 16px;
+            border-radius: 8px;
+        }
+        .header {
+            background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.85));
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            border: 1px solid rgba(0,0,0,0.1);
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        .hero-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }
+        .hero-card {
+            background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.85));
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid rgba(0,0,0,0.1);
+            padding: 25px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        .hero-label { font-size: 0.9rem; color: #64748b; margin-bottom: 8px; }
+        .hero-value { font-size: 2rem; font-weight: 700; margin-bottom: 8px; color: #1e293b; }
+        .hero-subtitle { font-size: 0.85rem; color: #475569; }
+        .control-panel {
+            background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.85));
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid rgba(0,0,0,0.1);
+            padding: 25px;
+            margin: 20px 0;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        .control-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .control-btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            text-align: center;
+            display: inline-block;
+        }
+        .control-btn.primary { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
+        .control-btn.danger { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }
+        .control-btn.warning { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; }
+        .control-btn.secondary { background: linear-gradient(135deg, #3b82f6, #1d4ed8); color: white; }
+        .status-active { border-left: 4px solid #22c55e; }
+        .status-inactive { border-left: 4px solid #ef4444; }
+        .dashboard-section {
+            background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.85));
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid rgba(0,0,0,0.1);
+            margin: 20px 0;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        .section-header {
+            padding: 20px 25px;
+            background: rgba(0,0,0,0.05);
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #1e293b;
+            font-weight: 600;
+        }
+        .section-content { padding: 25px; }
+        .perf-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+        .perf-card {
+            background: rgba(0,0,0,0.05);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+        .perf-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .perf-value.positive { color: #22c55e; }
+        .perf-value.negative { color: #ef4444; }
+        .perf-value.neutral { color: #06b6d4; }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+        .info-card {
+            background: rgba(0,0,0,0.05);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+        .info-value { font-size: 1.4rem; font-weight: 600; margin: 10px 0; color: #1e293b; }
+        .info-subtitle { color: #64748b; font-size: 0.9rem; }
+        h4 { color: #374151; }
+        .status-indicator {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .status-indicator.active { background: #22c55e; color: white; }
+        .status-indicator.inactive { background: #ef4444; color: white; }
+        .status-indicator.warning { background: #f59e0b; color: white; }
+        
+        /* Enhanced Mobile Responsiveness */
+        @media (max-width: 1200px) {
+            .container { max-width: 100%; padding: 15px; }
+            .hero-section { grid-template-columns: 1fr 1fr; gap: 15px; }
+            .info-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; }
+        }
+        
+        @media (max-width: 768px) {
+            .container { padding: 10px; }
+            .header { padding: 20px; margin-bottom: 20px; }
+            .header h1 { font-size: 2rem; }
+            .header .subtitle { font-size: 1rem; }
+            
+            .hero-section { 
+                grid-template-columns: 1fr; 
+                gap: 15px; 
+                margin: 20px 0; 
+            }
+            .hero-card { padding: 20px; }
+            .hero-value { font-size: 1.8rem; }
+            .hero-label { font-size: 0.8rem; }
+            .hero-subtitle { font-size: 0.8rem; }
+            
+            .control-panel { padding: 20px; }
+            .control-grid { 
+                grid-template-columns: 1fr; 
+                gap: 12px; 
+            }
+            .control-btn { 
+                padding: 16px 20px; 
+                font-size: 1rem;
+                min-height: 48px; /* Touch-friendly minimum */
+            }
+            
+            .dashboard-section { margin: 15px 0; }
+            .section-header { padding: 15px 20px; }
+            .section-content { padding: 20px; }
+            
+            .perf-grid { 
+                grid-template-columns: 1fr 1fr; 
+                gap: 15px; 
+            }
+            .perf-card { padding: 15px; }
+            .perf-value { font-size: 1.5rem; }
+            
+            .info-grid { 
+                grid-template-columns: 1fr; 
+                gap: 15px; 
+            }
+            .info-card { padding: 15px; }
+            .info-value { font-size: 1.2rem; }
+            
+            .back-link { 
+                padding: 12px 16px; 
+                font-size: 0.9rem;
+                margin-bottom: 15px;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .container { padding: 8px; }
+            .header { padding: 15px; }
+            .header h1 { font-size: 1.8rem; }
+            .header .subtitle { font-size: 0.9rem; }
+            
+            .hero-card { padding: 15px; }
+            .hero-value { font-size: 1.6rem; }
+            
+            .control-panel { padding: 15px; }
+            .control-btn { 
+                padding: 14px 16px; 
+                font-size: 0.9rem;
+                min-height: 44px;
+            }
+            
+            .section-header { padding: 12px 15px; }
+            .section-content { padding: 15px; }
+            
+            .perf-grid { grid-template-columns: 1fr; }
+            .perf-card { padding: 12px; }
+            .info-card { padding: 12px; }
+            
+            .footer { 
+                padding: 15px; 
+                font-size: 0.8rem; 
+                margin-top: 30px; 
+            }
+        }
+        
+        /* Touch-friendly enhancements */
+        @media (hover: none) and (pointer: coarse) {
+            .control-btn {
+                min-height: 48px;
+                padding: 16px 20px;
+                font-size: 1rem;
+            }
+            
+            .section-header {
+                min-height: 60px;
+                padding: 20px 25px;
+            }
+            
+            .back-link {
+                min-height: 44px;
+                padding: 12px 16px;
+            }
+            
+            /* Remove hover effects on touch devices */
+            .control-btn:hover {
+                transform: none;
+            }
+            
+            .back-link:hover {
+                background-color: rgba(6, 182, 212, 0.2);
+            }
+        }
+        
+        /* Landscape orientation adjustments */
+        @media (max-width: 768px) and (orientation: landscape) {
+            .hero-section { 
+                grid-template-columns: 1fr 1fr 1fr; 
+                gap: 10px; 
+            }
+            .hero-card { padding: 15px; }
+            .hero-value { font-size: 1.5rem; }
+            
+            .control-grid { 
+                grid-template-columns: 1fr 1fr; 
+                gap: 10px; 
+            }
+            
+            .perf-grid { 
+                grid-template-columns: repeat(3, 1fr); 
+                gap: 12px; 
+            }
+        }
+    </style>
+    <script>
+        async function startStrategy() {
+            const response = await fetch('/breakout-strategy/start', { method: 'POST' });
+            const result = await response.json();
+            if (result.success) {
+                alert('Strategy started successfully!');
+                window.location.reload();
+            } else {
+                alert('Failed to start strategy: ' + (result.error || 'Unknown error'));
+            }
+        }
+        
+        async function stopStrategy() {
+            const response = await fetch('/breakout-strategy/stop', { method: 'POST' });
+            const result = await response.json();
+            if (result.success) {
+                alert('Strategy stopped successfully!');
+                window.location.reload();
+            } else {
+                alert('Failed to stop strategy: ' + (result.error || 'Unknown error'));
+            }
+        }
+        
+        async function manualExit() {
+            if (!confirm('Are you sure you want to manually exit the current position?')) return;
+            const response = await fetch('/execution/manual-exit', { method: 'POST' });
+            const result = await response.json();
+            if (result.success) {
+                alert('Position exited successfully!');
+                window.location.reload();
+            } else {
+                alert('Failed to exit position: ' + (result.error || 'Unknown error'));
+            }
+        }
+        
+        async function manualStopAll() {
+            if (!confirm('⚠️ WARNING: This will stop all active trades and positions. Are you sure?')) return;
+            
+            try {
+                // First stop the strategy
+                const strategyResponse = await fetch('/breakout-strategy/stop', { method: 'POST' });
+                const strategyResult = await strategyResponse.json();
+                
+                // Then exit any active positions
+                const exitResponse = await fetch('/execution/manual-exit', { method: 'POST' });
+                const exitResult = await exitResponse.json();
+                
+                if (strategyResult.success || exitResult.success) {
+                    alert('✅ All trades stopped successfully!');
+                    window.location.reload();
+                } else {
+                    alert('❌ Failed to stop all trades. Check individual operations.');
+                }
+            } catch (error) {
+                alert('Error stopping trades: ' + error.message);
+            }
+        }
+        
+        async function toggleTradingMode() {
+            const button = event.target;
+            const originalText = button.textContent;
+            
+            button.textContent = 'Updating...';
+            button.disabled = true;
+            
+            try {
+                // First get current config
+                const statusResponse = await fetch('/execution/status');
+                const statusData = await statusResponse.json();
+                const currentMode = statusData.trading_config?.paperTradingMode;
+                const newMode = !currentMode;
+                
+                // Update config
+                const updateResponse = await fetch('/execution/config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        paperTradingMode: newMode
+                    })
+                });
+                
+                const result = await updateResponse.json();
+                
+                if (result.success) {
+                    // Show confirmation with clear mode indication
+                    const modeName = newMode ? 'Paper Trading (Safe Mode)' : 'Live Trading (Real Money)';
+                    const warning = newMode ? '' : '\\n\\n⚠️ WARNING: Live trading uses real money!';
+                    alert('Trading mode switched to: ' + modeName + warning);
+                    
+                    // Reload page to reflect changes
+                    window.location.reload();
+                } else {
+                    button.textContent = '❌ Failed';
+                    alert('Failed to update trading mode: ' + result.message);
+                }
+            } catch (error) {
+                button.textContent = '❌ Error';
+                alert('Error updating trading mode: ' + error.message);
+            }
+            
+            setTimeout(() => {
+                button.disabled = false;
+                if (button.textContent.includes('❌')) {
+                    button.textContent = originalText;
+                }
+            }, 3000);
+        }
+        
+        // Load instrument information when breakout signal exists
+        async function loadInstrumentInfo() {
+            const instrumentInfo = document.getElementById('instrumentInfo');
+            const instrumentLTP = document.getElementById('instrumentLTP');
+            const instrumentDetails = document.getElementById('instrumentDetails');
+            const instrumentPremiumDetails = document.getElementById('instrumentPremiumDetails');
+            
+            if (!instrumentInfo) return;
+            
+            try {
+                const statusResponse = await fetch('/breakout-strategy/status');
+                const statusData = await statusResponse.json();
+                
+                let instrument = null;
+                
+                // Check if we have a selected instrument
+                if (statusData.selected_instrument) {
+                    instrument = statusData.selected_instrument;
+                } else if (statusData.latest_breakout_signal) {
+                    // Auto-select instrument based on breakout signal
+                    const signal = statusData.latest_breakout_signal;
+                    const direction = signal.type === 'long_breakout' ? 'LONG' : 'SHORT';
+                    
+                    const instrumentResponse = await fetch('/execution/select-instrument', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            direction: direction,
+                            niftyPrice: signal.price
+                        })
+                    });
+                    
+                    if (instrumentResponse.ok) {
+                        const instrumentData = await instrumentResponse.json();
+                        instrument = instrumentData.instrument;
+                    }
+                }
+                
+                if (instrument) {
+                    instrumentInfo.innerHTML = instrument.tradingsymbol;
+                    instrumentDetails.innerHTML = \`
+                        <div><strong>Strike:</strong> ₹\${instrument.strike}</div>
+                        <div><strong>Expiry:</strong> \${new Date(instrument.expiry).toLocaleDateString()}</div>
+                        <div><strong>Type:</strong> \${instrument.instrument_type}</div>
+                        <div><strong>Lot Size:</strong> \${instrument.lot_size}</div>
+                    \`;
+                    
+                    // Fetch LTP for the instrument
+                    const ltpResponse = await fetch(\`/execution/ltp/\${instrument.instrument_token}\`);
+                    if (ltpResponse.ok) {
+                        const ltpData = await ltpResponse.json();
+                        const ltp = ltpData[instrument.instrument_token];
+                        if (ltp) {
+                            instrumentLTP.innerHTML = '₹' + ltp.last_price.toFixed(2);
+                            instrumentPremiumDetails.innerHTML = \`
+                                <div><strong>Bid:</strong> ₹\${ltp.depth.buy[0]?.price.toFixed(2) || 'N/A'}</div>
+                                <div><strong>Ask:</strong> ₹\${ltp.depth.sell[0]?.price.toFixed(2) || 'N/A'}</div>
+                                <div><strong>Volume:</strong> \${ltp.volume.toLocaleString()}</div>
+                            \`;
+                        }
+                    }
+                } else {
+                    instrumentInfo.innerHTML = 'No instrument selected';
+                    instrumentDetails.innerHTML = 'Waiting for breakout signal...';
+                }
+                
+            } catch (error) {
+                console.error('Error loading instrument info:', error);
+                instrumentInfo.innerHTML = 'Error loading instrument';
+                instrumentDetails.innerHTML = 'Failed to fetch instrument data';
+            }
+        }
+        
+        // Load instrument info when page loads (if breakout signal exists)
+        document.addEventListener('DOMContentLoaded', loadInstrumentInfo);
+        
+        // Auto refresh every 10 seconds
+        setInterval(() => window.location.reload(), 10000);
+    </script>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Main Dashboard</a>
+        
+        <div class="header">
+            <h1>📈 NIFTY Breakout Strategy (Modern UI)</h1>
+            <div class="subtitle">Professional Breakout-Retracement • 15,15 Pivot Detection • Live Updates</div>
+        </div>
+
+        ${!isAuthenticated ? `
+        <div class="dashboard-section">
+            <div class="section-content">
+                <div style="text-align: center; padding: 40px;">
+                    <h2 style="color: #ef4444; margin-bottom: 20px;">⚠️ Authentication Required</h2>
+                    <p style="color: #94a3b8; margin-bottom: 30px;">Please authenticate first to access the trading dashboard.</p>
+                    <a href="/auth/login" class="control-btn primary">🔐 Login to Continue</a>
+                </div>
+            </div>
+        </div>
+        ` : `
+        
+        <!-- 1. SYSTEM STATUS & AUTHENTICATION -->
+        <div class="hero-section">
+            <div class="hero-card ${strategyActive ? 'status-active' : 'status-inactive'}">
+                <div class="hero-label">🔐 Authentication & System</div>
+                <div class="hero-value">${strategyActive ? 'ACTIVE' : 'INACTIVE'}</div>
+                <div class="hero-subtitle">Market: ${isMarketHours ? 'OPEN' : 'CLOSED'} • Streaming: ${priceStreamingActive ? 'ON' : 'OFF'}</div>
+            </div>
+            
+            <div class="hero-card">
+                <div class="hero-label">💰 Capital & Mode</div>
+                <div class="hero-value" style="color: ${tradingConfig?.paperTradingMode ? '#f59e0b' : '#22c55e'}">₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}</div>
+                <div class="hero-subtitle">${tradingConfig?.paperTradingMode ? '📝 Paper Trading (Safe)' : '🚀 Live Trading (Real Money)'}</div>
+            </div>
+            
+            <div class="hero-card">
+                <div class="hero-label">📊 Trade State</div>
+                <div class="hero-value">${tradeStateInfo.tradeState.replace(/_/g, ' ').toUpperCase()}</div>
+                <div class="hero-subtitle">Position: ${activePosition ? 'OPEN' : 'NONE'} • P&L: ₹${activePosition?.pnl ? activePosition.pnl.toLocaleString() : '0'}</div>
+            </div>
+            
+            <div class="hero-card">
+                <div class="hero-label">📈 NIFTY Live Price</div>
+                <div class="hero-value">${livePrice ? '₹' + livePrice.last_price.toFixed(2) : 'Loading...'}</div>
+                <div class="hero-subtitle">${currentContract ? currentContract.tradingsymbol : 'Contract Loading...'}</div>
+            </div>
+        </div>
+        
+        <!-- 2. STRATEGY CONTROL PANEL -->
+        <div class="control-panel">
+            <h3>🎛️ Strategy Control & Initialization</h3>
+            <div class="control-grid">
+                ${!strategyActive ? 
+                    '<button onclick="startStrategy()" class="control-btn primary">▶️ Start Strategy & Initialize</button>' :
+                    '<button onclick="stopStrategy()" class="control-btn danger">⏹️ Stop Strategy</button>'
+                }
+                ${activePosition ? 
+                    '<button onclick="manualExit()" class="control-btn warning">🚪 Manual Exit (₹' + (activePosition.pnl ? activePosition.pnl.toLocaleString() : '0') + ')</button>' : ''
+                }
+                <button onclick="manualStopAll()" class="control-btn danger">🛑 Emergency Stop All</button>
+                <button onclick="toggleTradingMode()" class="control-btn ${tradingConfig?.paperTradingMode ? 'warning' : 'primary'}">${tradingConfig?.paperTradingMode ? '🚀 Go Live Trading' : '📝 Go Paper Mode'}</button>
+                <a href="/breakout-strategy/status" class="control-btn secondary">📊 API Status</a>
+                <a href="/breakout-strategy" class="control-btn secondary">🔄 Classic Dashboard</a>
+            </div>
+        </div>
+        
+
+        
+        <!-- 3. MARKET DATA & CONTRACTS -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">📊 Market Data & Contracts</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>📈 Current Contract</h4>
+                        <div class="info-value">${currentContract ? currentContract.tradingsymbol : 'Loading...'}</div>
+                        <div class="info-subtitle">
+                            ${currentContract ? 'Expiry: ' + new Date(currentContract.expiry).toLocaleDateString() : 'Waiting for data...'}
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <h4>💹 Live Price Data</h4>
+                        <div class="info-value">₹${livePrice ? livePrice.last_price.toFixed(2) : '0.00'}</div>
+                        <div class="info-subtitle">
+                            Vol: ${livePrice ? livePrice.volume.toLocaleString() : '0'} | 
+                            OI: ${livePrice ? (livePrice.oi || 0).toLocaleString() : '0'}
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <h4>📊 Volume Analysis</h4>
+                        <div class="info-value">${typeof volumeSMA50 === 'number' ? volumeSMA50.toFixed(0) : 'N/A'}</div>
+                        <div class="info-subtitle">Volume SMA (50) • ${oneMinuteCandleCount}/50 candles</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>⏰ Market Status</h4>
+                        <div class="info-value">
+                            <span class="status-indicator ${isMarketHours ? 'active' : 'inactive'}">
+                                ${isMarketHours ? 'OPEN' : 'CLOSED'}
+                            </span>
+                        </div>
+                        <div class="info-subtitle">${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })} IST</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 4. BREAKOUT DETECTION & SIGNALS -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">🎯 Breakout Detection & Signal Generation</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>📈 Pivot High</h4>
+                        <div class="info-value">${latestPivots.pivotHigh ? '₹' + latestPivots.pivotHigh.price.toFixed(2) : 'Not Detected'}</div>
+                        <div class="info-subtitle">${latestPivots.pivotHigh ? new Date(latestPivots.pivotHigh.timestamp).toLocaleString() : ''}</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>📉 Pivot Low</h4>
+                        <div class="info-value">${latestPivots.pivotLow ? '₹' + latestPivots.pivotLow.price.toFixed(2) : 'Not Detected'}</div>
+                        <div class="info-subtitle">${latestPivots.pivotLow ? new Date(latestPivots.pivotLow.timestamp).toLocaleString() : ''}</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>🎯 Breakout Detection</h4>
+                        <div class="info-value">
+                            <span class="status-indicator ${breakoutDetectionActive ? 'active' : 'inactive'}">
+                                ${breakoutDetectionActive ? 'ACTIVE' : 'INACTIVE'}
+                            </span>
+                        </div>
+                        <div class="info-subtitle">${oneMinuteCandleCount} minute candles loaded</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>📊 Signal Status</h4>
+                        <div class="info-value">
+                            <span class="status-indicator ${latestBreakoutSignal ? 'active' : 'inactive'}">
+                                ${latestBreakoutSignal ? 'SIGNAL DETECTED' : 'WAITING'}
+                            </span>
+                        </div>
+                        <div class="info-subtitle">15,15 Pivot Algorithm Active</div>
+                    </div>
+                </div>
+                
+                ${latestBreakoutSignal ? `
+                <div style="margin-top: 20px;">
+                    <h4 style="color: #ffffff; margin-bottom: 15px;">🚨 Latest Breakout Signal</h4>
+                    <div class="info-card" style="border-left: 4px solid ${latestBreakoutSignal.type === 'long_breakout' ? '#22c55e' : '#ef4444'};">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <div>
+                                <div style="font-weight: 600; color: ${latestBreakoutSignal.type === 'long_breakout' ? '#22c55e' : '#ef4444'}; font-size: 1.1rem; margin-bottom: 8px;">
+                                    ${latestBreakoutSignal.type === 'long_breakout' ? '🟢 LONG BREAKOUT' : '🔴 SHORT BREAKOUT'}
+                                </div>
+                                <div style="color: #94a3b8; font-size: 0.9rem;">
+                                    <div><strong>Signal Price:</strong> ₹${latestBreakoutSignal.price.toFixed(2)}</div>
+                                    <div><strong>Pivot Price:</strong> ₹${latestBreakoutSignal.pivotPrice.toFixed(2)}</div>
+                                    <div><strong>Volume:</strong> ${latestBreakoutSignal.volume.toLocaleString()}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="color: #94a3b8; font-size: 0.9rem;">
+                                    <div><strong>Candle OHLC:</strong></div>
+                                    <div>Open: ${latestBreakoutSignal.candleOpen.toFixed(2)}</div>
+                                    <div>Close: ${latestBreakoutSignal.candleClose.toFixed(2)}</div>
+                                    <div><strong>Vol Ratio:</strong> ${latestBreakoutSignal.volumeRatio.toFixed(2)}x</div>
+                                    <div><strong>Time:</strong> ${new Date(latestBreakoutSignal.timestamp).toLocaleTimeString()}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+        </div>
+        
+        <!-- 6. TRADE EXECUTION & MONITORING -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">⚙️ Trade Execution & Risk Management</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>💼 Trading Mode</h4>
+                        <div class="info-value">
+                            <span class="status-indicator ${tradingConfig?.paperTradingMode ? 'warning' : 'active'}">
+                                ${tradingConfig?.paperTradingMode ? '📝 PAPER TRADING' : '🚀 LIVE TRADING'}
+                            </span>
+                        </div>
+                        <div class="info-subtitle">
+                            ${tradingConfig?.paperTradingMode ? 
+                                'Simulated trades • Capital not affected • Safe for testing' : 
+                                'Real money trading • All trades executed live • Use with caution'
+                            }
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>💰 Capital & Risk</h4>
+                        <div class="info-value">₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Risk per Trade:</strong> ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}%</div>
+                            <div><strong>Max Risk:</strong> ₹${currentCapital && tradingConfig ? (currentCapital * tradingConfig.riskPerTrade).toLocaleString() : 'Loading...'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>📊 Execution Stats</h4>
+                        <div class="info-value">${executionStatus?.totalTrades || 0}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Total Trades:</strong> ${executionStatus?.totalTrades || 0}</div>
+                            <div><strong>Max Retries:</strong> ${tradingConfig?.maxRetries || 3}</div>
+                            <div><strong>Order Timeout:</strong> ${tradingConfig?.orderTimeout || 5000}ms</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🔧 Configuration</h4>
+                        <div class="info-value">${tradingConfig?.niftyLotSize || 75}</div>
+                        <div class="info-subtitle">
+                            <div><strong>NIFTY Lot Size:</strong> ${tradingConfig?.niftyLotSize || 75}</div>
+                            <div><strong>Data File:</strong> trading-data.json</div>
+                            <div><strong>Log Level:</strong> INFO</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Current Futures Contract & OHLC -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">📈 Current Futures Contract</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>📝 Contract Details</h4>
+                        <div class="info-value">${currentContract ? currentContract.tradingsymbol : 'Loading...'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Exchange:</strong> ${currentContract ? currentContract.exchange : 'NFO'}</div>
+                            <div><strong>Lot Size:</strong> ${currentContract ? currentContract.lot_size : '75'}</div>
+                            <div><strong>Expiry:</strong> ${currentContract ? new Date(currentContract.expiry).toLocaleDateString() : 'Loading...'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>💹 OHLC Data</h4>
+                        <div class="info-value">₹${livePrice ? livePrice.last_price.toFixed(2) : '--'}</div>
+                        <div class="info-subtitle">
+                            ${livePrice ? `
+                                <div><strong>Open:</strong> ₹${livePrice.ohlc.open.toFixed(2)}</div>
+                                <div><strong>High:</strong> ₹${livePrice.ohlc.high.toFixed(2)}</div>
+                                <div><strong>Low:</strong> ₹${livePrice.ohlc.low.toFixed(2)}</div>
+                                <div><strong>Close:</strong> ₹${livePrice.ohlc.close.toFixed(2)}</div>
+                            ` : 'Waiting for price data...'}
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>📊 Volume & Activity</h4>
+                        <div class="info-value">${livePrice ? livePrice.volume.toLocaleString() : '--'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Volume:</strong> ${livePrice ? livePrice.volume.toLocaleString() : '--'}</div>
+                            <div><strong>Change:</strong> ${livePrice ? ((livePrice.last_price - livePrice.ohlc.close) >= 0 ? '+' : '') + (livePrice.last_price - livePrice.ohlc.close).toFixed(2) : 'N/A'}</div>
+                            <div><strong>Status:</strong> ${priceStreamingActive ? '🟢 Live' : '🔴 Inactive'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>⏰ Market Status</h4>
+                        <div class="info-value">
+                            <span class="status-indicator ${isMarketHours ? 'active' : 'inactive'}">
+                                ${isMarketHours ? 'OPEN' : 'CLOSED'}
+                            </span>
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Session:</strong> ${isMarketHours ? 'Active Trading' : 'After Hours'}</div>
+                            <div><strong>Last Update:</strong> ${livePrice ? new Date().toLocaleTimeString() : 'N/A'}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Option Instrument Selection -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">🎯 Selected Option Instrument</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>📝 Instrument Details</h4>
+                        <div class="info-value" id="instrumentInfo">Loading instrument information...</div>
+                        <div class="info-subtitle" id="instrumentDetails">Selecting optimal strike price...</div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>💰 Live Premium</h4>
+                        <div class="info-value" id="instrumentLTP">Loading...</div>
+                        <div class="info-subtitle" id="instrumentPremiumDetails">Fetching option price...</div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🎯 Strike Selection</h4>
+                        <div class="info-value">${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'CALL' : 'PUT') : 'Not selected'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Direction:</strong> ${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'LONG' : 'SHORT') : 'Waiting for signal'}</div>
+                            <div><strong>NIFTY Price:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.price.toFixed(2) : '--'}</div>
+                            <div><strong>Signal Time:</strong> ${latestBreakoutSignal ? new Date(latestBreakoutSignal.timestamp).toLocaleTimeString() : '--'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>⚡ Auto Selection</h4>
+                        <div class="info-value">
+                            <span class="status-indicator active">ENABLED</span>
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Algorithm:</strong> ATM + Delta optimization</div>
+                            <div><strong>Status:</strong> Instrument selected automatically</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Active Position Details -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">💼 Active Position Details</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>📝 Position Info</h4>
+                        <div class="info-value">${activePosition?.instrument ? activePosition.instrument.tradingsymbol : 'No active position'}</div>
+                        <div class="info-subtitle">
+                            ${activePosition?.instrument ? `
+                                <div><strong>Strike:</strong> ₹${activePosition.instrument.strike}</div>
+                                <div><strong>Expiry:</strong> ${new Date(activePosition.instrument.expiry).toLocaleDateString()}</div>
+                                <div><strong>Type:</strong> ${activePosition.instrument.instrument_type}</div>
+                            ` : 'Waiting for trade execution'}
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>💹 Trade Details</h4>
+                        <div class="info-value">${activePosition?.direction || 'No direction'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Quantity:</strong> ${activePosition?.quantity || '--'}</div>
+                            <div><strong>Entry Price:</strong> ₹${activePosition?.entryPrice || '--'}</div>
+                            <div><strong>Order ID:</strong> ${activePosition?.entryOrderId || '--'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>📊 P&L Analysis</h4>
+                        <div class="info-value ${activePosition?.pnl && activePosition.pnl >= 0 ? 'positive' : 'negative'}">
+                            ₹${activePosition?.pnl !== undefined ? activePosition.pnl.toLocaleString() : '0'}
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Exit Price:</strong> ₹${activePosition?.exitPrice || 'Position Open'}</div>
+                            <div><strong>Exit Reason:</strong> ${activePosition?.exitReason || 'N/A'}</div>
+                            <div><strong>Status:</strong> ${activePosition?.exitPrice ? 'CLOSED' : 'OPEN'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🎯 Risk Management</h4>
+                        <div class="info-value">
+                            ${tradeStateInfo.tradeSetupRequest ? `₹${tradeStateInfo.tradeSetupRequest.stopLossLevel}` : 'N/A'}
+                        </div>
+                        <div class="info-subtitle">
+                            ${tradeStateInfo.tradeSetupRequest ? `
+                                <div><strong>Entry:</strong> ₹${tradeStateInfo.tradeSetupRequest.entryLevel}</div>
+                                <div><strong>Stop Loss:</strong> ₹${tradeStateInfo.tradeSetupRequest.stopLossLevel}</div>
+                                <div><strong>Target:</strong> ₹${tradeStateInfo.tradeSetupRequest.targetLevel}</div>
+                            ` : 'No active trade setup'}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Trade Information -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">💼 Trade Information</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <!-- Trading Mode -->
+                    <div class="info-card">
+                        <h4>⚙️ Trading Mode</h4>
+                        <div class="info-value">
+                            <span class="status-indicator ${tradingConfig?.paperTradingMode ? 'warning' : 'active'}">
+                                ${tradingConfig?.paperTradingMode ? 'PAPER' : 'LIVE'}
+                            </span>
+                        </div>
+                        <div class="info-subtitle">
+                            ${tradingConfig?.paperTradingMode ? 'Safe testing mode' : 'Real money trading'}
+                        </div>
+                    </div>
+                    
+                    <!-- Capital Information -->
+                    <div class="info-card">
+                        <h4>💰 Capital</h4>
+                        <div class="info-value">₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}</div>
+                        <div class="info-subtitle">
+                            Risk: ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}% per trade
+                        </div>
+                    </div>
+                    
+                    <!-- Active Position -->
+                    <div class="info-card">
+                        <h4>📍 Position Status</h4>
+                        <div class="info-value">
+                            ${activePosition ? 'OPEN' : 'NONE'}
+                        </div>
+                        <div class="info-subtitle">
+                            ${activePosition?.instrument?.tradingsymbol || 'No active trades'}
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>📊 Current Trade</h4>
+                        <div class="info-value" style="font-size: 1.2rem;">
+                            ${activePosition ? `${activePosition.direction} • ₹${activePosition.entryPrice}` : 'No active trade'}
+                        </div>
+                        <div class="info-subtitle">
+                            ${activePosition ? `Qty: ${activePosition.quantity} • P&L: ₹${activePosition.pnl ? activePosition.pnl.toLocaleString() : '0'}` : 'Waiting for entry signal'}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Candle Analysis & Market Data -->
+        
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">📊 Candle Analysis & Market Insights</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>🕯️ 1-Minute Candles</h4>
+                        <div class="info-value">${oneMinuteCandleCount}/50</div>
+                        <div class="info-subtitle">
+                            <div><strong>Status:</strong> ${oneMinuteCandleCount >= 50 ? '✅ Ready' : '⏳ Building'}</div>
+                            <div><strong>Volume SMA:</strong> ${typeof volumeSMA50 === 'number' ? volumeSMA50.toFixed(0) : 'Calculating...'}</div>
+                            <div><strong>Data Quality:</strong> ${oneMinuteCandleCount >= 30 ? 'Good' : 'Partial'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>📈 5-Minute Pivots</h4>
+                        <div class="info-value">${(latestPivots.pivotHigh && latestPivots.pivotLow) ? '✅ Active' : '⏳ Scanning'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Algorithm:</strong> 15,15 lookback</div>
+                            <div><strong>Last Update:</strong> ${latestPivots.pivotHigh ? new Date(latestPivots.pivotHigh.timestamp).toLocaleTimeString() : 'N/A'}</div>
+                            <div><strong>Next Check:</strong> ${strategyActive ? 'Every 5 minutes' : 'Strategy stopped'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🎯 Breakout Engine</h4>
+                        <div class="info-value">
+                            <span class="status-indicator ${breakoutDetectionActive ? 'active' : 'inactive'}">
+                                ${breakoutDetectionActive ? 'ACTIVE' : 'INACTIVE'}
+                            </span>
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Monitoring:</strong> ${breakoutDetectionActive ? 'Live breakouts' : 'Engine stopped'}</div>
+                            <div><strong>Volume Filter:</strong> ${volumeSMA50 ? 'SMA-50 active' : 'Building baseline'}</div>
+                            <div><strong>Sensitivity:</strong> Professional grade</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>⚡ Current Signals</h4>
+                        <div class="info-value">${latestBreakoutSignal ? '🚨 SIGNAL' : '👁️ WATCHING'}</div>
+                        <div class="info-subtitle">
+                            ${latestBreakoutSignal ? `
+                                <div><strong>Type:</strong> ${latestBreakoutSignal.type.replace('_', ' ').toUpperCase()}</div>
+                                <div><strong>Price:</strong> ₹${latestBreakoutSignal.price.toFixed(2)}</div>
+                                <div><strong>Volume:</strong> ${latestBreakoutSignal.volumeRatio.toFixed(2)}x above SMA</div>
+                            ` : `
+                                <div><strong>Status:</strong> No active signals</div>
+                                <div><strong>Waiting:</strong> For pivot breakout</div>
+                                <div><strong>Condition:</strong> Price + Volume confirmation</div>
+                            `}
+                        </div>
+                    </div>
+                </div>
+                
+                ${latestBreakoutSignal ? `
+                <div style="margin-top: 20px;">
+                    <h4 style="color: #ffffff; margin-bottom: 15px;">🔥 Latest Breakout Signal Details</h4>
+                    <div class="info-card" style="border-left: 4px solid ${latestBreakoutSignal.type === 'long_breakout' ? '#22c55e' : '#ef4444'};">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
+                            <div>
+                                <div style="font-weight: 600; color: ${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? '#22c55e' : '#ef4444') : '#64748b'}; font-size: 1.1rem; margin-bottom: 8px;">
+                                    ${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? '🟢 LONG BREAKOUT' : '🔴 SHORT BREAKOUT') : '⏳ WAITING FOR SIGNAL'}
+                                </div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Signal Price:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.price.toFixed(2) : '--'}</div>
+                                    <div><strong>Pivot Level:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.pivotPrice.toFixed(2) : '--'}</div>
+                                    <div><strong>Breakout Gap:</strong> ${latestBreakoutSignal ? '₹' + Math.abs(latestBreakoutSignal.price - latestBreakoutSignal.pivotPrice).toFixed(2) : '--'}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #06b6d4; margin-bottom: 8px;">📊 Candle Data</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Open:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.candleOpen.toFixed(2) : '--'}</div>
+                                    <div><strong>Close:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.candleClose.toFixed(2) : '--'}</div>
+                                    <div><strong>Volume:</strong> ${latestBreakoutSignal ? latestBreakoutSignal.volume.toLocaleString() : '--'}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">⚡ Confirmation</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Volume Ratio:</strong> ${latestBreakoutSignal ? latestBreakoutSignal.volumeRatio.toFixed(2) + 'x' : '--'}</div>
+                                    <div><strong>Signal Time:</strong> ${latestBreakoutSignal ? new Date(latestBreakoutSignal.timestamp).toLocaleTimeString() : '--'}</div>
+                                    <div><strong>Direction:</strong> ${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'BULLISH' : 'BEARISH') : '--'}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+        </div>
+        
+        <!-- Live Marking Candle Tracking -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">🕯️ Live Marking Candle & 5-Min Updates</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>📊 Marking Candle Status</h4>
+                        <div class="info-value">
+                            <span class="status-indicator ${markingCandleState?.isActive ? 'warning' : 'inactive'}">
+                                ${markingCandleState?.isActive ? '🟡 TRACKING' : '⚪ INACTIVE'}
+                            </span>
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Search Phase:</strong> ${markingCandleState?.searchPhase?.toUpperCase() || 'Not active'}</div>
+                            <div><strong>Update Count:</strong> ${markingCandleState?.currentMarkingCandle?.updateCount || 0}/3</div>
+                            <div><strong>Status:</strong> ${markingCandleState?.isActive ? 'Monitoring 5-min candles' : 'Waiting for breakout'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🎯 Current Entry/Stop Levels</h4>
+                        <div class="info-value">
+                            ${markingCandleState?.currentMarkingCandle ? '✅ SET' : '⏳ PENDING'}
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Entry Price:</strong> ₹${markingCandleState?.currentMarkingCandle?.entryPrice?.toFixed(2) || '--'}</div>
+                            <div><strong>Stop Loss:</strong> ₹${markingCandleState?.currentMarkingCandle?.stopLoss?.toFixed(2) || '--'}</div>
+                            <div><strong>Risk:</strong> ${markingCandleState?.currentMarkingCandle ? '₹' + Math.abs(markingCandleState.currentMarkingCandle.entryPrice - markingCandleState.currentMarkingCandle.stopLoss).toFixed(2) : '--'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🕯️ Live Candle Data</h4>
+                        <div class="info-value">
+                            ${markingCandleState?.currentMarkingCandle ? 'UPDATING' : 'NO DATA'}
+                        </div>
+                        <div class="info-subtitle">
+                            ${markingCandleState?.currentMarkingCandle ? `
+                                <div><strong>Open:</strong> ₹${markingCandleState.currentMarkingCandle.candle.open.toFixed(2)}</div>
+                                <div><strong>High:</strong> ₹${markingCandleState.currentMarkingCandle.candle.high.toFixed(2)}</div>
+                                <div><strong>Low:</strong> ₹${markingCandleState.currentMarkingCandle.candle.low.toFixed(2)}</div>
+                                <div><strong>Close:</strong> ₹${markingCandleState.currentMarkingCandle.candle.close.toFixed(2)}</div>
+                            ` : `
+                                <div><strong>Open:</strong> --</div>
+                                <div><strong>High:</strong> --</div>
+                                <div><strong>Low:</strong> --</div>
+                                <div><strong>Close:</strong> --</div>
+                            `}
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>⏰ Timing & Progress</h4>
+                        <div class="info-value">
+                            ${markingCandleState?.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))}/18` : '0/18'}
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Time Limit:</strong> ${markingCandleState?.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))} of 18 minutes` : 'Not started'}</div>
+                            <div><strong>Candle Time:</strong> ${markingCandleState?.currentMarkingCandle ? new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleTimeString() : '--'}</div>
+                            <div><strong>Breakout Type:</strong> ${markingCandleState?.breakoutReference ? (markingCandleState.breakoutReference.type === 'long_breakout' ? '📈 LONG' : '📉 SHORT') : '--'}</div>
+                        </div>
+                    </div>
+                </div>
+                
+                ${markingCandleState?.isActive && markingCandleState.searchPhase === 'initial' ? `
+                <div style="margin-top: 20px;">
+                    <h4 style="color: #1e293b; margin-bottom: 15px;">🔍 Initial Search Phase</h4>
+                    <div class="info-card" style="border-left: 4px solid #f59e0b;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                            <div>
+                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">📊 Progress</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Bars Processed:</strong> ${markingCandleState.barsProcessedSinceBreakout || 0}/5</div>
+                                    <div><strong>Status:</strong> Looking for opposite direction candle</div>
+                                    <div><strong>Phase:</strong> ${markingCandleState.searchPhase.toUpperCase()}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #06b6d4; margin-bottom: 8px;">🎯 Criteria</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Direction:</strong> ${markingCandleState.breakoutReference ? (markingCandleState.breakoutReference.type === 'long_breakout' ? 'Looking for RED candle' : 'Looking for GREEN candle') : 'Unknown'}</div>
+                                    <div><strong>Requirement:</strong> Opposite color candle</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+                
+                ${markingCandleState?.currentMarkingCandle ? `
+                <div style="margin-top: 20px;">
+                    <h4 style="color: #1e293b; margin-bottom: 15px;">📈 Active Marking Candle Details</h4>
+                    <div class="info-card" style="border-left: 4px solid #22c55e; background: rgba(34, 197, 94, 0.05);">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
+                            <div>
+                                <div style="font-weight: 600; color: #22c55e; margin-bottom: 8px;">💰 Trade Levels</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Entry:</strong> ₹${markingCandleState.currentMarkingCandle.entryPrice.toFixed(2)}</div>
+                                    <div><strong>Stop Loss:</strong> ₹${markingCandleState.currentMarkingCandle.stopLoss.toFixed(2)}</div>
+                                    <div><strong>Risk:</strong> ₹${Math.abs(markingCandleState.currentMarkingCandle.entryPrice - markingCandleState.currentMarkingCandle.stopLoss).toFixed(2)}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #06b6d4; margin-bottom: 8px;">🕯️ OHLC Data</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>O:</strong> ₹${markingCandleState.currentMarkingCandle.candle.open.toFixed(2)}</div>
+                                    <div><strong>H:</strong> ₹${markingCandleState.currentMarkingCandle.candle.high.toFixed(2)}</div>
+                                    <div><strong>L:</strong> ₹${markingCandleState.currentMarkingCandle.candle.low.toFixed(2)}</div>
+                                    <div><strong>C:</strong> ₹${markingCandleState.currentMarkingCandle.candle.close.toFixed(2)}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">⚡ Updates</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Count:</strong> ${markingCandleState.currentMarkingCandle.updateCount}/3</div>
+                                    <div><strong>Last Update:</strong> ${new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleTimeString()}</div>
+                                    <div><strong>Next:</strong> Every 5 minutes</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+        </div>
+        
+        <!-- Latest 1-Minute Candle Data -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">📊 Latest 1-Minute Candle & Volume Analysis</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>🕯️ Last 1-Min Candle</h4>
+                        <div class="info-value">
+                            ${latestOneMinuteCandle ? 'LIVE' : 'NO DATA'}
+                        </div>
+                        <div class="info-subtitle">
+                            ${latestOneMinuteCandle ? `
+                                <div><strong>O:</strong> ₹${latestOneMinuteCandle.open?.toFixed(2) || '--'}</div>
+                                <div><strong>H:</strong> ₹${latestOneMinuteCandle.high?.toFixed(2) || '--'}</div>
+                                <div><strong>L:</strong> ₹${latestOneMinuteCandle.low?.toFixed(2) || '--'}</div>
+                                <div><strong>C:</strong> ₹${latestOneMinuteCandle.close?.toFixed(2) || '--'}</div>
+                            ` : `
+                                <div><strong>Status:</strong> Building candle data</div>
+                                <div><strong>Progress:</strong> ${oneMinuteCandleCount}/50 candles</div>
+                            `}
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>📈 Volume Analysis</h4>
+                        <div class="info-value">
+                            ${latestOneMinuteCandle ? latestOneMinuteCandle.volume?.toLocaleString() || '--' : '--'}
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Volume:</strong> ${latestOneMinuteCandle ? latestOneMinuteCandle.volume?.toLocaleString() || '--' : '--'}</div>
+                            <div><strong>SMA-50:</strong> ${volumeSMA50 ? volumeSMA50.toFixed(0) : '--'}</div>
+                            <div><strong>Ratio:</strong> ${latestOneMinuteCandle && volumeSMA50 ? `${((latestOneMinuteCandle.volume / volumeSMA50) * 100).toFixed(0)}%` : '--'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>⏰ Timing Info</h4>
+                        <div class="info-value">
+                            ${latestOneMinuteCandle ? 'CURRENT' : 'BUILDING'}
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Last Update:</strong> ${latestOneMinuteCandle ? new Date(latestOneMinuteCandle.timestamp || Date.now()).toLocaleTimeString() : '--'}</div>
+                            <div><strong>Candles Ready:</strong> ${oneMinuteCandleCount}/50</div>
+                            <div><strong>Quality:</strong> ${oneMinuteCandleCount >= 50 ? 'Excellent' : oneMinuteCandleCount >= 30 ? 'Good' : 'Building'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🔍 Volume Signal</h4>
+                        <div class="info-value ${latestOneMinuteCandle && volumeSMA50 && latestOneMinuteCandle.volume > volumeSMA50 ? 'positive' : latestOneMinuteCandle && volumeSMA50 ? 'negative' : 'neutral'}">
+                            ${latestOneMinuteCandle && volumeSMA50 ? 
+                                (latestOneMinuteCandle.volume > volumeSMA50 ? '🟢 ABOVE' : '🔴 BELOW') : 
+                                '⚪ PENDING'
+                            }
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Signal:</strong> ${latestOneMinuteCandle && volumeSMA50 ? 
+                                (latestOneMinuteCandle.volume > volumeSMA50 ? 'High volume detected' : 'Normal volume') : 
+                                'Waiting for data'
+                            }</div>
+                            <div><strong>Multiplier:</strong> ${latestOneMinuteCandle && volumeSMA50 ? `${(latestOneMinuteCandle.volume / volumeSMA50).toFixed(2)}x` : '--'}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Entry/Exit Levels & Risk Management -->
+        
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">🎯 Entry/Exit Levels & Risk Management</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>🚪 Entry Level</h4>
+                        <div class="info-value">₹${tradeStateInfo.tradeSetupRequest?.entryLevel || '--'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Direction:</strong> ${tradeStateInfo.tradeSetupRequest?.direction || 'Not set'}</div>
+                            <div><strong>Status:</strong> ${tradeStateInfo.tradeState === 'in_trade' ? '✅ Executed' : tradeStateInfo.tradeSetupRequest ? '⏳ Pending' : '❌ No setup'}</div>
+                            <div><strong>Order Type:</strong> Market Order</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🛡️ Stop Loss</h4>
+                        <div class="info-value" style="color: #ef4444;">₹${tradeStateInfo.tradeSetupRequest?.stopLossLevel || '--'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Risk Amount:</strong> ₹${tradeStateInfo.tradeSetupRequest ? Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel).toFixed(2) : '--'}</div>
+                            <div><strong>Distance:</strong> ${tradeStateInfo.tradeSetupRequest ? (Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel) / tradeStateInfo.tradeSetupRequest.entryLevel * 100).toFixed(2) + '%' : '--'}</div>
+                            <div><strong>Protection:</strong> ${tradeStateInfo.tradeSetupRequest ? 'Automatic' : 'Not set'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🎯 Target Level</h4>
+                        <div class="info-value" style="color: #22c55e;">₹${tradeStateInfo.tradeSetupRequest?.targetLevel || '--'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Profit Potential:</strong> ₹${tradeStateInfo.tradeSetupRequest ? Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel).toFixed(2) : '--'}</div>
+                            <div><strong>Return:</strong> ${tradeStateInfo.tradeSetupRequest ? (Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel) / tradeStateInfo.tradeSetupRequest.entryLevel * 100).toFixed(2) + '%' : '--'}</div>
+                            <div><strong>Risk/Reward:</strong> ${tradeStateInfo.tradeSetupRequest ? '1:' + (Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel) / Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel)).toFixed(1) : '--'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>⚙️ Trade Setup</h4>
+                        <div class="info-value">${tradeStateInfo.tradeState.replace(/_/g, ' ').toUpperCase()}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Strategy:</strong> Breakout Retracement</div>
+                            <div><strong>Position Size:</strong> ${tradingConfig?.niftyLotSize || 75} units</div>
+                            <div><strong>Capital Risk:</strong> ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Recent Trade History -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">📜 Recent Trade History</div>
+            </div>
+            <div class="section-content">
+                ${tradeHistory.length > 0 ? `
+                    <div style="margin-bottom: 20px;">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                            <div class="info-card">
+                                <h4>📊 Total Trades</h4>
+                                <div class="info-value">${tradeHistory.length}</div>
+                                <div class="info-subtitle">${isPaperMode ? 'Paper trading' : 'Live trading'}</div>
+                            </div>
+                            <div class="info-card">
+                                <h4>✅ Completed</h4>
+                                <div class="info-value">${closedTrades.length}</div>
+                                <div class="info-subtitle">${tradeHistory.length - closedTrades.length} still open</div>
+                            </div>
+                            <div class="info-card">
+                                <h4>📈 Win Rate</h4>
+                                <div class="info-value ${winRate >= 50 ? 'positive' : 'negative'}">${winRate.toFixed(1)}%</div>
+                                <div class="info-subtitle">${winningTrades}W / ${losingTrades}L</div>
+                            </div>
+                            <div class="info-card">
+                                <h4>💰 Total P&L</h4>
+                                <div class="info-value ${totalPnL >= 0 ? 'positive' : 'negative'}">₹${totalPnL.toLocaleString()}</div>
+                                <div class="info-subtitle">${isPaperMode ? 'Simulated' : 'Real money'}</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="background: rgba(255,255,255,0.03); border-radius: 12px; padding: 20px;">
+                        <h4 style="color: #ffffff; margin-bottom: 15px;">🕒 Last 10 Trades</h4>
+                        <div style="display: grid; gap: 12px;">
+                            ${tradeHistory.slice(-10).reverse().map((trade, index) => `
+                                <div style="display: grid; grid-template-columns: 60px 1fr 120px 100px 100px 80px; gap: 15px; align-items: center; padding: 12px 15px; background: rgba(255,255,255,0.05); border-radius: 8px; border-left: 4px solid ${trade.pnl >= 0 ? '#22c55e' : '#ef4444'};">
+                                    <div style="text-align: center;">
+                                        <div style="font-size: 1.2rem;">${trade.pnl >= 0 ? '✅' : '❌'}</div>
+                                        <div style="font-size: 0.7rem; color: #94a3b8;">#${tradeHistory.length - index}</div>
+                                    </div>
+                                    <div>
+                                        <div style="font-weight: 600; color: #ffffff; font-size: 0.9rem;">${trade.instrument.tradingsymbol}</div>
+                                        <div style="color: #94a3b8; font-size: 0.8rem;">
+                                            ${trade.direction} • Strike: ₹${trade.instrument.strike} • Qty: ${trade.quantity}
+                                        </div>
+                                    </div>
+                                    <div style="text-align: center;">
+                                        <div style="font-weight: 600; color: #06b6d4; font-size: 0.9rem;">₹${trade.entryPrice}</div>
+                                        <div style="color: #94a3b8; font-size: 0.8rem;">Entry</div>
+                                    </div>
+                                    <div style="text-align: center;">
+                                        <div style="font-weight: 600; color: ${trade.exitPrice ? '#f59e0b' : '#64748b'}; font-size: 0.9rem;">
+                                            ${trade.exitPrice ? '₹' + trade.exitPrice : 'Open'}
+                                        </div>
+                                        <div style="color: #94a3b8; font-size: 0.8rem;">Exit</div>
+                                    </div>
+                                    <div style="text-align: center;">
+                                        <div style="font-weight: 700; color: ${trade.pnl >= 0 ? '#22c55e' : '#ef4444'}; font-size: 0.9rem;">
+                                            ${trade.pnl >= 0 ? '+' : ''}₹${trade.pnl.toLocaleString()}
+                                        </div>
+                                        <div style="color: #94a3b8; font-size: 0.8rem;">P&L</div>
+                                    </div>
+                                    <div style="text-align: center;">
+                                        <div style="font-size: 0.8rem; color: ${trade.status === 'CLOSED' ? '#22c55e' : '#f59e0b'};">
+                                            ${trade.status}
+                                        </div>
+                                        <div style="color: #94a3b8; font-size: 0.7rem;">
+                                            ${new Date(trade.timestamp).toLocaleDateString()}
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        
+                        <div style="margin-top: 20px; text-align: center;">
+                            <a href="/breakout-strategy/history" class="control-btn secondary" style="display: inline-block; padding: 10px 20px; text-decoration: none;">
+                                📊 View Complete Trade History
+                            </a>
+                        </div>
+                    </div>
+                ` : `
+                    <div style="text-align: center; padding: 40px 20px; color: #94a3b8;">
+                        <div style="font-size: 3rem; margin-bottom: 15px;">📭</div>
+                        <h3 style="color: #ffffff; margin-bottom: 10px;">No Trade History</h3>
+                        <p style="font-size: 0.9rem;">Start the strategy to begin generating trade history</p>
+                        <div style="margin-top: 20px;">
+                            ${!strategyActive ? `
+                                <button onclick="startStrategy()" class="control-btn primary" style="padding: 12px 24px;">
+                                    ▶️ Start Strategy
+                                </button>
+                            ` : `
+                                <div style="color: #06b6d4;">Strategy is active • Waiting for breakout signals</div>
+                            `}
+                        </div>
+                    </div>
+                `}
+            </div>
+        </div>
+        
+        `}
+        
+        <!-- 7. PERFORMANCE ANALYTICS & RESULTS -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">📈 Performance Analytics & Results</div>
+            </div>
+            <div class="section-content">
+                <div class="perf-grid">
+                    <div class="perf-card">
+                        <div class="perf-value ${totalPnL >= 0 ? 'positive' : 'negative'}">₹${totalPnL.toLocaleString()}</div>
+                        <div class="perf-label">Total P&L ${isPaperMode ? '(Paper)' : '(Live)'}</div>
+                    </div>
+                    <div class="perf-card">
+                        <div class="perf-value neutral">${relevantTrades.length}</div>
+                        <div class="perf-label">Total Trades</div>
+                    </div>
+                    <div class="perf-card">
+                        <div class="perf-value ${winRate >= 50 ? 'positive' : 'negative'}">${winRate.toFixed(1)}%</div>
+                        <div class="perf-label">Win Rate</div>
+                    </div>
+                    <div class="perf-card">
+                        <div class="perf-value ${profitFactor >= 1 ? 'positive' : 'negative'}">
+                            ${profitFactor > 0 ? profitFactor.toFixed(2) : 'N/A'}
+                        </div>
+                        <div class="perf-label">Profit Factor</div>
+                    </div>
+                    <div class="perf-card">
+                        <div class="perf-value positive">₹${avgWin.toLocaleString()}</div>
+                        <div class="perf-label">Avg Win</div>
+                    </div>
+                    <div class="perf-card">
+                        <div class="perf-value negative">₹${Math.abs(avgLoss).toLocaleString()}</div>
+                        <div class="perf-label">Avg Loss</div>
+                    </div>
+                    <div class="perf-card">
+                        <div class="perf-value ${totalPnL >= 0 ? 'positive' : 'negative'}">
+                            ₹${closedTrades.length > 0 ? (totalPnL / closedTrades.length).toFixed(0) : '0'}
+                        </div>
+                        <div class="perf-label">Avg P&L per Trade</div>
+                    </div>
+                    <div class="perf-card">
+                        <div class="perf-value neutral">
+                            ₹${closedTrades.length > 0 ? Math.max(...closedTrades.filter(t => t.pnl > 0).map(t => t.pnl), 0).toLocaleString() : '0'}
+                        </div>
+                        <div class="perf-label">Best Trade</div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 20px; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 12px;">
+                    <h4 style="color: #ffffff; margin-bottom: 15px;">📊 Strategy Performance Summary</h4>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                        <div>
+                            <div style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 8px;">Trading Mode</div>
+                            <div style="color: ${isPaperMode ? '#f59e0b' : '#22c55e'}; font-weight: 600;">
+                                ${isPaperMode ? '📝 Paper Trading (Safe Testing)' : '🚀 Live Trading (Real Money)'}
+                            </div>
+                        </div>
+                        <div>
+                            <div style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 8px;">Risk Management</div>
+                            <div style="color: #06b6d4; font-weight: 600;">
+                                ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}% per trade
+                            </div>
+                        </div>
+                        <div>
+                            <div style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 8px;">Strategy Type</div>
+                            <div style="color: #ffffff; font-weight: 600;">
+                                Breakout-Retracement (15,15 Pivots)
+                            </div>
+                        </div>
+                        <div>
+                            <div style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 8px;">Capital Utilization</div>
+                            <div style="color: #22c55e; font-weight: 600;">
+                                ₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer with refresh info -->
+        <div style="text-align: center; margin-top: 40px; padding: 20px; background: rgba(0,0,0,0.05); border-radius: 12px; border: 1px solid rgba(0,0,0,0.1);">
+            <div style="color: #64748b; font-size: 0.9rem;">
+                🔄 Dashboard updates every 10 seconds • 
+                💡 Strategy recalculates pivots every 5 minutes during market hours
+            </div>
+        </div>
+    </div>
+</body>
+</html>`;
+
+      res.send(modernHtmlResponse);
     });
 
     // Debug endpoint to test different quote formats

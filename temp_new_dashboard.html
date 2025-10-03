@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NIFTY Breakout Strategy Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+            min-height: 100vh;
+            color: #ffffff;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #06b6d4;
+            text-decoration: none;
+            font-weight: 600;
+            margin-bottom: 20px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: background-color 0.2s;
+        }
+        
+        .back-link:hover {
+            background-color: rgba(6, 182, 212, 0.1);
+            text-decoration: none;
+            color: #06b6d4;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 30px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #4ade80 0%, #06b6d4 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+        
+        .header .subtitle {
+            color: #94a3b8;
+            font-size: 1.1rem;
+            font-weight: 400;
+        }
+        
+        .hero-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .hero-card {
+            background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 25px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .hero-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #4ade80, #06b6d4);
+        }
+        
+        .hero-card.status-active::before {
+            background: linear-gradient(90deg, #22c55e, #16a34a);
+        }
+        
+        .hero-card.status-inactive::before {
+            background: linear-gradient(90deg, #ef4444, #dc2626);
+        }
+        
+        .hero-value {
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: #ffffff;
+            margin-bottom: 8px;
+        }
+        
+        .hero-label {
+            font-size: 0.9rem;
+            color: #94a3b8;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .hero-subtitle {
+            font-size: 1rem;
+            color: #cbd5e1;
+            margin-top: 8px;
+        }
+        
+        .control-panel {
+            background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+        
+        .control-panel h3 {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .control-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .control-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 15px 20px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1rem;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            color: white;
+        }
+        
+        .control-btn.primary {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            box-shadow: 0 4px 20px rgba(34, 197, 94, 0.3);
+        }
+        
+        .control-btn.danger {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            box-shadow: 0 4px 20px rgba(239, 68, 68, 0.3);
+        }
+        
+        .control-btn.warning {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            box-shadow: 0 4px 20px rgba(245, 158, 11, 0.3);
+        }
+        
+        .control-btn.secondary {
+            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+        }
+        
+        .control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+        }
+        
+        .dashboard-section {
+            background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 25px;
+            overflow: hidden;
+        }
+        
+        .section-header {
+            padding: 20px 25px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .section-title {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .section-content {
+            padding: 25px;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+        
+        .info-card {
+            background: rgba(255,255,255,0.03);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .info-card h4 {
+            font-size: 1rem;
+            color: #94a3b8;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+        
+        .info-value {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 5px;
+        }
+        
+        .info-subtitle {
+            font-size: 0.9rem;
+            color: #94a3b8;
+        }
+        
+        @media (max-width: 768px) {
+            .hero-section {
+                grid-template-columns: 1fr;
+            }
+            
+            .control-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            padding: 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #94a3b8;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Main Dashboard</a>
+        
+        <!-- Header -->
+        <div class="header">
+            <h1>📈 NIFTY Breakout Strategy</h1>
+            <div class="subtitle">Professional Breakout-Retracement • 15,15 Pivot Detection • Live Updates</div>
+        </div>
+
+        <!-- Hero Section -->
+        <div class="hero-section">
+            <div class="hero-card status-active">
+                <div class="hero-label">Strategy Status</div>
+                <div class="hero-value">ACTIVE</div>
+                <div class="hero-subtitle">Market: OPEN • Streaming: ON</div>
+            </div>
+            
+            <div class="hero-card">
+                <div class="hero-label">NIFTY Live Price</div>
+                <div class="hero-value">₹24,257.30</div>
+                <div class="hero-subtitle">Vol: 1,234,567</div>
+            </div>
+            
+            <div class="hero-card">
+                <div class="hero-label">Trade State</div>
+                <div class="hero-value" style="font-size: 1.6rem;">WAITING FOR BREAKOUT</div>
+                <div class="hero-subtitle">No Position</div>
+            </div>
+        </div>
+        
+        <!-- Control Panel -->
+        <div class="control-panel">
+            <h3>🎛️ Strategy Controls</h3>
+            <div class="control-grid">
+                <button class="control-btn danger">⏹️ Stop Strategy</button>
+                <button class="control-btn warning">🚪 Manual Exit (₹0)</button>
+                <button class="control-btn secondary">🚀 Go Live</button>
+                <a href="/breakout-strategy/status" class="control-btn secondary">📊 View API Status</a>
+            </div>
+        </div>
+        
+        <!-- Live Data Section -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">📊 Live Market Data</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>📈 Pivot High</h4>
+                        <div class="info-value">₹24,298.50</div>
+                        <div class="info-subtitle">2024-12-19 14:25:00</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>📉 Pivot Low</h4>
+                        <div class="info-value">₹24,180.75</div>
+                        <div class="info-subtitle">2024-12-19 14:15:00</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>📊 Volume SMA (50)</h4>
+                        <div class="info-value">45,670</div>
+                        <div class="info-subtitle">50/50 candles</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>🎯 Breakout Detection</h4>
+                        <div class="info-value">ACTIVE</div>
+                        <div class="info-subtitle">50 minute candles loaded</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Trade Information -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">💼 Trade Information</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>⚙️ Trading Mode</h4>
+                        <div class="info-value">PAPER</div>
+                        <div class="info-subtitle">Safe testing mode</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>💰 Capital</h4>
+                        <div class="info-value">₹1,00,000</div>
+                        <div class="info-subtitle">Risk: 5.0% per trade</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>📍 Position Status</h4>
+                        <div class="info-value">NONE</div>
+                        <div class="info-subtitle">No active trades</div>
+                    </div>
+                    <div class="info-card">
+                        <h4>📈 Total P&L</h4>
+                        <div class="info-value" style="color: #22c55e;">₹2,450</div>
+                        <div class="info-subtitle">12 trades • 75% win rate</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            🔄 Dashboard updates every 5 seconds • 
+            💡 Strategy recalculates pivots every 5 minutes during market hours
+        </div>
+    </div>
+</body>
+</html>
