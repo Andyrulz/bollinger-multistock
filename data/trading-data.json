@@ -1,10 +1,10 @@
 {
   "config": {
-    "capital": 98511.5299749251,
+    "capital": 100761.5299749251,
     "riskPerTrade": 0.05,
     "maxRetries": 3,
     "orderTimeout": 5000,
-    "paperTradingMode": true,
+    "paperTradingMode": false,
     "niftyLotSize": 75
   },
   "tradeHistory": [
@@ -31,20 +31,45 @@
       "pnl": -1488.4700250749063,
       "exitReason": "TARGET",
       "status": "CLOSED"
+    },
+    {
+      "tradeId": "TRADE_1759482577400",
+      "entryOrderId": "251003120771864",
+      "exitOrderId": "251003120788851",
+      "instrument": {
+        "instrument_token": "9827074",
+        "tradingsymbol": "NIFTY25O0725000CE",
+        "name": "NIFTY",
+        "exchange": "NFO",
+        "strike": 25000,
+        "expiry": "2025-10-07T00:00:00.000Z",
+        "instrument_type": "CE",
+        "lot_size": 75
+      },
+      "direction": "LONG",
+      "quantity": 450,
+      "entryPrice": 26.7,
+      "exitPrice": 31.7,
+      "entryTime": "2025-10-03T09:09:37.550Z",
+      "exitTime": "2025-10-03T09:16:10.031Z",
+      "pnl": 2250,
+      "exitReason": "MANUAL",
+      "status": "CLOSED",
+      "isPaperTrade": false
     }
   ],
-  "lastUpdated": "2025-10-01T14:53:41.935Z",
+  "lastUpdated": "2025-10-03T09:16:10.031Z",
   "activeInstrument": {
-    "instrument_token": "9832706",
-    "tradingsymbol": "NIFTY25O0725400CE",
+    "instrument_token": "9827074",
+    "tradingsymbol": "NIFTY25O0725000CE",
     "name": "NIFTY",
     "exchange": "NFO",
-    "strike": 25400,
+    "strike": 25000,
     "expiry": "2025-10-07T00:00:00.000Z",
     "instrument_type": "CE",
     "lot_size": 75,
-    "selectedAt": "2025-10-01T14:53:41.934Z",
+    "selectedAt": "2025-10-03T09:07:00.000Z",
     "direction": "LONG",
-    "underlyingPrice": 25400
+    "underlyingPrice": 24978
   }
 }

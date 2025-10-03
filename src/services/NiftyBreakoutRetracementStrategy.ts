@@ -1,5 +1,7 @@
 import { Logger } from '../utils/Logger';
 import { TradeExecutionService } from './TradeExecutionService';
+import { globalStateLock } from '../utils/StateLock';
+import { StrategyStatePersistence, PersistedStrategyState } from './StrategyStatePersistence';
 
 // Manual polling system - no WebSocket dependencies needed
 // We'll use REST API to fetch live quotes every second
@@ -122,6 +124,9 @@ export interface StrategyState {
   latestBreakoutSignal?: BreakoutSignal | undefined;
   markingCandleState: MarkingCandleState; // new marking candle state
   currentVolumeSMA50: number;
+  // Volume tracking for incremental calculation
+  lastCumulativeVolume: number; // Last known cumulative daily volume
+  currentMinuteAccumulatedVolume: number; // Volume accumulated in current minute
   // New breakout detection state
   lastProcessedOneMinuteCandleTime?: Date | undefined; // track last processed 1m candle to avoid duplicates
 }
@@ -131,12 +136,56 @@ export class NiftyBreakoutRetracementStrategy {
   private logger: Logger;
   private strategyState: StrategyState;
   private tradeExecutionService: TradeExecutionService;
+  private strategyPersistence: StrategyStatePersistence;
   
   // Manual polling properties
   private pricePollingInterval: NodeJS.Timeout | null = null;
   private isManualStreamingActive = false;
 
+  // Circuit breaker properties for resource management
+  private pollingFailureCount = 0;
+  private lastPollingFailureTime: Date | null = null;
+  private pollingSuccessCount = 0;
+  private totalPollingAttempts = 0;
+  private isCircuitBreakerOpen = false;
+  private nextRetryTime: Date | null = null;
+
+  // Throttling and resource management
+  private lastApiCallTime: Date | null = null;
+  private minTimeBetweenCalls = 300; // Minimum 300ms between API calls (max 3.33 calls/sec, under Zerodha's 3/sec limit)
+
+  /**
+   * RACE CONDITION PROTECTION STATUS
+   * Get current status of atomic state locks for monitoring
+   */
+  public getStateLockStatus(): { 
+    activeLocks: string[], 
+    isTradeEntryLocked: boolean, 
+    isTradeExitLocked: boolean,
+    queueStatus: { [key: string]: { locked: boolean; queueLength: number } }
+  } {
+    const activeLocks = globalStateLock.getActiveLocks();
+    const queueStatus = globalStateLock.getQueueStatus();
+    
+    return {
+      activeLocks,
+      isTradeEntryLocked: globalStateLock.isLocked('trade-entry'),
+      isTradeExitLocked: globalStateLock.isLocked('trade-exit'),
+      queueStatus
+    };
+  }
+  private activeApiCallsCount = 0;
+  private maxConcurrentCalls = 1; // Limit concurrent API calls
+
+  // Health monitoring
+  private healthMonitoringInterval: NodeJS.Timeout | null = null;
+
   private breakoutDetectionInterval: NodeJS.Timeout | null = null;
+
+  // Strategy state persistence
+  private persistenceTimer: NodeJS.Timeout | null = null;
+  private isDirty = false; // Track if state needs saving
+  private readonly PERSISTENCE_INTERVAL = 5000; // 5 seconds
 
   // One-minute candle generation
   private currentOneMinuteCandle: {
@@ -155,6 +204,7 @@ export class NiftyBreakoutRetracementStrategy {
     this.kiteConnect = kiteConnect;
     this.logger = logger || new Logger();
     this.tradeExecutionService = new TradeExecutionService(kiteConnect, this.logger);
+    this.strategyPersistence = new StrategyStatePersistence(this.logger);
     
     this.strategyState = {
       isActive: false,
@@ -164,6 +214,8 @@ export class NiftyBreakoutRetracementStrategy {
       candles: [],
       oneMinuteCandles: [],
       currentVolumeSMA50: 0,
+      lastCumulativeVolume: 0,
+      currentMinuteAccumulatedVolume: 0,
       markingCandleState: {
         isActive: false,
         breakoutReference: null,
@@ -223,18 +275,30 @@ export class NiftyBreakoutRetracementStrategy {
           );
 
           if (historicalData && historicalData.length > 0) {
-            // Convert to our Candle format
-            const historicalCandles: Candle[] = historicalData.map((kiteCandle: any) => ({
-              timestamp: new Date(kiteCandle.date),
-              open: kiteCandle.open,
-              high: kiteCandle.high,
-              low: kiteCandle.low,
-              close: kiteCandle.close,
-              volume: kiteCandle.volume
-            }));
+            // Convert to our Candle format with volume validation
+            const historicalCandles: Candle[] = historicalData.map((kiteCandle: any, index: number) => {
+              const volume = kiteCandle.volume || 0;
+              
+              // Log first few volume values for validation
+              if (index < 5) {
+                this.logger.debug(`📊 Historical candle ${index}: timestamp=${new Date(kiteCandle.date).toISOString()}, volume=${volume}`);
+              }
+              
+              return {
+                timestamp: new Date(kiteCandle.date),
+                open: kiteCandle.open,
+                high: kiteCandle.high,
+                low: kiteCandle.low,
+                close: kiteCandle.close,
+                volume: volume
+              };
+            });
 
             // Sort by timestamp to ensure proper order
             historicalCandles.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            
+            // Validate volume data integrity
+            this.validateHistoricalVolumeData(historicalCandles);
             
             allHistoricalCandles = historicalCandles;
             this.logger.info(`📊 Retrieved ${historicalCandles.length} candles from ${range.description} range`);
@@ -300,18 +364,30 @@ export class NiftyBreakoutRetracementStrategy {
     try {
       this.logger.info('Starting Nifty Breakout Retracement Strategy...');
       
-      // Initialize current month Nifty futures contract
-      await this.initializeNiftyFuturesContract();
+      // Try to restore previous state first
+      const restoredState = await this.strategyPersistence.loadStrategyState();
       
-      if (!this.strategyState.currentContract) {
-        throw new Error('Failed to initialize futures contract');
+      if (restoredState && await this.validateAndRestoreState(restoredState)) {
+        this.logger.info('🔄 Strategy state restored successfully from previous session');
+      } else {
+        this.logger.info('📝 Starting fresh strategy initialization...');
+        
+        // Initialize current month Nifty futures contract
+        await this.initializeNiftyFuturesContract();
+        
+        if (!this.strategyState.currentContract) {
+          throw new Error('Failed to initialize futures contract');
+        }
+
+        // Load historical 5-minute candles for pivot detection
+        await this.loadHistoricalCandles();
+
+        // Load historical 1-minute candles for volume SMA50 initialization
+        await this.fetchHistorical1MinuteCandles();
       }
 
-      // Load historical 5-minute candles for pivot detection
-      await this.loadHistoricalCandles();
-
-      // Load historical 1-minute candles for volume SMA50 initialization
-      await this.fetchHistorical1MinuteCandles();
+      // CRITICAL FIX: Cross-validate strategy state with TradeExecutionService
+      await this.validateTradeStateSync();
 
       // Start manual price streaming
       await this.startManualPriceStreaming();
@@ -319,7 +395,12 @@ export class NiftyBreakoutRetracementStrategy {
       // Start breakout detection  
       this.startBreakoutDetection();
       
+      // Start persistence system
+      this.startPersistenceTimer();
+      
       this.strategyState.isActive = true;
+      this.markStateAsDirty(); // Save initial state
+      
       this.logger.info('Nifty Breakout Retracement Strategy started successfully');
       
     } catch (error) {
@@ -414,6 +495,13 @@ export class NiftyBreakoutRetracementStrategy {
         volume: candle.volume
       }));
       
+      // Log 5-minute volume range for validation
+      if (this.strategyState.candles.length > 0) {
+        const recentVolumes = this.strategyState.candles.slice(-5).map(c => c.volume);
+        const avgVolume = recentVolumes.reduce((sum, v) => sum + v, 0) / recentVolumes.length;
+        this.logger.debug(`📊 5m candle volumes (last 5): ${recentVolumes.join(', ')}, Avg: ${avgVolume.toFixed(0)}`);
+      }
+      
       this.logger.info(`Loaded ${this.strategyState.candles.length} historical 5-minute candles`);
       
     } catch (error) {
@@ -428,6 +516,17 @@ export class NiftyBreakoutRetracementStrategy {
   public async stopStrategy(): Promise<void> {
     try {
       this.strategyState.isActive = false;
+      
+      // Stop persistence timer
+      this.stopPersistenceTimer();
+      
+      // Save final state before stopping
+      try {
+        await this.saveStateImmediate();
+        this.logger.info('💾 Final strategy state saved before shutdown');
+      } catch (error) {
+        this.logger.error('❌ Failed to save final state:', error);
+      }
       
       // Stop breakout detection
       this.stopBreakoutDetection();
@@ -460,15 +559,27 @@ export class NiftyBreakoutRetracementStrategy {
       this.isManualStreamingActive = true;
       this.strategyState.priceStreamingActive = true;
       
-      // Start polling every 1 second
+      // Start polling every 1 second with proper error handling
       this.pricePollingInterval = setInterval(async () => {
-        await this.fetchAndProcessLivePrice();
+        try {
+          await this.fetchAndProcessLivePrice();
+        } catch (error) {
+          // Log error but don't stop the polling interval
+          this.logger.error('❌ Error in price polling interval callback:', error);
+          // Note: fetchAndProcessLivePrice() has its own try-catch, but this prevents
+          // unhandled promise rejections at the setInterval level
+        }
       }, 1000);
       
       // Fetch first price immediately
       await this.fetchAndProcessLivePrice();
+
+      // Start health monitoring (log health status every 30 seconds)
+      this.healthMonitoringInterval = setInterval(() => {
+        this.logHealthStatus();
+      }, 30000);
       
-      this.logger.info('✅ MANUAL price streaming started successfully - polling every 1 second');
+      this.logger.info('✅ MANUAL price streaming started successfully - polling every 1 second with health monitoring');
 
     } catch (error) {
       this.logger.error('❌ Failed to start MANUAL price streaming:', error);
@@ -479,6 +590,91 @@ export class NiftyBreakoutRetracementStrategy {
   }
 
   /**
+   * Check if circuit breaker should prevent API calls
+   */
+  private shouldCircuitBreakerBlock(): boolean {
+    if (!this.isCircuitBreakerOpen) {
+      return false;
+    }
+
+    // Check if retry time has passed
+    if (this.nextRetryTime && new Date() >= this.nextRetryTime) {
+      this.logger.info('🔄 Circuit breaker attempting recovery - testing API availability');
+      return false; // Allow one test call
+    }
+
+    return true; // Block the call
+  }
+
+  /**
+   * Record polling success and update circuit breaker state
+   */
+  private recordPollingSuccess(): void {
+    this.pollingSuccessCount++;
+    this.totalPollingAttempts++;
+    
+    // Reset failure count on success
+    if (this.pollingFailureCount > 0) {
+      this.logger.info(`✅ API recovered - resetting failure count (was ${this.pollingFailureCount})`);
+      this.pollingFailureCount = 0;
+      this.lastPollingFailureTime = null;
+    }
+
+    // Close circuit breaker on success
+    if (this.isCircuitBreakerOpen) {
+      this.isCircuitBreakerOpen = false;
+      this.nextRetryTime = null;
+      this.logger.info('🔓 Circuit breaker CLOSED - API is healthy');
+    }
+  }
+
+  /**
+   * Record polling failure and update circuit breaker state
+   */
+  private recordPollingFailure(error: any): void {
+    this.pollingFailureCount++;
+    this.totalPollingAttempts++;
+    this.lastPollingFailureTime = new Date();
+
+    const failureThreshold = 5; // Open circuit after 5 consecutive failures
+    const successRate = this.totalPollingAttempts > 0 ? (this.pollingSuccessCount / this.totalPollingAttempts) * 100 : 0;
+
+    this.logger.warn(`⚠️ Polling failure #${this.pollingFailureCount} | Success rate: ${successRate.toFixed(1)}% | Error: ${error.message || error}`);
+
+    // Open circuit breaker if threshold exceeded
+    if (this.pollingFailureCount >= failureThreshold && !this.isCircuitBreakerOpen) {
+      this.isCircuitBreakerOpen = true;
+      // Exponential backoff: 30s, 60s, 120s, 240s (max 4 minutes)
+      const backoffSeconds = Math.min(30 * Math.pow(2, Math.floor(this.pollingFailureCount / 5)), 240);
+      this.nextRetryTime = new Date(Date.now() + backoffSeconds * 1000);
+      
+      this.logger.error(`🔒 CIRCUIT BREAKER OPEN - Too many failures (${this.pollingFailureCount}). Next retry at ${this.nextRetryTime.toLocaleTimeString()}`);
+    }
+  }
+
+  /**
+   * Check if we should throttle the API call to prevent rate limiting
+   */
+  private shouldThrottleApiCall(): boolean {
+    const now = new Date();
+    
+    // Check concurrent call limit
+    if (this.activeApiCallsCount >= this.maxConcurrentCalls) {
+      return true;
+    }
+
+    // Check time-based throttling
+    if (this.lastApiCallTime) {
+      const timeSinceLastCall = now.getTime() - this.lastApiCallTime.getTime();
+      if (timeSinceLastCall < this.minTimeBetweenCalls) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Fetch live price using REST API and process it as a tick
    */
   private async fetchAndProcessLivePrice(): Promise<void> {
@@ -486,6 +682,20 @@ export class NiftyBreakoutRetracementStrategy {
       if (!this.strategyState.currentContract || !this.isManualStreamingActive) {
         return;
       }
+
+      // Check circuit breaker before making API call
+      if (this.shouldCircuitBreakerBlock()) {
+        return; // Skip this polling cycle
+      }
+
+      // Check throttling to prevent rate limiting
+      if (this.shouldThrottleApiCall()) {
+        return; // Skip this polling cycle due to throttling
+      }
+
+      // Track API call timing and concurrency
+      this.lastApiCallTime = new Date();
+      this.activeApiCallsCount++;
 
       const symbol = `NFO:${this.strategyState.currentContract.tradingsymbol}`;
       
@@ -530,8 +740,17 @@ export class NiftyBreakoutRetracementStrategy {
       // Process tick for 1-minute candle generation
       this.processTickForOneMinuteCandle(tickData);
 
+      // Record successful API call
+      this.recordPollingSuccess();
+
     } catch (error) {
       this.logger.error('❌ Error in fetchAndProcessLivePrice:', error);
+      
+      // Record failed API call and update circuit breaker
+      this.recordPollingFailure(error);
+    } finally {
+      // Always decrement active calls count for resource management
+      this.activeApiCallsCount = Math.max(0, this.activeApiCallsCount - 1);
     }
   }
 
@@ -549,10 +768,77 @@ export class NiftyBreakoutRetracementStrategy {
         clearInterval(this.pricePollingInterval);
         this.pricePollingInterval = null;
       }
+
+      // Stop health monitoring
+      if (this.healthMonitoringInterval) {
+        clearInterval(this.healthMonitoringInterval);
+        this.healthMonitoringInterval = null;
+      }
+
+      // Reset resource management counters
+      this.activeApiCallsCount = 0;
+      this.lastApiCallTime = null;
       
-      this.logger.info('✅ MANUAL price streaming stopped');
+      // Reset circuit breaker state
+      this.pollingFailureCount = 0;
+      this.lastPollingFailureTime = null;
+      this.isCircuitBreakerOpen = false;
+      this.nextRetryTime = null;
+      
+      this.logger.info('✅ MANUAL price streaming stopped - all resources cleaned up');
     } catch (error) {
       this.logger.error('❌ Error stopping MANUAL price streaming:', error);
+    }
+  }
+
+  /**
+   * Get comprehensive polling health metrics
+   */
+  public getPollingHealthMetrics(): {
+    isHealthy: boolean;
+    successRate: number;
+    totalAttempts: number;
+    consecutiveFailures: number;
+    circuitBreakerOpen: boolean;
+    activeApiCalls: number;
+    lastFailureTime: Date | null;
+    nextRetryTime: Date | null;
+    timeSinceLastSuccess: number | null;
+  } {
+    const successRate = this.totalPollingAttempts > 0 ? (this.pollingSuccessCount / this.totalPollingAttempts) * 100 : 100;
+    const isHealthy = successRate >= 80 && this.pollingFailureCount < 3 && !this.isCircuitBreakerOpen;
+    
+    const timeSinceLastSuccess = this.lastApiCallTime ? Date.now() - this.lastApiCallTime.getTime() : null;
+
+    return {
+      isHealthy,
+      successRate: Math.round(successRate * 100) / 100,
+      totalAttempts: this.totalPollingAttempts,
+      consecutiveFailures: this.pollingFailureCount,
+      circuitBreakerOpen: this.isCircuitBreakerOpen,
+      activeApiCalls: this.activeApiCallsCount,
+      lastFailureTime: this.lastPollingFailureTime,
+      nextRetryTime: this.nextRetryTime,
+      timeSinceLastSuccess
+    };
+  }
+
+  /**
+   * Log detailed health status (called periodically for monitoring)
+   */
+  public logHealthStatus(): void {
+    const health = this.getPollingHealthMetrics();
+    const uptime = this.isManualStreamingActive ? 'Active' : 'Inactive';
+    
+    if (health.isHealthy) {
+      this.logger.info(`💚 POLLING HEALTH: ${uptime} | Success Rate: ${health.successRate}% | Total: ${health.totalAttempts} | Active Calls: ${health.activeApiCalls}`);
+    } else {
+      const issues = [];
+      if (health.successRate < 80) issues.push(`Low success rate: ${health.successRate}%`);
+      if (health.consecutiveFailures >= 3) issues.push(`${health.consecutiveFailures} consecutive failures`);
+      if (health.circuitBreakerOpen) issues.push('Circuit breaker OPEN');
+      
+      this.logger.warn(`🔴 POLLING HEALTH ISSUES: ${issues.join(', ')} | Total: ${health.totalAttempts} | Next retry: ${health.nextRetryTime?.toLocaleTimeString() || 'N/A'}`);
     }
   }
 
@@ -829,6 +1115,9 @@ export class NiftyBreakoutRetracementStrategy {
           latestPivotHigh.price > this.strategyState.latestPivotHigh.price) {
         this.strategyState.latestPivotHigh = latestPivotHigh;
         this.logger.info(`🔺 NEW PIVOT HIGH (15,15): ₹${latestPivotHigh.price.toFixed(2)} at ${latestPivotHigh.timestamp.toLocaleString()}`);
+        
+        // Mark state as dirty for pivot detection persistence
+        this.markStateAsDirty();
       }
     }
     
@@ -839,6 +1128,9 @@ export class NiftyBreakoutRetracementStrategy {
           latestPivotLow.price < this.strategyState.latestPivotLow.price) {
         this.strategyState.latestPivotLow = latestPivotLow;
         this.logger.info(`🔻 NEW PIVOT LOW (15,15): ₹${latestPivotLow.price.toFixed(2)} at ${latestPivotLow.timestamp.toLocaleString()}`);
+        
+        // Mark state as dirty for pivot detection persistence
+        this.markStateAsDirty();
       }
     }
 
@@ -933,6 +1225,22 @@ export class NiftyBreakoutRetracementStrategy {
     const now = new Date(tick.timestamp || new Date());
     const currentMinute = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0);
 
+    // Calculate incremental volume from cumulative daily volume
+    const cumulativeVolume = tick.volume || 0;
+    let incrementalVolume = 0;
+    
+    if (this.strategyState.lastCumulativeVolume > 0 && cumulativeVolume >= this.strategyState.lastCumulativeVolume) {
+      incrementalVolume = cumulativeVolume - this.strategyState.lastCumulativeVolume;
+    }
+    
+    // Debug logging for volume calculations
+    if (incrementalVolume > 0) {
+      this.logger.debug(`📊 Volume calc: Cumulative=${cumulativeVolume}, Last=${this.strategyState.lastCumulativeVolume}, Incremental=${incrementalVolume}`);
+    }
+    
+    // Update tracking for next calculation
+    this.strategyState.lastCumulativeVolume = cumulativeVolume;
+
     if (!this.currentOneMinuteCandle || this.currentOneMinuteCandle.timestamp.getTime() !== currentMinute.getTime()) {
       // Save the previous candle if it exists
       if (this.currentOneMinuteCandle) {
@@ -942,7 +1250,7 @@ export class NiftyBreakoutRetracementStrategy {
           high: this.currentOneMinuteCandle.high,
           low: this.currentOneMinuteCandle.low,
           close: this.currentOneMinuteCandle.close,
-          volume: this.currentOneMinuteCandle.volume
+          volume: this.strategyState.currentMinuteAccumulatedVolume // Use accumulated incremental volume for completed candle
         };
         
         this.strategyState.oneMinuteCandles.push(completedCandle);
@@ -965,24 +1273,257 @@ export class NiftyBreakoutRetracementStrategy {
         this.logger.debug(`✅ 1m candle completed: O:${completedCandle.open.toFixed(2)} H:${completedCandle.high.toFixed(2)} L:${completedCandle.low.toFixed(2)} C:${completedCandle.close.toFixed(2)} V:${completedCandle.volume}`);
       }
 
-      // Start a new one-minute candle
+      // Start a new one-minute candle - reset accumulated volume for new minute
+      this.strategyState.currentMinuteAccumulatedVolume = incrementalVolume; // Start with current incremental volume
+      
       this.currentOneMinuteCandle = {
         timestamp: currentMinute,
         open: tick.last_price,
         high: tick.last_price,
         low: tick.last_price,
         close: tick.last_price,
-        volume: tick.volume,
+        volume: incrementalVolume, // Use incremental volume for the current minute
         tickCount: 1
       };
     } else {
-      // Update the current candle
+      // Update the current candle - accumulate incremental volume for this minute
+      this.strategyState.currentMinuteAccumulatedVolume += incrementalVolume;
+      
       this.currentOneMinuteCandle.high = Math.max(this.currentOneMinuteCandle.high, tick.last_price);
       this.currentOneMinuteCandle.low = Math.min(this.currentOneMinuteCandle.low, tick.last_price);
       this.currentOneMinuteCandle.close = tick.last_price;
-      this.currentOneMinuteCandle.volume = tick.volume; // Latest volume
+      this.currentOneMinuteCandle.volume = this.strategyState.currentMinuteAccumulatedVolume; // Use accumulated incremental volume
       this.currentOneMinuteCandle.tickCount++;
     }
+  }
+
+  /**
+   * Start persistence timer for auto-save
+   */
+  private startPersistenceTimer(): void {
+    if (this.persistenceTimer) {
+      clearInterval(this.persistenceTimer);
+    }
+    
+    this.persistenceTimer = setInterval(async () => {
+      if (this.isDirty) {
+        await this.saveStateIfDirty();
+      }
+    }, this.PERSISTENCE_INTERVAL);
+    
+    this.logger.debug('⏰ Strategy state persistence timer started');
+  }
+
+  /**
+   * Stop persistence timer
+   */
+  private stopPersistenceTimer(): void {
+    if (this.persistenceTimer) {
+      clearInterval(this.persistenceTimer);
+      this.persistenceTimer = null;
+      this.logger.debug('⏹️ Strategy state persistence timer stopped');
+    }
+  }
+
+  /**
+   * Mark strategy state as dirty (needs saving)
+   */
+  private markStateAsDirty(): void {
+    this.isDirty = true;
+  }
+
+  /**
+   * Save strategy state if marked as dirty
+   */
+  private async saveStateIfDirty(): Promise<void> {
+    if (!this.isDirty) return;
+    
+    try {
+      await this.saveStateAtomic();
+      this.isDirty = false;
+    } catch (error) {
+      this.logger.error('❌ Failed to save strategy state:', error);
+      // Keep isDirty = true to retry later
+    }
+  }
+
+  /**
+   * Save strategy state atomically using state lock
+   */
+  private async saveStateAtomic(): Promise<void> {
+    return await globalStateLock.executeAtomic('strategy-persistence', async () => {
+      const persistableState = this.strategyPersistence.convertStrategyStateToPersistedFormat(this.strategyState);
+      await this.strategyPersistence.saveStrategyState(persistableState);
+    });
+  }
+
+  /**
+   * Force immediate save of strategy state
+   */
+  private async saveStateImmediate(): Promise<void> {
+    try {
+      await this.saveStateAtomic();
+      this.isDirty = false;
+      this.logger.debug('💾 Strategy state saved immediately');
+    } catch (error) {
+      this.logger.error('❌ Failed to save strategy state immediately:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate and restore strategy state from persistence
+   */
+  private async validateAndRestoreState(restoredState: PersistedStrategyState): Promise<boolean> {
+    try {
+      // Additional validation beyond basic integrity checks
+      if (!restoredState.currentContract) {
+        this.logger.warn('⚠️ No contract found in restored state');
+        return false;
+      }
+      
+      // Check if contract is still valid (not expired)
+      if (restoredState.currentContract.expiry < new Date()) {
+        this.logger.warn('⚠️ Restored contract has expired, starting fresh');
+        return false;
+      }
+      
+      // Restore the strategy state
+      this.strategyState.isActive = restoredState.isActive;
+      this.strategyState.currentContract = restoredState.currentContract;
+      // Don't restore livePrice and lastUpdateTime - will be updated by price streaming
+      this.strategyState.priceStreamingActive = false; // Will be started separately
+      this.strategyState.breakoutDetectionActive = false; // Will be started separately
+      this.strategyState.tradeState = restoredState.tradeState;
+      if (restoredState.currentTradeId) {
+        this.strategyState.currentTradeId = restoredState.currentTradeId;
+      }
+      if (restoredState.tradeSetupRequest) {
+        this.strategyState.tradeSetupRequest = restoredState.tradeSetupRequest;
+      }
+      this.strategyState.candles = restoredState.candles;
+      this.strategyState.oneMinuteCandles = restoredState.oneMinuteCandles;
+      this.strategyState.latestPivotHigh = restoredState.latestPivotHigh;
+      this.strategyState.latestPivotLow = restoredState.latestPivotLow;
+      this.strategyState.latestBreakoutSignal = restoredState.latestBreakoutSignal;
+      this.strategyState.markingCandleState = restoredState.markingCandleState;
+      this.strategyState.currentVolumeSMA50 = restoredState.currentVolumeSMA50;
+      this.strategyState.lastCumulativeVolume = restoredState.lastCumulativeVolume;
+      this.strategyState.currentMinuteAccumulatedVolume = restoredState.currentMinuteAccumulatedVolume;
+      this.strategyState.lastProcessedOneMinuteCandleTime = restoredState.lastProcessedOneMinuteCandleTime;
+      
+      this.logger.info(`📊 Restored strategy state: ${restoredState.candles.length} 5m candles, ${restoredState.oneMinuteCandles.length} 1m candles, Volume SMA50: ${restoredState.currentVolumeSMA50.toFixed(2)}`);
+      
+      return true;
+      
+    } catch (error) {
+      this.logger.error('❌ Failed to restore strategy state:', error);
+      return false;
+    }
+  }
+
+  /**
+   * CRITICAL FIX: Cross-validate strategy state with TradeExecutionService
+   * Cleans up orphaned strategy state when trades are closed externally
+   * Prevents phantom trade detection on restart
+   */
+  private async validateTradeStateSync(): Promise<void> {
+    this.logger.info(`🔍 Starting trade state validation sync check...`);
+    
+    try {
+      // Check if strategy thinks it has an active trade
+      if (this.strategyState.currentTradeId) {
+        this.logger.info(`🔍 Validating trade state sync - Trade ID: ${this.strategyState.currentTradeId}`);
+        
+        // Check if TradeExecutionService has corresponding active position
+        const activePosition = this.tradeExecutionService.getActivePosition();
+        
+        if (!activePosition || activePosition.tradeId !== this.strategyState.currentTradeId) {
+          // MISMATCH DETECTED: Strategy has trade ID but no corresponding active position
+          this.logger.warn(`🧹 CLEANING ORPHANED STRATEGY STATE`);
+          this.logger.warn(`   Strategy Trade ID: ${this.strategyState.currentTradeId}`);
+          this.logger.warn(`   Execution Service: ${activePosition ? `Different ID: ${activePosition.tradeId}` : 'No active position'}`);
+          this.logger.warn(`   Cause: Trade was likely closed externally (manual closure, system restart, etc.)`);
+          
+          // Clean up orphaned strategy state
+          const orphanedTradeId = this.strategyState.currentTradeId;
+          delete this.strategyState.currentTradeId;
+          delete this.strategyState.tradeSetupRequest;
+          
+          // Clear stale breakout signal that caused phantom trade detection
+          if (this.strategyState.latestBreakoutSignal) {
+            this.logger.info(`🧹 Clearing stale breakout signal: ${this.strategyState.latestBreakoutSignal.type} @ ₹${this.strategyState.latestBreakoutSignal.price}`);
+            this.strategyState.latestBreakoutSignal = undefined;
+          }
+          
+          // Reset state to clean waiting state
+          this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Cleaned orphaned trade state: ${orphanedTradeId}`);
+          
+          this.logger.info(`✅ Strategy state cleaned - Ready for fresh breakout detection`);
+        } else {
+          this.logger.info(`✅ Trade state validation passed - Active position confirmed`);
+        }
+      } else {
+        // No active trade ID, but check for stale breakout signals that could cause phantom detection
+        if (this.strategyState.latestBreakoutSignal) {
+          this.logger.info(`🧹 Found stale breakout signal without active trade - clearing to prevent phantom detection`);
+          this.logger.info(`   Signal: ${this.strategyState.latestBreakoutSignal.type} @ ₹${this.strategyState.latestBreakoutSignal.price} from ${new Date(this.strategyState.latestBreakoutSignal.timestamp).toLocaleString()}`);
+          this.strategyState.latestBreakoutSignal = undefined;
+          this.markStateAsDirty();
+          this.logger.info(`✅ Stale breakout signal cleared - Ready for fresh detection`);
+        } else {
+          this.logger.info(`✅ Trade state validation passed - No active trade ID found, state is clean`);
+        }
+      }
+    } catch (error) {
+      this.logger.error('❌ Error during trade state validation:', error);
+      // On error, clear potentially corrupted state to be safe
+      delete this.strategyState.currentTradeId;
+      delete this.strategyState.tradeSetupRequest;
+      this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, 'Error recovery - state cleared');
+    }
+  }
+
+  /**
+   * Validate historical volume data integrity
+   * Checks for potential cumulative volume issues or data anomalies
+   */
+  private validateHistoricalVolumeData(historicalCandles: Candle[]): void {
+    if (historicalCandles.length < 2) return;
+    
+    let cumulativeVolumeDetected = 0;
+    let normalVolumeCount = 0;
+    
+    for (let i = 1; i < Math.min(10, historicalCandles.length); i++) {
+      const prevCandle = historicalCandles[i - 1];
+      const currCandle = historicalCandles[i];
+      
+      if (!prevCandle || !currCandle) continue;
+      
+      const prevVolume = prevCandle.volume;
+      const currVolume = currCandle.volume;
+      
+      // Check if volume is increasing continuously (potential cumulative data)
+      if (currVolume > prevVolume && currVolume > prevVolume * 2) {
+        cumulativeVolumeDetected++;
+      } else if (currVolume > 0 && currVolume < prevVolume * 10) {
+        normalVolumeCount++;
+      }
+    }
+    
+    if (cumulativeVolumeDetected > normalVolumeCount) {
+      this.logger.warn(`⚠️ Historical volume data may be cumulative! Cumulative pattern: ${cumulativeVolumeDetected}, Normal pattern: ${normalVolumeCount}`);
+    } else {
+      this.logger.debug(`✅ Historical volume data appears to be per-candle (non-cumulative). Pattern check: ${normalVolumeCount} normal vs ${cumulativeVolumeDetected} cumulative`);
+    }
+    
+    // Log volume range for sanity check
+    const volumes = historicalCandles.slice(0, 10).map(c => c.volume);
+    const avgVolume = volumes.reduce((sum, v) => sum + v, 0) / volumes.length;
+    const maxVolume = Math.max(...volumes);
+    const minVolume = Math.min(...volumes);
+    
+    this.logger.debug(`📊 Historical volume analysis: Min=${minVolume}, Max=${maxVolume}, Avg=${avgVolume.toFixed(0)}`);
   }
 
   /**
@@ -1072,6 +1613,9 @@ export class NiftyBreakoutRetracementStrategy {
           
           this.strategyState.latestBreakoutSignal = breakoutSignal;
           
+          // Mark state as dirty for breakout signal persistence
+          this.markStateAsDirty();
+          
           this.logger.info(`🚀 LONG BREAKOUT DETECTED!`);
           this.logger.info(`   📈 Breakout Price: ₹${completedCandle.close.toFixed(2)} (Open: ₹${completedCandle.open.toFixed(2)})`);
           this.logger.info(`   🎯 Pivot High: ₹${pivotHigh.toFixed(2)}`);
@@ -1112,6 +1656,9 @@ export class NiftyBreakoutRetracementStrategy {
           };
           
           this.strategyState.latestBreakoutSignal = breakoutSignal;
+          
+          // Mark state as dirty for breakout signal persistence
+          this.markStateAsDirty();
           
           this.logger.info(`🚀 SHORT BREAKOUT DETECTED!`);
           this.logger.info(`   📉 Breakout Price: ₹${completedCandle.close.toFixed(2)} (Open: ₹${completedCandle.open.toFixed(2)})`);
@@ -1155,6 +1702,17 @@ export class NiftyBreakoutRetracementStrategy {
     this.strategyState.tradeState = newState;
     
     this.logger.info(`🔄 Trade State Transition: ${previousState} → ${newState}${reason ? ` (${reason})` : ''}`);
+    
+    // Mark state as dirty for immediate persistence
+    this.markStateAsDirty();
+    
+    // For critical state transitions, save immediately
+    if (newState === TradeState.WAITING_FOR_ENTRY || newState === TradeState.IN_TRADE) {
+      // Don't await to avoid blocking the strategy flow, but handle errors
+      this.saveStateImmediate().catch(error => {
+        this.logger.error('❌ Failed to save state after critical transition:', error);
+      });
+    }
     
     // Perform state synchronization check and recovery
     this.performStateRecovery(newState, previousState);
@@ -1413,9 +1971,11 @@ export class NiftyBreakoutRetracementStrategy {
   /**
    * TRADE ENTRY EXECUTION
    * Called when entry level is crossed - places market order via TradeExecutionService
+   * ATOMIC: Protected against race conditions with state lock
    */
   private async executeTradeEntry(): Promise<void> {
-    try {
+    return await globalStateLock.executeAtomic('trade-entry', async () => {
+      try {
       this.logger.info(`📞 Calling TradeExecutionService to PLACE MARKET ORDER`);
       
       if (!this.strategyState.tradeSetupRequest) {
@@ -1441,20 +2001,23 @@ export class NiftyBreakoutRetracementStrategy {
       // Transition to IN_TRADE state after successful order placement
       this.transitionToState(TradeState.IN_TRADE, 'Entry level crossed - Order placed');
       
-      this.logger.info(`✅ Trade entry executed - Trade ID: ${tradeId} - Now monitoring SL/Target levels`);
-    } catch (error) {
-      this.logger.error('❌ Error executing trade entry:', error);
-      // On error, reset back to waiting for breakout
-      this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, 'Entry execution failed');
-    }
+        this.logger.info(`✅ Trade entry executed - Trade ID: ${tradeId} - Now monitoring SL/Target levels`);
+      } catch (error) {
+        this.logger.error('❌ Error executing trade entry:', error);
+        // On error, reset back to waiting for breakout
+        this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, 'Entry execution failed');
+      }
+    });
   }
 
   /**
    * TRADE EXIT EXECUTION
    * Called when SL or Target is hit - closes position via TradeExecutionService
+   * ATOMIC: Protected against race conditions with state lock
    */
   private async executeTradeExit(reason: string): Promise<void> {
-    try {
+    return await globalStateLock.executeAtomic('trade-exit', async () => {
+      try {
       this.logger.info(`📞 Calling TradeExecutionService to CLOSE POSITION - Reason: ${reason}`);
       
       if (!this.strategyState.currentTradeId) {
@@ -1492,13 +2055,64 @@ export class NiftyBreakoutRetracementStrategy {
       // Transition back to WAITING_FOR_BREAKOUT
       this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade closed: ${reason}`);
       
-      this.logger.info(`✅ Trade exit executed - Returning to breakout monitoring`);
-    } catch (error) {
-      this.logger.error('❌ Error executing trade exit:', error);
-      // Even on error, try to reset state to avoid being stuck
-      delete this.strategyState.currentTradeId;
-      this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade exit error: ${reason}`);
-    }
+        this.logger.info(`✅ Trade exit executed - Returning to breakout monitoring`);
+      } catch (error) {
+        this.logger.error('❌ Error executing trade exit:', error);
+        // Even on error, try to reset state to avoid being stuck
+        delete this.strategyState.currentTradeId;
+        this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade exit error: ${reason}`);
+      }
+    });
+  }
+
+  /**
+   * Handle manual exit from the web dashboard
+   * Called when user clicks manual exit button - synchronizes strategy state after position closure
+   * ATOMIC: Protected against race conditions with state lock
+   */
+  public async handleManualExit(): Promise<void> {
+    return await globalStateLock.executeAtomic('manual-exit', async () => {
+      try {
+        this.logger.info(`🔄 Processing manual exit - Current state: ${this.strategyState.tradeState}`);
+        
+        // Check if we're actually in a trade
+        if (this.strategyState.tradeState !== TradeState.IN_TRADE) {
+          this.logger.warn(`⚠️ Manual exit called but not in trade state: ${this.strategyState.tradeState}`);
+          return;
+        }
+
+        if (!this.strategyState.currentTradeId) {
+          this.logger.warn(`⚠️ Manual exit called but no current trade ID`);
+          // Still transition to ensure we don't get stuck
+          this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, 'Manual exit - No trade ID');
+          return;
+        }
+
+        // Verify position was actually closed by TradeExecutionService
+        const remainingPosition = this.tradeExecutionService.getActivePosition();
+        if (remainingPosition) {
+          this.logger.warn(`⚠️ Manual exit called but position still active: ${remainingPosition.tradeId}`);
+          // Position still exists, this is unexpected but we'll clear our state anyway
+        }
+
+        this.logger.info(`🚨 Manual exit executed for trade ID: ${this.strategyState.currentTradeId}`);
+        
+        // Clear trade data
+        const exitedTradeId = this.strategyState.currentTradeId;
+        delete this.strategyState.currentTradeId;
+        
+        // Transition back to WAITING_FOR_BREAKOUT
+        this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Manual exit - Trade ID: ${exitedTradeId}`);
+        
+        this.logger.info(`✅ Manual exit processed - Strategy resumed breakout monitoring`);
+        
+      } catch (error) {
+        this.logger.error('❌ Error processing manual exit:', error);
+        // Even on error, try to reset state to avoid being stuck
+        delete this.strategyState.currentTradeId;
+        this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Manual exit error recovery`);
+      }
+    });
   }
 
   /**
