@@ -135,6 +135,28 @@ export class AuthService {
     return !!this.accessToken;
   }
 
+  /**
+   * Check if token is both present and valid with the API
+   */
+  public async isAuthenticatedAndValid(): Promise<boolean> {
+    if (!this.accessToken) {
+      return false;
+    }
+
+    try {
+      // Test with a lightweight API call
+      await this.kiteConnect.getProfile();
+      return true;
+    } catch (error) {
+      this.logger.warn('❌ Token validation failed during auth check:', error);
+      // Clear invalid token
+      delete this.accessToken;
+      delete this.sessionData;
+      await this.sessionPersistence.clearSession();
+      return false;
+    }
+  }
+
   public getAccessToken(): string | undefined {
     return this.accessToken;
   }

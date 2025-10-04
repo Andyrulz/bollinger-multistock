@@ -50,11 +50,13 @@ class TradingBot {
     this.app.get('/auth/status', async (req: Request, res: Response): Promise<void> => {
       try {
         const isAuthenticated = this.authService.isAuthenticated();
+        const isValidAuthentication = await this.authService.isAuthenticatedAndValid();
         const sessionData = this.authService.getSessionData();
         const sessionInfo = await this.authService.getSessionInfo();
         
         res.json({
           authenticated: isAuthenticated,
+          validAuthentication: isValidAuthentication,
           user: sessionData ? sessionData.user_name : null,
           loginTime: sessionData ? sessionData.login_time : null,
           sessionPersistence: {
@@ -63,11 +65,14 @@ class TradingBot {
             expiresAt: sessionInfo.persistedSession.expiresAt,
             createdAt: sessionInfo.persistedSession.createdAt
           },
-          message: isAuthenticated 
+          message: isValidAuthentication 
             ? sessionInfo.persistedSession.exists
-              ? `Bot authenticated with persistent session (expires ${sessionInfo.persistedSession.expiresAt?.toLocaleString()})`
-              : 'Bot is authenticated and session will be persisted'
-            : 'Bot is not authenticated. Visit /auth/login to authenticate.'
+              ? `Bot authenticated with valid session (expires ${sessionInfo.persistedSession.expiresAt?.toLocaleString()})`
+              : 'Bot is authenticated with valid session'
+            : isAuthenticated
+              ? 'Bot shows authenticated but token is invalid/expired. Please re-login.'
+              : 'Bot is not authenticated. Visit /auth/login to authenticate.',
+          status: isValidAuthentication ? 'valid' : isAuthenticated ? 'expired' : 'unauthenticated'
         });
       } catch (error) {
         this.logger.error('Error getting auth status:', error);
@@ -79,13 +84,14 @@ class TradingBot {
     });
 
     // Help endpoint - now serves beautiful HTML instead of JSON
-    this.app.get('/', (req: Request, res: Response) => {
+    this.app.get('/', async (req: Request, res: Response) => {
       const isAuthenticated = this.authService.isAuthenticated();
+      const isValidAuthentication = await this.authService.isAuthenticatedAndValid();
       const sessionData = this.authService.getSessionData();
       
-      // Get trade state information if authenticated
+      // Get trade state information if authenticated and valid
       let tradeStateInfo: any = null;
-      if (isAuthenticated) {
+      if (isValidAuthentication) {
         try {
           tradeStateInfo = this.breakoutStrategy.getTradeStateInfo();
         } catch (error) {
@@ -188,6 +194,15 @@ class TradingBot {
         
         .status-card.warning::before {
             background: linear-gradient(90deg, #f6e05e, #ed8936);
+        }
+        
+        .status-card.error {
+            background: linear-gradient(135deg, #fef2f2, #fee);
+            border-color: #f56565;
+        }
+        
+        .status-card.error::before {
+            background: linear-gradient(90deg, #f56565, #e53e3e);
         }
         
         .status-text {
@@ -370,16 +385,18 @@ class TradingBot {
             <p class="subtitle">Your intelligent trading companion</p>
         </div>
         
-        <div class="status-card ${isAuthenticated ? 'success' : 'warning'}">
+        <div class="status-card ${isValidAuthentication ? 'success' : isAuthenticated ? 'warning' : 'error'}">
             <div class="status-text">
-                ${isAuthenticated 
-                  ? `✅ <strong>Authenticated</strong> as ${sessionData?.user_name || 'User'}` 
-                  : '⚠️ <strong>Not Authenticated</strong> - Click "Daily Login" to start'
+                ${isValidAuthentication 
+                  ? `✅ <strong>Authenticated & Valid</strong> as ${sessionData?.user_name || 'User'}` 
+                  : isAuthenticated
+                    ? `⚠️ <strong>Session Expired</strong> - Please re-login (was ${sessionData?.user_name || 'User'})`
+                    : '❌ <strong>Not Authenticated</strong> - Click "Daily Login" to start'
                 }
             </div>
         </div>
 
-        ${isAuthenticated ? `
+        ${isValidAuthentication ? `
         <div class="status-card">
             <div class="status-text">
                 📈 <strong>Nifty Futures Strategy</strong><br>
@@ -430,7 +447,7 @@ class TradingBot {
             <a href="/health" class="action-btn">
                 ❤️ Health Check
             </a>
-            ${isAuthenticated ? `
+            ${isValidAuthentication ? `
             <a href="/strategy/nifty/contract" class="action-btn" style="background: linear-gradient(135deg, #f093fb, #f5576c);">
                 📈 Nifty Contract
             </a>
@@ -1139,6 +1156,14 @@ class TradingBot {
 
     this.app.post('/breakout-strategy/stop', async (req: Request, res: Response): Promise<void> => {
       try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
         if (!this.breakoutStrategy.isStrategyActive()) {
           res.json({
             success: true,

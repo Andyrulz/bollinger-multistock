@@ -13,11 +13,26 @@
 
 ## 🚨 CRITICAL ISSUES (BLOCKING - IMMEDIATE FIX REQUIRED)
 
+### QC-C1: Strategy Stop Endpoint Missing Authentication
+
+- **Status**: ✅ RESOLVED
+- **Severity**: CRITICAL SECURITY VULNERABILITY (FIXED)
+- **Impact**: Anyone can stop the trading strategy without authentication
+- **Location**: `src/index.ts` line 1157 - `/breakout-strategy/stop` endpoint
+- **Details**:
+  - `/breakout-strategy/start` requires authentication (✅ Secure)
+  - `/breakout-strategy/stop` now has authentication check (✅ FIXED)
+  - Added `this.authService.isAuthenticated()` check with 401 response
+  - Both endpoints now have consistent security
+- **Fix Applied**: Added authentication guard to stop endpoint
+- **Verification**: ✅ Tested - endpoint now returns 401 when unauthenticated
+- **Date Resolved**: October 4, 2025
+
 ---
 
 ## 🚨 CRITICAL ISSUES
 
-_None - All resolved_
+_See above for current critical issue_
 
 ---
 
