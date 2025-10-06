@@ -58,18 +58,18 @@
       "isPaperTrade": false
     }
   ],
-  "lastUpdated": "2025-10-04T09:38:16.465Z",
+  "lastUpdated": "2025-10-06T17:06:55.857Z",
   "activeInstrument": {
-    "instrument_token": "9827074",
-    "tradingsymbol": "NIFTY25O0725000CE",
+    "instrument_token": "9822978",
+    "tradingsymbol": "NIFTY25O0724850CE",
     "name": "NIFTY",
     "exchange": "NFO",
-    "strike": 25000,
+    "strike": 24850,
     "expiry": "2025-10-07T00:00:00.000Z",
     "instrument_type": "CE",
     "lot_size": 75,
-    "selectedAt": "2025-10-03T09:07:00.000Z",
+    "selectedAt": "2025-10-06T17:06:54.348Z",
     "direction": "LONG",
-    "underlyingPrice": 24978
+    "underlyingPrice": 25000
   }
 }

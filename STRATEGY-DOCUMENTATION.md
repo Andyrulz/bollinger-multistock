@@ -1,6 +1,7 @@
 # NIFTY Breakout Retracement Strategy - Technical Documentation
 
 > **🎉 PRODUCTION READY**: Strategy fully validated with comprehensive QC completion. All critical systems operational and tested.
+> https://98.70.40.23/auth/callback
 
 ## 📋 Table of Contents
 

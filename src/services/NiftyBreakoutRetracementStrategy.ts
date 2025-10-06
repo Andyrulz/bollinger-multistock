@@ -963,6 +963,7 @@ export class NiftyBreakoutRetracementStrategy {
 
   /**
    * Delegation methods for UI to access selected instrument info
+   * Note: selectATMOption now uses premium-based selection (1% of futures price)
    */
   public async selectATMOption(direction: 'LONG' | 'SHORT', niftyPrice: number) {
     return await this.tradeExecutionService.selectATMOption(direction, niftyPrice);
@@ -1864,8 +1865,7 @@ export class NiftyBreakoutRetracementStrategy {
     
     this.logger.info(`💾 Trade Setup Stored in Strategy State`);
     
-    // TODO: Call TradeExecutionService here when it's implemented
-    // await this.tradeExecutionService.setupTrade(tradeRequest);
+    // Trade execution service integration happens through onBreakoutDetected method
   }
 
   /**

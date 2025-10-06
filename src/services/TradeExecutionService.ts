@@ -319,9 +319,11 @@ export class TradeExecutionService {
 
     const nextTuesdayExpiry = this.getNextTuesdayExpiry();
     const optionType = direction === 'LONG' ? 'CE' : 'PE';
+    const targetPremium = niftyPrice * 0.01; // 1% of NIFTY futures price
     
-    this.logger.info(`🎯 Selecting ${optionType} ATM option for NIFTY price: ₹${niftyPrice}`);
-    this.logger.info(`📅 Target expiry: ${nextTuesdayExpiry.toDateString()}`);
+    this.logger.info(`🎯 Selecting ${optionType} option by PREMIUM for NIFTY price: ₹${niftyPrice}`);
+    this.logger.info(`� Target Premium: ₹${targetPremium.toFixed(2)} (1% of futures price)`);
+    this.logger.info(`�📅 Target expiry: ${nextTuesdayExpiry.toDateString()}`);
 
     // Find options with correct expiry and type
     const relevantOptions = this.niftyInstruments.filter(opt => {
@@ -333,15 +335,70 @@ export class TradeExecutionService {
       throw new Error(`No ${optionType} options found for expiry ${nextTuesdayExpiry.toDateString()}`);
     }
 
-    // Find ATM (strike closest to NIFTY price)
-    const atmOption = relevantOptions.reduce((closest, current) => {
-      const closestDiff = Math.abs(closest.strike - niftyPrice);
-      const currentDiff = Math.abs(current.strike - niftyPrice);
+    this.logger.info(`📋 Found ${relevantOptions.length} ${optionType} options, fetching live prices...`);
+
+    // Fetch live option prices - batch processing to avoid rate limits
+    const optionsWithPremiums: Array<{option: OptionInstrument, premium: number}> = [];
+    const batchSize = 10;
+
+    for (let i = 0; i < relevantOptions.length; i += batchSize) {
+      const batch = relevantOptions.slice(i, i + batchSize);
+      const symbols = batch.map(opt => `NFO:${opt.tradingsymbol}`);
+      
+      try {
+        const quotes = await this.kiteConnect.getQuote(symbols);
+        
+        for (const option of batch) {
+          const symbol = `NFO:${option.tradingsymbol}`;
+          const quote = quotes[symbol];
+          
+          if (quote && quote.last_price > 0) {
+            optionsWithPremiums.push({
+              option: option,
+              premium: quote.last_price
+            });
+          }
+        }
+        
+        // Small delay to avoid rate limits
+        if (i + batchSize < relevantOptions.length) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+      } catch (batchError) {
+        const errorMessage = batchError instanceof Error ? batchError.message : String(batchError);
+        this.logger.warn(`⚠️ Error fetching prices for batch ${i}-${i + batchSize}: ${errorMessage}`);
+        continue;
+      }
+    }
+
+    if (optionsWithPremiums.length === 0) {
+      this.logger.error('❌ No option prices available, falling back to ATM selection');
+      // Fallback to old ATM logic if no prices available
+      const atmOption = relevantOptions.reduce((closest, current) => {
+        const closestDiff = Math.abs(closest.strike - niftyPrice);
+        const currentDiff = Math.abs(current.strike - niftyPrice);
+        return currentDiff < closestDiff ? current : closest;
+      });
+      this.logger.info(`✅ Fallback ATM Option: ${atmOption.tradingsymbol} | Strike: ₹${atmOption.strike}`);
+      return atmOption;
+    }
+
+    // Find option with premium closest to target (1% of futures price)
+    const bestOption = optionsWithPremiums.reduce((closest, current) => {
+      const closestDiff = Math.abs(closest.premium - targetPremium);
+      const currentDiff = Math.abs(current.premium - targetPremium);
       return currentDiff < closestDiff ? current : closest;
     });
 
-    this.logger.info(`✅ Selected ATM Option: ${atmOption.tradingsymbol} | Strike: ₹${atmOption.strike}`);
-    return atmOption;
+    const premiumDifference = Math.abs(bestOption.premium - targetPremium);
+    const premiumAccuracy = ((targetPremium - premiumDifference) / targetPremium * 100);
+
+    this.logger.info(`✅ Selected Premium-Based Option: ${bestOption.option.tradingsymbol}`);
+    this.logger.info(`   📊 Strike: ₹${bestOption.option.strike} | Premium: ₹${bestOption.premium.toFixed(2)}`);
+    this.logger.info(`   🎯 Target: ₹${targetPremium.toFixed(2)} | Difference: ₹${premiumDifference.toFixed(2)} | Accuracy: ${premiumAccuracy.toFixed(1)}%`);
+    
+    return bestOption.option;
   }
 
   // ===========================
@@ -389,8 +446,20 @@ export class TradeExecutionService {
         throw new Error(`Insufficient capital: ₹${this.persistedData.config.capital.toLocaleString()} < ₹${minCapitalRequired.toLocaleString()}`);
       }
 
-      // Select ATM option based on underlying price
-      const selectedOption = await this.selectATMOption(tradeSetup.direction, tradeSetup.underlyingPrice);
+      // Use previously selected option from breakout detection, or select new if none exists
+      let selectedOption: OptionInstrument;
+      
+      if (this.persistedData.activeInstrument && 
+          this.persistedData.activeInstrument.direction === tradeSetup.direction) {
+        // Use the option selected during breakout detection
+        selectedOption = this.persistedData.activeInstrument;
+        this.logger.info(`🔄 Using previously selected option from breakout: ${selectedOption.tradingsymbol}`);
+        this.logger.info(`   📊 Selected at breakout with futures price: ₹${this.persistedData.activeInstrument.underlyingPrice}`);
+      } else {
+        // Fallback: select new option (shouldn't normally happen with Option B approach)
+        this.logger.warn('⚠️ No option pre-selected at breakout, selecting now...');
+        selectedOption = await this.selectATMOption(tradeSetup.direction, tradeSetup.underlyingPrice);
+      }
       
       // Get current option price for position sizing
       const optionPrice = await this.getOptionPrice(selectedOption);
@@ -856,13 +925,13 @@ export class TradeExecutionService {
 
   /**
    * Called by strategy when a breakout is detected
-   * Automatically selects ATM option for UI display
+   * Automatically selects option with premium closest to 1% of futures price
    */
   public async onBreakoutDetected(direction: 'LONG' | 'SHORT', underlyingPrice: number, timestamp: Date): Promise<void> {
     try {
-      this.logger.info(`🎯 Breakout detected - Auto-selecting ${direction} ATM option for price: ₹${underlyingPrice}`);
+      this.logger.info(`🎯 Breakout detected - Auto-selecting ${direction} option by premium for price: ₹${underlyingPrice}`);
       
-      // Select ATM option immediately for UI display
+      // Select option with premium closest to 1% of futures price
       const selectedOption = await this.selectATMOption(direction, underlyingPrice);
       
       // Store for later use when order is placed
@@ -876,11 +945,12 @@ export class TradeExecutionService {
       // Save to disk
       this.savePersistedData();
       
-      this.logger.info(`✅ ATM Option auto-selected: ${selectedOption.tradingsymbol}`);
+      this.logger.info(`✅ Premium-based Option auto-selected: ${selectedOption.tradingsymbol}`);
       this.logger.info(`   📊 Strike: ₹${selectedOption.strike} | Token: ${selectedOption.instrument_token}`);
+      this.logger.info(`   💰 Selected with target premium: ₹${(underlyingPrice * 0.01).toFixed(2)} (1% of futures)`);
       
     } catch (error) {
-      this.logger.error(`❌ Failed to auto-select ATM option after breakout:`, error);
+      this.logger.error(`❌ Failed to auto-select option by premium after breakout:`, error);
       // Don't throw - this is just for UI display, not critical for trading
     }
   }
