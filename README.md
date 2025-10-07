@@ -43,6 +43,20 @@ The bot implements a professional momentum-based trading system:
 
 **📚 For detailed strategy implementation, algorithm specifics, and debugging guide, see [STRATEGY-DOCUMENTATION.md](./STRATEGY-DOCUMENTATION.md)**
 
+## 🚀 **RECENT ENHANCEMENTS** (October 2025)
+
+### **Strategy Improvements**:
+
+- ✅ **Premium-Based Option Selection**: Changed from ATM to 1% of NIFTY futures price for better liquidity
+- ✅ **Optimized Marking Candle System**: Reduced maximum updates from 3 to 2 for faster execution
+- ✅ **Enhanced UI Dashboard**: New V2 dashboard with clean, focused layout and removed redundancy
+
+### **UI/UX Improvements**:
+
+- 🎨 **Modern Dashboard**: New breakout-strategy-v2 with streamlined sections
+- 📊 **Better Information Architecture**: Consolidated redundant sections, improved flow
+- 🧹 **Clean Layout**: Removed duplicate market data, trading mode, and position displays
+
 ## Prerequisites
 
 - Node.js v18.0.0 or higher
@@ -96,7 +110,8 @@ http://localhost:3000/
 **🎯 Strategy Dashboard:**
 
 - **Main Interface**: http://localhost:3000/ (Strategy control panel)
-- **Breakout Strategy**: http://localhost:3000/breakout-strategy (Live strategy dashboard)
+- **Breakout Strategy (V2)**: http://localhost:3000/breakout-strategy-v2 (Clean, modern dashboard)
+- **Breakout Strategy (Classic)**: http://localhost:3000/breakout-strategy (Original dashboard)
 - **Authentication**: http://localhost:3000/auth/login (Daily login required)
 
 ### Strategy Operation

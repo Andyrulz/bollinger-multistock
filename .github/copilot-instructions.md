@@ -15,9 +15,11 @@ Professional Node.js TypeScript NIFTY futures trading bot using Zerodha's KiteCo
 ## Key Requirements
 
 - **NIFTY Breakout Strategy**: Professional breakout-retracement with 15,15 pivot detection
+- **Premium-Based Option Selection**: 1% of NIFTY futures price targeting for optimal liquidity
+- **Optimized Marking Candle System**: Maximum 2 updates (reduced from 3) for faster execution
 - **Real-time Price Streaming**: 1-second manual polling (no WebSocket dependencies)
 - **Session Persistence**: Encrypted daily session storage with automatic restoration
-- **Integrated UX**: Single-button strategy control with automatic price streaming
+- **Modern Dashboard UI**: Clean V2 interface with consolidated information architecture
 - **Professional Pivot Detection**: 15,15 lookback algorithm for reliable pivot points
 - **5-minute Candle Analysis**: Real-time candle building and breakout monitoring
 - **Comprehensive Logging**: Detailed strategy and pivot detection logging

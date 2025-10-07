@@ -468,11 +468,8 @@ class TradingBot {
             <a href="/strategy/status" class="action-btn" style="background: linear-gradient(135deg, #4facfe, #00f2fe);">
                 🎯 Strategy Status
             </a>
-            <a href="/breakout-strategy" class="action-btn" style="background: linear-gradient(135deg, #a8edea, #fed6e3);">
-                📊 Breakout Strategy (Classic)
-            </a>
             <a href="/breakout-strategy-v2" class="action-btn" style="background: linear-gradient(135deg, #22c55e, #16a34a); color: white;">
-                🚀 Modern Dashboard
+                🚀 Breakout Pullback Strategy
             </a>
             <button onclick="executeManualExit()" class="action-btn danger">
                 🚨 Manual Exit
@@ -525,13 +522,9 @@ class TradingBot {
                     <span class="method">GET</span>
                     <span>/strategy/status (Overall Strategy Status)</span>
                 </a>
-                <a href="/breakout-strategy" class="endpoint">
-                    <span class="method">GET</span>
-                    <span>/breakout-strategy (Breakout Strategy Dashboard)</span>
-                </a>
                 <a href="/breakout-strategy-v2" class="endpoint" style="background: linear-gradient(135deg, #22c55e, #16a34a); color: white; border-color: #22c55e;">
-                    <span class="method" style="background: rgba(255,255,255,0.2);">NEW</span>
-                    <span>/breakout-strategy-v2 (Modern Dashboard)</span>
+                    <span class="method" style="background: rgba(255,255,255,0.2);">GET</span>
+                    <span>/breakout-strategy-v2 (Breakout Pullback Strategy Dashboard)</span>
                 </a>
                 <a href="/breakout-strategy/status" class="endpoint">
                     <span class="method">GET</span>
@@ -2626,20 +2619,21 @@ class TradingBot {
                 </div>
 
                 <div class="status-card" style="border-left: 4px solid ${
-                  tradeStateInfo.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
-                  tradeStateInfo.tradeState === 'waiting_for_entry' ? '#F59E0B' :
-                  tradeStateInfo.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
+                  tradeStateInfo?.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
+                  tradeStateInfo?.tradeState === 'waiting_for_entry' ? '#F59E0B' :
+                  tradeStateInfo?.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
                 };">
                     <div class="card-title">🎯 Trade State</div>
                     <div class="card-content">
                         <div style="font-weight: 600; color: ${
-                          tradeStateInfo.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
-                          tradeStateInfo.tradeState === 'waiting_for_entry' ? '#F59E0B' :
-                          tradeStateInfo.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
+                          tradeStateInfo?.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
+                          tradeStateInfo?.tradeState === 'waiting_for_entry' ? '#F59E0B' :
+                          tradeStateInfo?.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
                         }; font-size: 18px; text-transform: capitalize; margin-bottom: 10px;">
-                            ${tradeStateInfo.tradeState.replace(/_/g, ' ')}
+                            ${tradeStateInfo?.tradeState?.replace(/_/g, ' ') || 'Loading...'}
                         </div>
                         ${
+                          !tradeStateInfo ? '<div style="color: #6b7280;">Strategy initializing...</div>' :
                           tradeStateInfo.tradeState === 'waiting_for_breakout' ? 
                             '<div style="color: #6b7280;">Monitoring for breakout signals</div>' :
                           tradeStateInfo.tradeState === 'waiting_for_entry' && tradeStateInfo.tradeSetupRequest ?
@@ -3018,7 +3012,7 @@ class TradingBot {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NIFTY Breakout Strategy Dashboard</title>
+    <title>NIFTY Breakout Pullback Strategy</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -3496,8 +3490,8 @@ class TradingBot {
         <a href="/" class="back-link">← Back to Main Dashboard</a>
         
         <div class="header">
-            <h1>📈 NIFTY Breakout Strategy (Modern UI)</h1>
-            <div class="subtitle">Professional Breakout-Retracement • 15,15 Pivot Detection • Live Updates</div>
+            <h1>� NIFTY Breakout Pullback Strategy</h1>
+            <div class="subtitle">Professional Trading Dashboard • Clean & Focused • Real-time Updates</div>
         </div>
 
         ${!isAuthenticated ? `
@@ -3528,7 +3522,7 @@ class TradingBot {
             
             <div class="hero-card">
                 <div class="hero-label">📊 Trade State</div>
-                <div class="hero-value">${tradeStateInfo.tradeState.replace(/_/g, ' ').toUpperCase()}</div>
+                <div class="hero-value">${tradeStateInfo?.tradeState?.replace(/_/g, ' ').toUpperCase() || 'LOADING'}</div>
                 <div class="hero-subtitle">Position: ${activePosition ? 'OPEN' : 'NONE'} • P&L: ₹${activePosition?.pnl ? activePosition.pnl.toLocaleString() : '0'}</div>
             </div>
             
@@ -3557,52 +3551,10 @@ class TradingBot {
             </div>
         </div>
         
-
-        
-        <!-- 3. MARKET DATA & CONTRACTS -->
+        <!-- 3. SIGNAL DETECTION & PIVOTS -->
         <div class="dashboard-section">
             <div class="section-header">
-                <div class="section-title">📊 Market Data & Contracts</div>
-            </div>
-            <div class="section-content">
-                <div class="info-grid">
-                    <div class="info-card">
-                        <h4>📈 Current Contract</h4>
-                        <div class="info-value">${currentContract ? currentContract.tradingsymbol : 'Loading...'}</div>
-                        <div class="info-subtitle">
-                            ${currentContract ? 'Expiry: ' + new Date(currentContract.expiry).toLocaleDateString() : 'Waiting for data...'}
-                        </div>
-                    </div>
-                    <div class="info-card">
-                        <h4>💹 Live Price Data</h4>
-                        <div class="info-value">₹${livePrice ? livePrice.last_price.toFixed(2) : '0.00'}</div>
-                        <div class="info-subtitle">
-                            Vol: ${livePrice ? livePrice.volume.toLocaleString() : '0'} | 
-                            OI: ${livePrice ? (livePrice.oi || 0).toLocaleString() : '0'}
-                        </div>
-                    </div>
-                    <div class="info-card">
-                        <h4>📊 Volume Analysis</h4>
-                        <div class="info-value">${typeof volumeSMA50 === 'number' ? volumeSMA50.toFixed(0) : 'N/A'}</div>
-                        <div class="info-subtitle">Volume SMA (50) • ${oneMinuteCandleCount}/50 candles</div>
-                    </div>
-                    <div class="info-card">
-                        <h4>⏰ Market Status</h4>
-                        <div class="info-value">
-                            <span class="status-indicator ${isMarketHours ? 'active' : 'inactive'}">
-                                ${isMarketHours ? 'OPEN' : 'CLOSED'}
-                            </span>
-                        </div>
-                        <div class="info-subtitle">${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })} IST</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- 4. BREAKOUT DETECTION & SIGNALS -->
-        <div class="dashboard-section">
-            <div class="section-header">
-                <div class="section-title">🎯 Breakout Detection & Signal Generation</div>
+                <div class="section-title">🎯 Signal Detection & Pivot Levels</div>
             </div>
             <div class="section-content">
                 <div class="info-grid">
@@ -3667,117 +3619,7 @@ class TradingBot {
             </div>
         </div>
         
-        <!-- 6. TRADE EXECUTION & MONITORING -->
-        <div class="dashboard-section">
-            <div class="section-header">
-                <div class="section-title">⚙️ Trade Execution & Risk Management</div>
-            </div>
-            <div class="section-content">
-                <div class="info-grid">
-                    <div class="info-card">
-                        <h4>💼 Trading Mode</h4>
-                        <div class="info-value">
-                            <span class="status-indicator ${tradingConfig?.paperTradingMode ? 'warning' : 'active'}">
-                                ${tradingConfig?.paperTradingMode ? '📝 PAPER TRADING' : '🚀 LIVE TRADING'}
-                            </span>
-                        </div>
-                        <div class="info-subtitle">
-                            ${tradingConfig?.paperTradingMode ? 
-                                'Simulated trades • Capital not affected • Safe for testing' : 
-                                'Real money trading • All trades executed live • Use with caution'
-                            }
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>💰 Capital & Risk</h4>
-                        <div class="info-value">₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Risk per Trade:</strong> ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}%</div>
-                            <div><strong>Max Risk:</strong> ₹${currentCapital && tradingConfig ? (currentCapital * tradingConfig.riskPerTrade).toLocaleString() : 'Loading...'}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>📊 Execution Stats</h4>
-                        <div class="info-value">${executionStatus?.totalTrades || 0}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Total Trades:</strong> ${executionStatus?.totalTrades || 0}</div>
-                            <div><strong>Max Retries:</strong> ${tradingConfig?.maxRetries || 3}</div>
-                            <div><strong>Order Timeout:</strong> ${tradingConfig?.orderTimeout || 5000}ms</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>🔧 Configuration</h4>
-                        <div class="info-value">${tradingConfig?.niftyLotSize || 75}</div>
-                        <div class="info-subtitle">
-                            <div><strong>NIFTY Lot Size:</strong> ${tradingConfig?.niftyLotSize || 75}</div>
-                            <div><strong>Data File:</strong> trading-data.json</div>
-                            <div><strong>Log Level:</strong> INFO</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Current Futures Contract & OHLC -->
-        <div class="dashboard-section">
-            <div class="section-header">
-                <div class="section-title">📈 Current Futures Contract</div>
-            </div>
-            <div class="section-content">
-                <div class="info-grid">
-                    <div class="info-card">
-                        <h4>📝 Contract Details</h4>
-                        <div class="info-value">${currentContract ? currentContract.tradingsymbol : 'Loading...'}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Exchange:</strong> ${currentContract ? currentContract.exchange : 'NFO'}</div>
-                            <div><strong>Lot Size:</strong> ${currentContract ? currentContract.lot_size : '75'}</div>
-                            <div><strong>Expiry:</strong> ${currentContract ? new Date(currentContract.expiry).toLocaleDateString() : 'Loading...'}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>💹 OHLC Data</h4>
-                        <div class="info-value">₹${livePrice ? livePrice.last_price.toFixed(2) : '--'}</div>
-                        <div class="info-subtitle">
-                            ${livePrice ? `
-                                <div><strong>Open:</strong> ₹${livePrice.ohlc.open.toFixed(2)}</div>
-                                <div><strong>High:</strong> ₹${livePrice.ohlc.high.toFixed(2)}</div>
-                                <div><strong>Low:</strong> ₹${livePrice.ohlc.low.toFixed(2)}</div>
-                                <div><strong>Close:</strong> ₹${livePrice.ohlc.close.toFixed(2)}</div>
-                            ` : 'Waiting for price data...'}
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>📊 Volume & Activity</h4>
-                        <div class="info-value">${livePrice ? livePrice.volume.toLocaleString() : '--'}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Volume:</strong> ${livePrice ? livePrice.volume.toLocaleString() : '--'}</div>
-                            <div><strong>Change:</strong> ${livePrice ? ((livePrice.last_price - livePrice.ohlc.close) >= 0 ? '+' : '') + (livePrice.last_price - livePrice.ohlc.close).toFixed(2) : 'N/A'}</div>
-                            <div><strong>Status:</strong> ${priceStreamingActive ? '🟢 Live' : '🔴 Inactive'}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>⏰ Market Status</h4>
-                        <div class="info-value">
-                            <span class="status-indicator ${isMarketHours ? 'active' : 'inactive'}">
-                                ${isMarketHours ? 'OPEN' : 'CLOSED'}
-                            </span>
-                        </div>
-                        <div class="info-subtitle">
-                            <div><strong>Session:</strong> ${isMarketHours ? 'Active Trading' : 'After Hours'}</div>
-                            <div><strong>Last Update:</strong> ${livePrice ? new Date().toLocaleTimeString() : 'N/A'}</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Option Instrument Selection -->
+        <!-- 4. OPTION INSTRUMENT & POSITION -->
         <div class="dashboard-section">
             <div class="section-header">
                 <div class="section-title">🎯 Selected Option Instrument</div>
@@ -3878,64 +3720,10 @@ class TradingBot {
             </div>
         </div>
         
-        <!-- Trade Information -->
+        <!-- 5. TECHNICAL ANALYSIS -->
         <div class="dashboard-section">
             <div class="section-header">
-                <div class="section-title">💼 Trade Information</div>
-            </div>
-            <div class="section-content">
-                <div class="info-grid">
-                    <!-- Trading Mode -->
-                    <div class="info-card">
-                        <h4>⚙️ Trading Mode</h4>
-                        <div class="info-value">
-                            <span class="status-indicator ${tradingConfig?.paperTradingMode ? 'warning' : 'active'}">
-                                ${tradingConfig?.paperTradingMode ? 'PAPER' : 'LIVE'}
-                            </span>
-                        </div>
-                        <div class="info-subtitle">
-                            ${tradingConfig?.paperTradingMode ? 'Safe testing mode' : 'Real money trading'}
-                        </div>
-                    </div>
-                    
-                    <!-- Capital Information -->
-                    <div class="info-card">
-                        <h4>💰 Capital</h4>
-                        <div class="info-value">₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}</div>
-                        <div class="info-subtitle">
-                            Risk: ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}% per trade
-                        </div>
-                    </div>
-                    
-                    <!-- Active Position -->
-                    <div class="info-card">
-                        <h4>📍 Position Status</h4>
-                        <div class="info-value">
-                            ${activePosition ? 'OPEN' : 'NONE'}
-                        </div>
-                        <div class="info-subtitle">
-                            ${activePosition?.instrument?.tradingsymbol || 'No active trades'}
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>📊 Current Trade</h4>
-                        <div class="info-value" style="font-size: 1.2rem;">
-                            ${activePosition ? `${activePosition.direction} • ₹${activePosition.entryPrice}` : 'No active trade'}
-                        </div>
-                        <div class="info-subtitle">
-                            ${activePosition ? `Qty: ${activePosition.quantity} • P&L: ₹${activePosition.pnl ? activePosition.pnl.toLocaleString() : '0'}` : 'Waiting for entry signal'}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Candle Analysis & Market Data -->
-        
-        <div class="dashboard-section">
-            <div class="section-header">
-                <div class="section-title">📊 Candle Analysis & Market Insights</div>
+                <div class="section-title">📊 Technical Analysis & Market Data</div>
             </div>
             <div class="section-content">
                 <div class="info-grid">
@@ -3989,46 +3777,10 @@ class TradingBot {
                         </div>
                     </div>
                 </div>
-                
-                ${latestBreakoutSignal ? `
-                <div style="margin-top: 20px;">
-                    <h4 style="color: #ffffff; margin-bottom: 15px;">🔥 Latest Breakout Signal Details</h4>
-                    <div class="info-card" style="border-left: 4px solid ${latestBreakoutSignal.type === 'long_breakout' ? '#22c55e' : '#ef4444'};">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
-                            <div>
-                                <div style="font-weight: 600; color: ${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? '#22c55e' : '#ef4444') : '#64748b'}; font-size: 1.1rem; margin-bottom: 8px;">
-                                    ${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? '🟢 LONG BREAKOUT' : '🔴 SHORT BREAKOUT') : '⏳ WAITING FOR SIGNAL'}
-                                </div>
-                                <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>Signal Price:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.price.toFixed(2) : '--'}</div>
-                                    <div><strong>Pivot Level:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.pivotPrice.toFixed(2) : '--'}</div>
-                                    <div><strong>Breakout Gap:</strong> ${latestBreakoutSignal ? '₹' + Math.abs(latestBreakoutSignal.price - latestBreakoutSignal.pivotPrice).toFixed(2) : '--'}</div>
-                                </div>
-                            </div>
-                            <div>
-                                <div style="font-weight: 600; color: #06b6d4; margin-bottom: 8px;">📊 Candle Data</div>
-                                <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>Open:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.candleOpen.toFixed(2) : '--'}</div>
-                                    <div><strong>Close:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.candleClose.toFixed(2) : '--'}</div>
-                                    <div><strong>Volume:</strong> ${latestBreakoutSignal ? latestBreakoutSignal.volume.toLocaleString() : '--'}</div>
-                                </div>
-                            </div>
-                            <div>
-                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">⚡ Confirmation</div>
-                                <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>Volume Ratio:</strong> ${latestBreakoutSignal ? latestBreakoutSignal.volumeRatio.toFixed(2) + 'x' : '--'}</div>
-                                    <div><strong>Signal Time:</strong> ${latestBreakoutSignal ? new Date(latestBreakoutSignal.timestamp).toLocaleTimeString() : '--'}</div>
-                                    <div><strong>Direction:</strong> ${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'BULLISH' : 'BEARISH') : '--'}</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                ` : ''}
             </div>
         </div>
         
-        <!-- Live Marking Candle Tracking -->
+        <!-- 6. LIVE MARKING CANDLE TRACKING -->
         <div class="dashboard-section">
             <div class="section-header">
                 <div class="section-title">🕯️ Live Marking Candle & 5-Min Updates</div>

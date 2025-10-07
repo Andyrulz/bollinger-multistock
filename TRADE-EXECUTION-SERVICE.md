@@ -17,7 +17,7 @@ Professional NIFTY options trading execution service integrated with Zerodha Kit
 
 ### **Core Features**
 
-- **ATM Option Selection**: Automatic selection based on NIFTY price
+- **Premium-Based Option Selection**: Automatic selection targeting 1% of NIFTY futures price
 - **Risk-Based Position Sizing**: 5% capital risk per trade
 - **Paper & Live Trading**: Safe testing with real execution capability
 - **Capital Management**: Proper separation between paper and real trades
@@ -59,15 +59,60 @@ this.updateCapitalAfterTrade(pnl); // Updates actual capital
 
 ---
 
+## 🎯 Premium-Based Option Selection (NEW)
+
+### **Algorithm Overview**
+
+The system now uses **premium-based selection** instead of traditional ATM (At The Money) selection. This approach targets options with premiums close to **1% of the current NIFTY futures price**.
+
+### **Selection Logic**
+
+```typescript
+// Calculate target premium (1% of NIFTY futures price)
+const targetPremium = niftyPrice * 0.01;
+
+// Example: NIFTY at ₹25,100 → Target premium ₹251
+
+// Fetch live option prices and find closest match
+const bestOption = optionsWithPremiums.reduce((closest, current) => {
+  const closestDiff = Math.abs(closest.premium - targetPremium);
+  const currentDiff = Math.abs(current.premium - targetPremium);
+  return currentDiff < closestDiff ? current : closest;
+});
+```
+
+### **Advantages of Premium-Based Selection**
+
+1. **Better Liquidity**: Avoids deep ITM/OTM strikes with poor liquidity
+2. **Optimal Greeks**: Naturally selects options with balanced delta/theta
+3. **Consistent Risk**: Standardized premium cost regardless of market level
+4. **Market Adaptive**: Automatically adjusts to volatility changes
+
+### **Fallback Mechanism**
+
+If live option prices are unavailable, the system falls back to traditional ATM selection:
+
+```typescript
+// Fallback to ATM if no premium data available
+const atmOption = relevantOptions.reduce((closest, current) => {
+  const closestDiff = Math.abs(closest.strike - niftyPrice);
+  const currentDiff = Math.abs(current.strike - niftyPrice);
+  return currentDiff < closestDiff ? current : closest;
+});
+```
+
+---
+
 ## 🔄 Trade Execution Flow
 
 ### **1. Option Selection Algorithm**
 
 ```typescript
-// ATM selection for next Tuesday expiry
-const atmOption = relevantOptions.reduce((closest, current) => {
-  const closestDiff = Math.abs(closest.strike - niftyPrice);
-  const currentDiff = Math.abs(current.strike - niftyPrice);
+// Premium-based selection targeting 1% of NIFTY futures price
+const targetPremium = niftyPrice * 0.01; // 1% of NIFTY futures price
+const bestOption = optionsWithPremiums.reduce((closest, current) => {
+  const closestDiff = Math.abs(closest.premium - targetPremium);
+  const currentDiff = Math.abs(current.premium - targetPremium);
   return currentDiff < closestDiff ? current : closest;
 });
 ```
@@ -415,7 +460,7 @@ tail -f logs/trading.log
 
 ### **1. Option Selection Strategy**
 
-- **Type**: ATM (At The Money) options
+- **Type**: Premium-based options (targeting 1% of futures price)
 - **Expiry**: Next Tuesday expiry for all days in current week
 - **Direction**: CE for LONG trades, PE for SHORT trades
 - **Selection Logic**: Strike closest to current NIFTY futures price
@@ -426,7 +471,7 @@ tail -f logs/trading.log
 // Example Calculation:
 // Capital: ₹1,00,000
 // Risk per Trade: 5% = ₹5,000
-// ATM Option Price: ₹100
+// Premium-based Option Price: ₹251 (1% of ₹25,100 NIFTY)
 // Stop Loss: 10 points
 // NIFTY Lot Size: 75
 
@@ -440,7 +485,7 @@ tail -f logs/trading.log
 ### **3. Trade Lifecycle Management**
 
 1. **Signal Generation**: Strategy detects breakout and creates TradeSetupRequest
-2. **Option Selection**: Service selects ATM option with correct expiry
+2. **Option Selection**: Service selects premium-based option targeting 1% of futures price
 3. **Position Sizing**: Calculates lot size based on risk management rules
 4. **Order Placement**: Places market order via Zerodha API
 5. **Position Monitoring**: Tracks entry confirmation and position details
@@ -470,7 +515,7 @@ export class TradeExecutionService {
 
   // Option Management
   public async loadInstruments(): Promise<void>;
-  private async selectATMOption(
+  private async selectPremiumBasedOption(
     direction: "LONG" | "SHORT",
     niftyPrice: number
   ): Promise<OptionInstrument>;

@@ -1,0 +1,66 @@
+{
+  "strategies": [
+    {
+      "id": "breakout-pullback-01",
+      "name": "1min breakout pullback option buy: Selling into strength scalp",
+      "enabled": true,
+      "description": "Breakout and retracement strategy with 15,15 pivot detection. Uses premium-based option selection (1% of futures price) with manual polling system.",
+      "timeframe": "1min",
+      "instruments": ["NIFTY"],
+      "riskPerTrade": 1.0,
+      "maxPositions": 1,
+      "config": {
+        "pivotLookback": 15,
+        "retracement": {
+          "enabled": true,
+          "percentage": 0.2
+        },
+        "premiumSelection": {
+          "enabled": true,
+          "targetPercentage": 1.0
+        },
+        "polling": {
+          "interval": 1000,
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "bollinger-band-01", 
+      "name": "5m option Buy: bollinger band entry and trail",
+      "enabled": true,
+      "description": "Bollinger Band breakout strategy with trailing stop loss. Operates on 5-minute timeframe with 20-period bands and 2.0 standard deviation.",
+      "timeframe": "5min",
+      "instruments": ["NIFTY", "BANKNIFTY"],
+      "riskPerTrade": 0.8,
+      "maxPositions": 2,
+      "config": {
+        "period": 20,
+        "stdDev": 2.0,
+        "trailType": "percentage",
+        "trailValue": 1.5,
+        "riskReward": {
+          "stopLoss": 2.0,
+          "target": 4.0
+        },
+        "positionSizing": {
+          "riskAmount": 10000,
+          "riskPercentage": 2.0
+        }
+      }
+    }
+  ],
+  "global": {
+    "autoStart": false,
+    "healthCheckInterval": 30000,
+    "logging": {
+      "level": "info",
+      "separateFiles": true
+    },
+    "riskManagement": {
+      "maxDailyLoss": 50000,
+      "maxDrawdown": 100000,
+      "emergencyStop": true
+    }
+  }
+}
