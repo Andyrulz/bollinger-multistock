@@ -1,6 +1,6 @@
 import { KiteConnect } from 'kiteconnect';
-import { Logger } from '../utils/Logger';
-import { TradeSetupRequest } from './NiftyBreakoutRetracementStrategy';
+import { Logger } from '../../utils/Logger';
+import { TradeSetupRequest } from './BreakoutPullbackStrategy';
 import * as fs from 'fs';
 import * as path from 'path';
 

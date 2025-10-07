@@ -1,0 +1,25 @@
+{
+  "config": {
+    "capital": 200000,
+    "riskPerTrade": 0.05,
+    "maxRetries": 3,
+    "orderTimeout": 5000,
+    "paperTradingMode": false,
+    "niftyLotSize": 75
+  },
+  "tradeHistory": [],
+  "lastUpdated": "2025-10-07T08:24:02.429Z",
+  "activeInstrument": {
+    "instrument_token": "10925314",
+    "tradingsymbol": "NIFTY25O1425050CE",
+    "name": "NIFTY",
+    "exchange": "NFO",
+    "strike": 25050,
+    "expiry": "2025-10-14T00:00:00.000Z",
+    "instrument_type": "CE",
+    "lot_size": 75,
+    "selectedAt": "2025-10-07T08:23:00.000Z",
+    "direction": "LONG",
+    "underlyingPrice": 25298.2
+  }
+}

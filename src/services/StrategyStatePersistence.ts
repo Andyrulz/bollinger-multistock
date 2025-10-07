@@ -12,7 +12,7 @@ import {
   TradeState,
   TradeSetupRequest,
   NiftyFuturesData
-} from './NiftyBreakoutRetracementStrategy';
+} from '../strategies/breakout-pullback/BreakoutPullbackStrategy';
 
 // Interface for persisted strategy state
 export interface PersistedStrategyState {

@@ -1,7 +1,7 @@
-import { Logger } from '../utils/Logger';
-import { TradeExecutionService } from './TradeExecutionService';
-import { globalStateLock } from '../utils/StateLock';
-import { StrategyStatePersistence, PersistedStrategyState } from './StrategyStatePersistence';
+import { Logger } from '../../utils/Logger';
+import { TradeExecutionService } from './BreakoutPullbackExecutor';
+import { globalStateLock } from '../../utils/StateLock';
+import { StrategyStatePersistence, PersistedStrategyState } from '../../services/StrategyStatePersistence';
 
 // Manual polling system - no WebSocket dependencies needed
 // We'll use REST API to fetch live quotes every second
@@ -75,7 +75,7 @@ export interface MarkingCandle {
   candle: Candle; // The actual candle data
   entryPrice: number; // high for long, low for short
   stopLoss: number; // low for long, high for short
-  updateCount: number; // 0 for first marking candle, 1-3 for updates
+  updateCount: number; // 0 for first marking candle, 1-2 for updates
   detectedAt: Date; // when this marking candle was detected
 }
 
@@ -86,7 +86,7 @@ export interface MarkingCandleState {
   currentMarkingCandle: MarkingCandle | null; // current active marking candle
   searchPhase: 'initial' | 'updates' | 'expired' | 'completed'; // current phase
   barsProcessedSinceBreakout: number; // count bars since breakout for 5-bar initial search
-  maxUpdatesReached: boolean; // whether 3 updates have been reached
+  maxUpdatesReached: boolean; // whether 2 updates have been reached
   timeExpired: boolean; // whether 18-minute limit has been exceeded
   tradeSkipped: boolean; // whether this setup has been skipped
 }
@@ -131,7 +131,7 @@ export interface StrategyState {
   lastProcessedOneMinuteCandleTime?: Date | undefined; // track last processed 1m candle to avoid duplicates
 }
 
-export class NiftyBreakoutRetracementStrategy {
+export class BreakoutPullbackStrategy {
   private kiteConnect: any;
   private logger: Logger;
   private strategyState: StrategyState;
@@ -393,7 +393,7 @@ export class NiftyBreakoutRetracementStrategy {
       await this.startManualPriceStreaming();
       
       // Start breakout detection  
-      this.startBreakoutDetection();
+      await this.startBreakoutDetection();
       
       // Start persistence system
       this.startPersistenceTimer();
@@ -507,6 +507,108 @@ export class NiftyBreakoutRetracementStrategy {
     } catch (error) {
       this.logger.error('Error loading historical candles:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Refresh recent 5-minute candles from the last existing candle to current time
+   * This ensures pivot detection sees current market data while maintaining historical context
+   */
+  private async refreshRecentCandles(): Promise<void> {
+    try {
+      const contract = this.strategyState.currentContract;
+      if (!contract) {
+        this.logger.warn('No contract available for candle refresh');
+        return;
+      }
+
+      const existingCandles = this.strategyState.candles;
+      if (existingCandles.length === 0) {
+        this.logger.warn('No existing candles found - need to load historical data first');
+        return;
+      }
+
+      // Get the last existing candle timestamp
+      const lastCandle = existingCandles[existingCandles.length - 1];
+      if (!lastCandle) {
+        this.logger.warn('Cannot determine last candle timestamp');
+        return;
+      }
+
+      // Fetch from the day of the last candle to current time to ensure no gaps  
+      const fromDate = new Date(lastCandle.timestamp);
+      fromDate.setHours(0, 0, 0, 0); // Start of the day containing the last candle
+      const toDate = new Date();
+      
+      // Format dates as YYYY-MM-DD
+      const fromDateStr = fromDate.toISOString().split('T')[0];
+      const toDateStr = toDate.toISOString().split('T')[0];
+      
+      this.logger.debug(`🔄 Refreshing 5m candles from ${fromDateStr} (last candle day) to ${toDateStr}...`);
+      
+      // Fetch 5-minute candles from last candle date to current time
+      const recentCandles = await this.kiteConnect.getHistoricalData(
+        contract.instrument_token,
+        '5minute',
+        fromDateStr,
+        toDateStr
+      );
+      
+      if (!recentCandles || recentCandles.length === 0) {
+        this.logger.debug('No new candles found in refresh period');
+        return;
+      }
+
+      // Convert to our Candle interface  
+      const newCandles = recentCandles.map((candle: any) => ({
+        timestamp: new Date(candle.date),
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume
+      }));
+
+      // Find the last candle timestamp in our existing data for deduplication
+      const currentCandles = this.strategyState.candles;
+      let lastExistingTime = 0;
+      if (currentCandles.length > 0) {
+        const lastExistingCandle = currentCandles[currentCandles.length - 1];
+        if (lastExistingCandle) {
+          lastExistingTime = lastExistingCandle.timestamp.getTime();
+        }
+      }
+
+      // Add only new candles (ones we don't already have)
+      const candlesToAdd = newCandles.filter((candle: Candle) => candle.timestamp.getTime() > lastExistingTime);
+      
+      if (candlesToAdd.length > 0) {
+        this.strategyState.candles.push(...candlesToAdd);
+        
+        // Memory optimization: Keep only latest 1000 candles (about 3.5 days of 5m data)
+        const maxCandles = 1000;
+        if (this.strategyState.candles.length > maxCandles) {
+          this.strategyState.candles = this.strategyState.candles.slice(-maxCandles);
+          this.logger.debug(`🗑️ Trimmed 5m candles to latest ${maxCandles} for memory optimization`);
+        }
+        
+        this.logger.info(`✅ Added ${candlesToAdd.length} new 5m candles (from ${fromDateStr}). Total: ${this.strategyState.candles.length}`);
+        
+        // Log the latest candle for verification
+        const latestCandle = this.strategyState.candles[this.strategyState.candles.length - 1];
+        if (latestCandle) {
+          this.logger.info(`📊 Latest 5m candle: ${latestCandle.timestamp.toLocaleString()} OHLCV: ${latestCandle.open}/${latestCandle.high}/${latestCandle.low}/${latestCandle.close}/${latestCandle.volume}`);
+        }
+        
+        // Mark state as dirty for persistence
+        this.isDirty = true;
+      } else {
+        this.logger.debug('📊 No new 5m candles to add (all candles up to date)');
+      }
+      
+    } catch (error) {
+      this.logger.error('❌ Error refreshing recent candles:', error);
+      // Don't throw - this is non-critical, pivot detection can continue with existing data
     }
   }
 
@@ -985,12 +1087,12 @@ export class NiftyBreakoutRetracementStrategy {
   private readonly LOOKBACK_PERIOD = 15; // 15,15 pivot detection as per requirements
 
   // Placeholder methods for breakout detection and candle processing
-  private startBreakoutDetection(): void {
+  private async startBreakoutDetection(): Promise<void> {
     this.strategyState.breakoutDetectionActive = true;
     this.logger.info('Breakout detection started');
     
     // Start pivot detection immediately with current candles
-    this.detectPivotPoints();
+    await this.detectPivotPoints();
     
     // Set up periodic pivot detection synchronized to 5-minute candle closes
     this.scheduleNext5MinutePivotDetection();
@@ -1038,8 +1140,8 @@ export class NiftyBreakoutRetracementStrategy {
       this.logger.warn(`⚠️ Timing calculation error - timeUntilNext: ${timeUntilNext}ms. Forcing 5min delay.`);
       // Force next detection to be 5 minutes from now
       const fallbackTime = new Date(now.getTime() + (5 * 60 * 1000));
-      this.breakoutDetectionInterval = setTimeout(() => {
-        this.detectPivotPoints();
+      this.breakoutDetectionInterval = setTimeout(async () => {
+        await this.detectPivotPoints();
         this.scheduleNext5MinutePivotDetection();
       }, 5 * 60 * 1000);
       return;
@@ -1047,8 +1149,8 @@ export class NiftyBreakoutRetracementStrategy {
     
     this.logger.info(`📅 Next 5m pivot detection scheduled for: ${nextCandleTime.toLocaleTimeString()} (in ${Math.round(timeUntilNext/1000)}s)`);
     
-    this.breakoutDetectionInterval = setTimeout(() => {
-      this.detectPivotPoints();
+    this.breakoutDetectionInterval = setTimeout(async () => {
+      await this.detectPivotPoints();
       // Schedule the next detection
       this.scheduleNext5MinutePivotDetection();
     }, timeUntilNext);
@@ -1066,8 +1168,12 @@ export class NiftyBreakoutRetracementStrategy {
   /**
    * Detect pivot points from 5-minute candles using 15,15 lookback
    * Uses professional pivot point detection algorithm
+   * Now refreshes recent candles before analysis to include today's data
    */
-  private detectPivotPoints(): void {
+  private async detectPivotPoints(): Promise<void> {
+    // First, refresh recent 5-minute candles to include any newly formed candles
+    await this.refreshRecentCandles();
+    
     const candles = this.strategyState.candles;
     const requiredCandles = (this.LOOKBACK_PERIOD * 2) + 1; // 31 candles minimum
 
@@ -1689,7 +1795,7 @@ export class NiftyBreakoutRetracementStrategy {
   // Two-Phase System:
   // Phase 1 (Initial): Detects opposite-direction marking candles within 5 bars after breakout
   // Phase 2 (Updates): Updates entry/SL levels dynamically when SL extends by ≥1 point  
-  //                   - Enforces 18-minute total time limit and maximum 3 updates per breakout
+  //                   - Enforces 18-minute total time limit and maximum 2 updates per breakout
   //                   - Trade abandoned if no marking candle found in first 5 bars
   // - Provides real-time entry and stop-loss levels for trade execution
   // ================================================================================
@@ -2212,9 +2318,9 @@ export class NiftyBreakoutRetracementStrategy {
           // Update trade setup request with new levels
           this.createAndStoreTradeSetup(updatedMarkingCandle);
 
-          if (updatedMarkingCandle.updateCount >= 3) {
+          if (updatedMarkingCandle.updateCount >= 2) {
             markingState.maxUpdatesReached = true;
-            this.logger.info(`🚫 Maximum 3 updates reached`);
+            this.logger.info(`🚫 Maximum 2 updates reached`);
           }
         }
       } else {
@@ -2289,7 +2395,7 @@ export class NiftyBreakoutRetracementStrategy {
    * 
    * Update Criteria:
    * - New candle must extend stop-loss by at least 1 point (adverse direction)
-   * - Maximum 3 updates allowed per breakout sequence
+   * - Maximum 2 updates allowed per breakout sequence
    * - Any direction candle can qualify (not restricted to opposite direction)
    * 
    * @param candle - The candle to evaluate for marking candle update

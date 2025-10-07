@@ -1,9 +1,12 @@
 import { KiteConnect } from 'kiteconnect';
 import { AuthService } from './services/AuthService';
-import { NiftyBreakoutRetracementStrategy } from './services/NiftyBreakoutRetracementStrategy';
+import { BreakoutPullbackStrategy } from './strategies/breakout-pullback/BreakoutPullbackStrategy';
+import { StrategyManager } from './core/StrategyManager';
+import { StrategyRegistry } from './core/StrategyRegistry';
 import { Logger } from './utils/Logger';
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
+import path from 'path';
 
 // Load environment variables
 dotenv.config();
@@ -11,7 +14,8 @@ dotenv.config();
 class TradingBot {
   private kiteConnect: any; // Using any for now due to type complexity
   private authService: AuthService;
-  private breakoutStrategy: NiftyBreakoutRetracementStrategy;
+  private strategyManager: StrategyManager;
+  private breakoutStrategy: BreakoutPullbackStrategy; // Keep for backward compatibility
   private logger: Logger;
   private app: express.Application;
 
@@ -28,7 +32,17 @@ class TradingBot {
     });
 
     this.authService = new AuthService(this.kiteConnect, this.logger);
-    this.breakoutStrategy = new NiftyBreakoutRetracementStrategy(this.kiteConnect, this.logger);
+    
+    // Initialize Strategy Manager
+    const configPath = path.join(__dirname, '..', 'config', 'strategies.json');
+    this.strategyManager = new StrategyManager(this.kiteConnect, this.logger, {
+      configPath,
+      autoStart: false,
+      healthCheckInterval: 30000
+    });
+    
+    // Keep the original strategy for backward compatibility
+    this.breakoutStrategy = new BreakoutPullbackStrategy(this.kiteConnect, this.logger);
 
     // Price updates are now managed by the breakout strategy
     // this.latestTick is populated through strategy.getLivePrice() calls
@@ -1041,6 +1055,7 @@ class TradingBot {
   let volumeSMA50: number | undefined;
   let latestOneMinuteCandle: any;
   let tradeStateInfo: any;
+  let markingCandleState: any;
         
         try {
           strategyState = this.breakoutStrategy.getStrategyState();
@@ -1054,6 +1069,7 @@ class TradingBot {
           volumeSMA50 = this.breakoutStrategy.getCurrentVolumeSMA50();
           latestOneMinuteCandle = this.breakoutStrategy.getLatestOneMinuteCandle();
           tradeStateInfo = this.breakoutStrategy.getTradeStateInfo();
+          markingCandleState = this.breakoutStrategy.getMarkingCandleState();
         } catch (error) {
           this.logger.error('Error getting detailed strategy data:', error);
         }
@@ -1091,6 +1107,8 @@ class TradingBot {
           trade_state: tradeStateInfo?.tradeState || 'waiting_for_breakout',
           trade_setup: tradeStateInfo?.tradeSetupRequest || null,
           current_trade_id: tradeStateInfo?.currentTradeId || null,
+          // Marking Candle Information
+          marking_candle_state: markingCandleState || null,
           // Execution Service Information
           execution_status: executionStatus || null,
           current_capital: currentCapital || null,
@@ -2752,7 +2770,7 @@ class TradingBot {
                         <strong>Status:</strong> ${markingCandleState.isActive ? '🟡 TRACKING' : '⚪ INACTIVE'}<br>
                         ${markingCandleState.isActive ? `
                             <strong>Search Phase:</strong> ${markingCandleState.searchPhase.toUpperCase()}<br>
-                            <strong>Update Count:</strong> ${markingCandleState.currentMarkingCandle?.updateCount || 0}/3<br>
+                            <strong>Update Count:</strong> ${markingCandleState.currentMarkingCandle?.updateCount || 0}/2<br>
                             ${markingCandleState.currentMarkingCandle ? `
                                 <div class="marking-candle-details" style="margin-top: 8px; padding: 8px; background: #f8fafc; border-radius: 4px; font-size: 13px;">
                                     <div><strong>Entry Price:</strong> ₹${markingCandleState.currentMarkingCandle.entryPrice.toFixed(2)}</div>
@@ -4026,7 +4044,7 @@ class TradingBot {
                         </div>
                         <div class="info-subtitle">
                             <div><strong>Search Phase:</strong> ${markingCandleState?.searchPhase?.toUpperCase() || 'Not active'}</div>
-                            <div><strong>Update Count:</strong> ${markingCandleState?.currentMarkingCandle?.updateCount || 0}/3</div>
+                            <div><strong>Update Count:</strong> ${markingCandleState?.currentMarkingCandle?.updateCount || 0}/2</div>
                             <div><strong>Status:</strong> ${markingCandleState?.isActive ? 'Monitoring 5-min candles' : 'Waiting for breakout'}</div>
                         </div>
                     </div>
@@ -4126,7 +4144,7 @@ class TradingBot {
                             <div>
                                 <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">⚡ Updates</div>
                                 <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>Count:</strong> ${markingCandleState.currentMarkingCandle.updateCount}/3</div>
+                                    <div><strong>Count:</strong> ${markingCandleState.currentMarkingCandle.updateCount}/2</div>
                                     <div><strong>Last Update:</strong> ${new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleTimeString()}</div>
                                     <div><strong>Next:</strong> Every 5 minutes</div>
                                 </div>
@@ -4502,12 +4520,238 @@ class TradingBot {
         });
       }
     });
+
+    // ===========================
+    // MULTI-STRATEGY ENDPOINTS
+    // ===========================
+
+    // Get all strategies status
+    this.app.get('/strategies', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const allStatuses = this.strategyManager.getAllStrategyStatuses();
+        const globalMetrics = this.strategyManager.getGlobalMetrics();
+        
+        const response = {
+          success: true,
+          timestamp: new Date().toISOString(),
+          global_metrics: globalMetrics,
+          strategies: Object.fromEntries(allStatuses)
+        };
+
+        res.json(response);
+      } catch (error) {
+        this.logger.error('Error getting strategies status:', error);
+        res.status(500).json({ error: 'Failed to get strategies status' });
+      }
+    });
+
+    // Get specific strategy status
+    this.app.get('/strategies/:id', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const strategyId = req.params.id;
+        if (!strategyId) {
+          res.status(400).json({ error: 'Strategy ID is required' });
+          return;
+        }
+        
+        const status = this.strategyManager.getStrategyStatus(strategyId);
+        
+        if (!status) {
+          res.status(404).json({ error: `Strategy not found: ${strategyId}` });
+          return;
+        }
+
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          strategy: status
+        });
+      } catch (error) {
+        this.logger.error(`Error getting strategy ${req.params.id} status:`, error);
+        res.status(500).json({ error: 'Failed to get strategy status' });
+      }
+    });
+
+    // Start a specific strategy
+    this.app.post('/strategies/:id/start', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const strategyId = req.params.id;
+        if (!strategyId) {
+          res.status(400).json({ error: 'Strategy ID is required' });
+          return;
+        }
+        
+        const success = await this.strategyManager.startStrategy(strategyId);
+        
+        if (success) {
+          res.json({
+            success: true,
+            message: `Strategy ${strategyId} started successfully`,
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          res.status(400).json({ 
+            error: `Failed to start strategy: ${strategyId}` 
+          });
+        }
+      } catch (error) {
+        this.logger.error(`Error starting strategy ${req.params.id}:`, error);
+        res.status(500).json({ error: 'Failed to start strategy' });
+      }
+    });
+
+    // Stop a specific strategy
+    this.app.post('/strategies/:id/stop', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const strategyId = req.params.id;
+        if (!strategyId) {
+          res.status(400).json({ error: 'Strategy ID is required' });
+          return;
+        }
+        
+        const success = await this.strategyManager.stopStrategy(strategyId);
+        
+        if (success) {
+          res.json({
+            success: true,
+            message: `Strategy ${strategyId} stopped successfully`,
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          res.status(400).json({ 
+            error: `Failed to stop strategy: ${strategyId}` 
+          });
+        }
+      } catch (error) {
+        this.logger.error(`Error stopping strategy ${req.params.id}:`, error);
+        res.status(500).json({ error: 'Failed to stop strategy' });
+      }
+    });
+
+    // Start all strategies
+    this.app.post('/strategies/start-all', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        await this.strategyManager.startAllStrategies();
+        
+        res.json({
+          success: true,
+          message: 'All enabled strategies started successfully',
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error starting all strategies:', error);
+        res.status(500).json({ error: 'Failed to start all strategies' });
+      }
+    });
+
+    // Stop all strategies
+    this.app.post('/strategies/stop-all', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        await this.strategyManager.stopAllStrategies();
+        
+        res.json({
+          success: true,
+          message: 'All strategies stopped successfully',
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error stopping all strategies:', error);
+        res.status(500).json({ error: 'Failed to stop all strategies' });
+      }
+    });
+
+    // Get strategy page (individual strategy dashboard)
+    this.app.get('/strategy/:id', async (req: Request, res: Response) => {
+      try {
+        const strategyId = req.params.id;
+        if (!strategyId) {
+          res.status(400).send('Strategy ID is required');
+          return;
+        }
+        
+        const status = this.strategyManager.getStrategyStatus(strategyId);
+        
+        if (!status) {
+          res.status(404).send(`
+            <html>
+              <head><title>Strategy Not Found</title></head>
+              <body>
+                <h1>Strategy Not Found</h1>
+                <p>Strategy "${strategyId}" was not found.</p>
+                <a href="/">← Back to Main Dashboard</a>
+              </body>
+            </html>
+          `);
+          return;
+        }
+
+        // Render strategy-specific page
+        const html = this.renderStrategyPage(strategyId, status);
+        res.send(html);
+        
+      } catch (error) {
+        this.logger.error(`Error rendering strategy page ${req.params.id}:`, error);
+        res.status(500).send('Error loading strategy page');
+      }
+    });
   }
 
   public async start(): Promise<void> {
     try {
       // Wait for session initialization to complete before checking authentication
       await this.authService.waitForInitialization();
+
+      // Initialize Strategy Manager
+      await this.strategyManager.initialize();
+      this.logger.info('✅ Multi-Strategy System initialized successfully');
 
       // Check if we have a valid access token
       if (!this.authService.isAuthenticated()) {
@@ -4519,6 +4763,7 @@ class TradingBot {
       this.app.listen(port, () => {
         this.logger.info(`Trading bot server started on port ${port}`);
         this.logger.info('Visit http://localhost:3000/auth/login to authenticate with Zerodha');
+        this.logger.info('🎯 Multi-Strategy Dashboard: http://localhost:3000/');
       });
 
     } catch (error) {
@@ -4617,6 +4862,226 @@ class TradingBot {
       this.logger.error('❌ Strategy state persistence test error:', error);
       throw error;
     }
+  }
+
+  /**
+   * Render strategy-specific page
+   */
+  private renderStrategyPage(strategyId: string, status: any): string {
+    const strategyName = status.config.name;
+    const isActive = status.metrics.isActive;
+    const healthStatus = status.metrics.healthStatus;
+    
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>${strategyName} - Trading Bot</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+          }
+          .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            background: white; 
+            border-radius: 10px; 
+            padding: 30px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+          }
+          .header { 
+            text-align: center; 
+            margin-bottom: 30px; 
+            padding-bottom: 25px; 
+            border-bottom: 3px solid #667eea;
+          }
+          .status-badge { 
+            display: inline-block; 
+            padding: 8px 16px; 
+            border-radius: 20px; 
+            color: white; 
+            font-weight: bold; 
+            margin-left: 10px;
+          }
+          .active { background-color: #28a745; }
+          .stopped { background-color: #dc3545; }
+          .warning { background-color: #ffc107; color: #212529; }
+          .error { background-color: #dc3545; }
+          .healthy { background-color: #28a745; }
+          .controls { 
+            text-align: center; 
+            margin: 30px 0; 
+          }
+          .btn { 
+            background: #667eea; 
+            color: white; 
+            border: none; 
+            padding: 12px 24px; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            margin: 0 10px; 
+            font-size: 16px;
+            transition: all 0.3s ease;
+          }
+          .btn:hover { 
+            background: #5a6fd8; 
+            transform: translateY(-2px);
+          }
+          .btn:disabled { 
+            background: #6c757d; 
+            cursor: not-allowed; 
+            transform: none;
+          }
+          .metrics { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); 
+            gap: 20px; 
+            margin: 30px 0; 
+          }
+          .metric-card { 
+            background: #f8f9fa; 
+            padding: 20px; 
+            border-radius: 8px; 
+            border-left: 4px solid #667eea;
+          }
+          .metric-value { 
+            font-size: 2em; 
+            font-weight: bold; 
+            color: #667eea; 
+          }
+          .back-link { 
+            display: inline-block; 
+            margin-bottom: 20px; 
+            color: #667eea; 
+            text-decoration: none; 
+            font-weight: bold;
+          }
+          .back-link:hover { 
+            color: #5a6fd8; 
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <a href="/" class="back-link">← Back to Main Dashboard</a>
+          
+          <div class="header">
+            <h1>${strategyName}</h1>
+            <span class="status-badge ${isActive ? 'active' : 'stopped'}">
+              ${isActive ? 'ACTIVE' : 'STOPPED'}
+            </span>
+            <span class="status-badge ${healthStatus}">
+              ${healthStatus.toUpperCase()}
+            </span>
+          </div>
+
+          <div class="controls">
+            <button class="btn" onclick="startStrategy()" ${isActive ? 'disabled' : ''}>
+              Start Strategy
+            </button>
+            <button class="btn" onclick="stopStrategy()" ${!isActive ? 'disabled' : ''}>
+              Stop Strategy
+            </button>
+            <button class="btn" onclick="refreshStatus()">
+              Refresh
+            </button>
+          </div>
+
+          <div class="metrics">
+            <div class="metric-card">
+              <div class="metric-value">${status.metrics.totalTrades}</div>
+              <div>Total Trades</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-value">₹${status.metrics.profitLoss.toFixed(2)}</div>
+              <div>Profit & Loss</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-value">${status.metrics.winRate.toFixed(1)}%</div>
+              <div>Win Rate</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-value">${status.metrics.errorCount}</div>
+              <div>Error Count</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-value">${status.config.timeframe}</div>
+              <div>Timeframe</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-value">${status.config.riskPerTrade}%</div>
+              <div>Risk Per Trade</div>
+            </div>
+          </div>
+
+          <div style="margin-top: 30px;">
+            <h3>Configuration</h3>
+            <pre style="background: #f8f9fa; padding: 15px; border-radius: 5px; overflow-x: auto;">
+${JSON.stringify(status.config, null, 2)}
+            </pre>
+          </div>
+
+          <div style="margin-top: 30px;">
+            <h3>Strategy Details</h3>
+            <p><strong>ID:</strong> ${strategyId}</p>
+            <p><strong>Description:</strong> ${status.config.description}</p>
+            <p><strong>Instruments:</strong> ${status.config.instruments.join(', ')}</p>
+            <p><strong>Max Positions:</strong> ${status.config.maxPositions}</p>
+            <p><strong>Last Update:</strong> ${new Date(status.metrics.lastUpdateTime).toLocaleString()}</p>
+          </div>
+        </div>
+
+        <script>
+          async function startStrategy() {
+            try {
+              const response = await fetch('/strategies/${strategyId}/start', { method: 'POST' });
+              const result = await response.json();
+              
+              if (result.success) {
+                alert('Strategy started successfully!');
+                window.location.reload();
+              } else {
+                alert('Failed to start strategy: ' + (result.error || 'Unknown error'));
+              }
+            } catch (error) {
+              alert('Error starting strategy: ' + error.message);
+            }
+          }
+
+          async function stopStrategy() {
+            try {
+              const response = await fetch('/strategies/${strategyId}/stop', { method: 'POST' });
+              const result = await response.json();
+              
+              if (result.success) {
+                alert('Strategy stopped successfully!');
+                window.location.reload();
+              } else {
+                alert('Failed to stop strategy: ' + (result.error || 'Unknown error'));
+              }
+            } catch (error) {
+              alert('Error stopping strategy: ' + error.message);
+            }
+          }
+
+          function refreshStatus() {
+            window.location.reload();
+          }
+
+          // Auto-refresh every 30 seconds
+          setTimeout(() => {
+            window.location.reload();
+          }, 30000);
+        </script>
+      </body>
+      </html>
+    `;
   }
 }
 
