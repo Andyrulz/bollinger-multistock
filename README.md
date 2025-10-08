@@ -40,6 +40,7 @@ The bot implements a professional momentum-based trading system:
 - ✅ **Memory Management**: Proper candle cleanup prevents memory leaks
 - ✅ **Race Conditions**: Atomic state transitions with proper locking
 - ✅ **Error Recovery**: Circuit breakers and comprehensive error handling
+- ✅ **Capital Constraint**: Fixed "Trade cost exceeds available capital" errors with dual-constraint position sizing
 
 **📚 For detailed strategy implementation, algorithm specifics, and debugging guide, see [STRATEGY-DOCUMENTATION.md](./STRATEGY-DOCUMENTATION.md)**
 
@@ -50,6 +51,7 @@ The bot implements a professional momentum-based trading system:
 - ✅ **Premium-Based Option Selection**: Changed from ATM to 1% of NIFTY futures price for better liquidity
 - ✅ **Optimized Marking Candle System**: Reduced maximum updates from 3 to 2 for faster execution
 - ✅ **Enhanced UI Dashboard**: New V2 dashboard with clean, focused layout and removed redundancy
+- ✅ **Capital-Constrained Position Sizing**: Dual-constraint algorithm prevents trade cost exceeding capital errors
 
 ### **UI/UX Improvements**:
 

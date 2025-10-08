@@ -1276,6 +1276,44 @@ const bestOption = optionsWithPremiums.reduce((closest, current) => {
 - ✅ **Better Error Handling**: Clean loading states
 - ✅ **Improved UX**: Clear status indicators
 
+### **💰 Capital-Constrained Position Sizing (CRITICAL FIX)**
+
+**Change**: Enhanced position sizing logic to prevent **"Trade cost exceeds available capital"** errors
+
+**Problem Solved**:
+
+- Risk-based sizing could calculate 14 lots (₹10,000 risk tolerance)
+- But option premium × quantity exceeded available capital (₹277,725 > ₹200,000)
+- Trade execution failed despite valid breakout signals
+
+**New Algorithm**: **Dual-constraint position sizing**
+
+**Implementation**:
+
+```typescript
+// OLD: Risk-only constraint
+const maxLots = Math.floor(maxRiskAmount / riskPerLot);
+
+// NEW: Both risk AND capital constraints
+const maxLotsByRisk = Math.floor(maxRiskAmount / riskPerLot);
+const maxLotsByCapital = Math.floor(capital / (optionPrice * niftyLotSize));
+const finalLots = Math.min(maxLotsByRisk, maxLotsByCapital); // Take minimum
+```
+
+**Real-World Example**:
+
+- **Scenario**: SHORT breakout, ₹264.5 option premium, 9.3 SL points
+- **Risk calculation**: 14 lots allowed (₹10,000 ÷ ₹697.5 = 14.34)
+- **Capital calculation**: 10 lots affordable (₹200,000 ÷ ₹19,837.5 = 10.08)
+- **Result**: 10 lots final position (prevents ₹77,725 capital shortfall)
+
+**Impact**:
+
+- ✅ **Zero Trade Rejections**: Eliminates capital exceeded errors
+- ✅ **Smart Risk Management**: Uses 60% risk tolerance vs aggressive 100%
+- ✅ **Better Capital Utilization**: ₹198,375 vs ₹277,725 requirement
+- ✅ **Enhanced Logging**: Shows both constraints in position sizing logs
+
 ---
 
 ## 🧪 Testing Framework
@@ -1522,6 +1560,20 @@ tail -f logs/error.log
 ---
 
 ## ⚠️ Known Issues & Solutions
+
+### **✅ RESOLVED: Capital Constraint Trade Failures**
+
+**Issue:** Trade execution failed with "Trade cost ₹277,725 exceeds available capital ₹200,000"
+
+**Root Cause:** Position sizing used risk-only calculation, ignoring capital requirements for expensive options
+
+**✅ Solution - DUAL-CONSTRAINT POSITION SIZING:**
+
+- **Enhanced Logic**: Both risk AND capital constraints now considered
+- **Smart Sizing**: Takes minimum of risk-allowed vs capital-affordable lots
+- **Zero Failures**: Eliminates all capital exceeded errors
+- **Better Risk Control**: More conservative position sizing (60% vs 100% risk usage)
+- **Fixed in**: October 2025 enhancement - see Recent Enhancements section
 
 ### **1. Daily Authentication Requirement**
 

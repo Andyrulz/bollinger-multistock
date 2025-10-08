@@ -107,12 +107,12 @@ Trigger when ALL conditions are satisfied simultaneously at 5-minute candle clos
 
 **SHORT Trade Exit** (Real-time option premium monitoring):
 
-- 25% trailing stop-loss on PUT option premium with continuous monitoring
+- 12% trailing stop-loss on PUT option premium with continuous monitoring
 - **Real-time LTP Polling**: Monitor option price every 1 second
 - **Trailing Logic**:
-  - Entry at ₹200 → Initial SL = ₹150 (25% below entry)
-  - Premium rises to ₹400 (new high) → SL = ₹300 (25% below new high)
-  - Premium drops to ₹350 → SL remains ₹300 (never decreases)
+  - Entry at ₹200 → Initial SL = ₹176 (12% below entry)
+  - Premium rises to ₹400 (new high) → SL = ₹352 (12% below new high)
+  - Premium drops to ₹360 → SL remains ₹352 (never decreases)
 - **Exit Trigger**: If current option LTP ≤ trailing SL → IMMEDIATE MARKET ORDER exit
 - **State Persistence**: Track "highest premium since entry" across sessions
 

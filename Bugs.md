@@ -85,11 +85,12 @@ _None - All resolved_
 - **Impact**: Strategy state not updated on manual exit
 - **Fix**: Integrated manual exit with strategy state management
 
-### QC-2: Position Size Calculation Edge Cases
+### QC-2: Position Size Calculation - Capital Constraint Failures
 
-- **Status**: ✅ Resolved
-- **Impact**: Incorrect lot size calculations in specific scenarios
-- **Fix**: Enhanced position size validation logic
+- **Status**: ✅ Resolved (October 8, 2025)
+- **Impact**: Trade execution failed with "Trade cost ₹277,725 exceeds available capital ₹200,000"
+- **Root Cause**: Risk-only position sizing ignored capital requirements for expensive options
+- **Fix**: Implemented dual-constraint position sizing (risk + capital limits)
 
 ### QC-1: Session Persistence Race Conditions
 

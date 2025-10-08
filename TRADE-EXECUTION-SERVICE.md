@@ -117,13 +117,23 @@ const bestOption = optionsWithPremiums.reduce((closest, current) => {
 });
 ```
 
-### **2. Position Sizing Logic**
+### **2. Position Sizing Logic (ENHANCED)**
+
+**Dual-Constraint Algorithm** - prevents capital exceeded errors:
 
 ```typescript
+// Constraint 1: Risk-based sizing
 const maxRiskAmount = capital * riskPerTrade; // 5% of capital
-const riskPerLot = stopLossPoints * niftyLotSize; // Risk per lot
-const maxLots = Math.floor(maxRiskAmount / riskPerLot);
-return Math.max(1, maxLots); // Minimum 1 lot
+const riskPerLot = stopLossPoints * niftyLotSize;
+const maxLotsByRisk = Math.floor(maxRiskAmount / riskPerLot);
+
+// Constraint 2: Capital-based sizing (NEW)
+const costPerLot = optionPrice * niftyLotSize;
+const maxLotsByCapital = Math.floor(capital / costPerLot);
+
+// Take minimum of both constraints
+const finalLots = Math.min(maxLotsByRisk, maxLotsByCapital);
+return Math.max(1, finalLots); // Minimum 1 lot
 ```
 
 ### **3. Order Management**
@@ -147,7 +157,7 @@ return Math.max(1, maxLots); // Minimum 1 lot
 
 - **Capital Management**: ✅ **VERIFIED** - Paper trades correctly do NOT affect real capital
 - **Order Execution**: ✅ **VERIFIED** - Uses actual fill prices from Zerodha API
-- **Position Sizing**: ✅ **FIXED** - Now uses proper options risk calculation with delta correlation
+- **Position Sizing**: ✅ **ENHANCED** - Dual-constraint logic prevents capital exceeded errors
 - **Risk Management**: ✅ **ENHANCED** - Added capital validation and trade cost checks
 - **Error Handling**: ✅ **VERIFIED** - Comprehensive order rejection and retry logic
 - **State Persistence**: ✅ **VERIFIED** - Complete trade history and recovery
@@ -465,21 +475,27 @@ tail -f logs/trading.log
 - **Direction**: CE for LONG trades, PE for SHORT trades
 - **Selection Logic**: Strike closest to current NIFTY futures price
 
-### **2. Position Sizing Algorithm**
+### **2. Position Sizing Algorithm (ENHANCED DUAL-CONSTRAINT)**
 
 ```typescript
-// Example Calculation:
-// Capital: ₹1,00,000
-// Risk per Trade: 5% = ₹5,000
-// Premium-based Option Price: ₹251 (1% of ₹25,100 NIFTY)
-// Stop Loss: 10 points
+// Example Calculation - DUAL CONSTRAINT APPROACH:
+// Capital: ₹2,00,000
+// Risk per Trade: 5% = ₹10,000
+// Option Price: ₹264.5
+// Stop Loss: 9.3 points
 // NIFTY Lot Size: 75
 
-// Risk per lot = SL points × Lot Size
-// Risk per lot = 10 × 75 = ₹750
+// CONSTRAINT 1: Risk-based calculation
+// Risk per lot = SL points × Lot Size = 9.3 × 75 = ₹697.5
+// Max lots (risk) = ₹10,000 ÷ ₹697.5 = 14.34 → 14 lots
 
-// Maximum lots = Max Risk ÷ Risk per lot
-// Maximum lots = ₹5,000 ÷ ₹750 = 6.67 → 6 lots
+// CONSTRAINT 2: Capital-based calculation (NEW)
+// Cost per lot = Option price × Lot Size = ₹264.5 × 75 = ₹19,837.5
+// Max lots (capital) = ₹200,000 ÷ ₹19,837.5 = 10.08 → 10 lots
+
+// FINAL POSITION: min(14, 10) = 10 lots ✅
+// Trade Cost: ₹264.5 × 750 = ₹198,375 (within capital)
+// Max Risk: ₹697.5 × 10 = ₹6,975 (conservative 60% risk usage)
 ```
 
 ### **3. Trade Lifecycle Management**

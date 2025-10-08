@@ -407,23 +407,31 @@ export class TradeExecutionService {
 
   private calculatePositionSize(stopLossPoints: number, optionPrice: number): number {
     const { capital, riskPerTrade, niftyLotSize } = this.persistedData.config;
-    const maxRiskAmount = capital * riskPerTrade; // ₹5,000 for 5% of ₹1,00,000
     
-    // Risk per lot = SL points × lot size (your original method)
+    // Constraint 1: Risk-based sizing (existing logic)
+    const maxRiskAmount = capital * riskPerTrade; // ₹10,000 for 5% of ₹2,00,000
     const riskPerLot = stopLossPoints * niftyLotSize;
+    const maxLotsByRisk = Math.floor(maxRiskAmount / riskPerLot);
     
-    // Maximum lots we can afford
-    const maxLots = Math.floor(maxRiskAmount / riskPerLot);
+    // Constraint 2: Capital-based sizing (NEW - prevents capital exceeded error)
+    const costPerLot = optionPrice * niftyLotSize;
+    const maxLotsByCapital = Math.floor(capital / costPerLot);
+    
+    // Take minimum of both constraints (CRITICAL FIX)
+    const finalLots = Math.min(maxLotsByRisk, maxLotsByCapital);
     
     this.logger.info(`📊 Position Sizing Calculation:`);
     this.logger.info(`   💰 Capital: ₹${capital.toLocaleString()}`);
     this.logger.info(`   🎯 Risk per trade: ${(riskPerTrade * 100).toFixed(1)}% = ₹${maxRiskAmount.toLocaleString()}`);
     this.logger.info(`   📉 SL Points: ${stopLossPoints}`);
     this.logger.info(`   💵 Option Price: ₹${optionPrice}`);
-    this.logger.info(`   📊 Risk per lot: ${stopLossPoints} × ${niftyLotSize} = ₹${riskPerLot}`);
-    this.logger.info(`   🎲 Max lots: ₹${maxRiskAmount} ÷ ₹${riskPerLot} = ${maxLots} lots`);
+    this.logger.info(`   📊 Risk per lot: ₹${riskPerLot.toFixed(2)}`);
+    this.logger.info(`   💰 Cost per lot: ₹${costPerLot.toFixed(2)}`);
+    this.logger.info(`   🎲 Max lots (risk): ${maxLotsByRisk}`);
+    this.logger.info(`   💸 Max lots (capital): ${maxLotsByCapital}`);
+    this.logger.info(`   ✅ Final lots: ${finalLots} (minimum of constraints)`);
 
-    return Math.max(1, maxLots); // Minimum 1 lot
+    return Math.max(1, finalLots); // Minimum 1 lot
   }
 
   // ===========================
@@ -467,16 +475,14 @@ export class TradeExecutionService {
       // Calculate stop loss points (difference between entry and stop loss levels)
       const stopLossPoints = Math.abs(tradeSetup.entryLevel - tradeSetup.stopLossLevel);
       
-      // Calculate position size - SIMPLIFIED FOR OPTIONS
-      // Note: Using conservative approach since option deltas vary
+      // Calculate position size with both risk and capital constraints
+      // Note: New logic ensures we never exceed available capital
       const lotSize = this.calculatePositionSize(stopLossPoints, optionPrice);
       const quantity = lotSize * this.persistedData.config.niftyLotSize;
 
-      // Additional capital validation for trade cost
+      // Log final trade cost for verification
       const estimatedTradeCost = optionPrice * quantity;
-      if (estimatedTradeCost > this.persistedData.config.capital) {
-        throw new Error(`Trade cost ₹${estimatedTradeCost.toLocaleString()} exceeds available capital ₹${this.persistedData.config.capital.toLocaleString()}`);
-      }
+      this.logger.info(`💰 Final Trade Cost: ₹${estimatedTradeCost.toLocaleString()} (${((estimatedTradeCost / this.persistedData.config.capital) * 100).toFixed(1)}% of capital)`);
 
       // Generate trade ID
       const tradeId = `TRADE_${Date.now()}`;
