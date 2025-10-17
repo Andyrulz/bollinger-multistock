@@ -349,11 +349,19 @@ export class StrategyManager {
       try {
         const metrics = instance.getMetrics();
         
-        // Check if strategy is responsive
+        // Check if strategy is responsive with strategy-specific thresholds
         const timeSinceUpdate = Date.now() - metrics.lastUpdateTime.getTime();
         
-        if (timeSinceUpdate > 60000 && instance.isRunning()) { // 1 minute threshold
-          this.logger.warn(`⚠️ Strategy ${instance.getName()} may be unresponsive (${timeSinceUpdate}ms since last update)`);
+        // Strategy-aware health check thresholds
+        let threshold = 60000; // Default 1 minute for real-time strategies
+        
+        // Bollinger Band strategy uses 5-minute intervals, so allow up to 6 minutes before warning
+        if (instance.getName().includes('bollinger') || instance.getName().includes('5m')) {
+          threshold = 360000; // 6 minutes threshold for 5-minute strategies
+        }
+        
+        if (timeSinceUpdate > threshold && instance.isRunning()) {
+          this.logger.warn(`⚠️ Strategy ${instance.getName()} may be unresponsive (${timeSinceUpdate}ms since last update, threshold: ${threshold}ms)`);
         }
         
       } catch (error) {

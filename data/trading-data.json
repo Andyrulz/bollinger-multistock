@@ -1,6 +1,6 @@
 {
   "config": {
-    "capital": 100761.5299749251,
+    "capital": 200000,
     "riskPerTrade": 0.05,
     "maxRetries": 3,
     "orderTimeout": 5000,

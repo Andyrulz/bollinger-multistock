@@ -193,37 +193,76 @@ class TradingBot {
         }
         
         .status-card.success {
-            background: linear-gradient(135deg, #f0fff4, #e6fffa);
-            border-color: #68d391;
+            background: #ffffff;
+            border-color: #10b981;
+            border-left: 4px solid #10b981;
         }
         
         .status-card.success::before {
-            background: linear-gradient(90deg, #48bb78, #38b2ac);
+            background: #10b981;
         }
         
         .status-card.warning {
-            background: linear-gradient(135deg, #fffbf0, #fef5e7);
-            border-color: #f6e05e;
+            background: #ffffff;
+            border-color: #f59e0b;
+            border-left: 4px solid #f59e0b;
         }
         
         .status-card.warning::before {
-            background: linear-gradient(90deg, #f6e05e, #ed8936);
+            background: #f59e0b;
         }
         
         .status-card.error {
-            background: linear-gradient(135deg, #fef2f2, #fee);
-            border-color: #f56565;
+            background: #ffffff;
+            border-color: #ef4444;
+            border-left: 4px solid #ef4444;
         }
         
         .status-card.error::before {
-            background: linear-gradient(90deg, #f56565, #e53e3e);
+            background: #ef4444;
+        }
+        
+        .status-card.info {
+            background: #ffffff;
+            border-color: #3b82f6;
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .status-card.info::before {
+            background: #3b82f6;
+        }
+        
+        .status-card.neutral {
+            background: #ffffff;
+            border-color: #64748b;
+            border-left: 4px solid #64748b;
+        }
+        
+        .status-card.neutral::before {
+            background: #64748b;
         }
         
         .status-text {
             font-size: 1.2rem;
             font-weight: 600;
-            color: #2d3748;
+            color: #1f2937;
             text-align: center;
+        }
+        
+        .card-title {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #1f2937;
+            margin-bottom: 12px;
+        }
+        
+        .card-content {
+            color: #374151;
+            line-height: 1.6;
+        }
+        
+        .card-content strong {
+            color: #1f2937;
         }
         
         .actions-grid {
@@ -284,11 +323,12 @@ class TradingBot {
         }
         
         .endpoints-section {
-            background: #f8fafc;
+            background: #ffffff;
             border-radius: 20px;
             padding: 30px;
             margin: 30px 0;
             border: 1px solid #e2e8f0;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
         }
         
         .section-title {
@@ -322,14 +362,16 @@ class TradingBot {
         }
         
         .endpoint.deprecated {
-            background: #fef5e7;
-            border-color: #f6ad55;
-            opacity: 0.7;
+            background: #fef3e2;
+            border-color: #f59e0b;
+            opacity: 0.8;
+            color: #92400e;
         }
         
         .endpoint.deprecated:hover {
-            background: #fed7aa;
-            border-color: #f6ad55;
+            background: #fde68a;
+            border-color: #f59e0b;
+            color: #78350f;
         }
         
         .endpoint:hover {
@@ -471,6 +513,9 @@ class TradingBot {
             <a href="/breakout-strategy-v2" class="action-btn" style="background: linear-gradient(135deg, #22c55e, #16a34a); color: white;">
                 🚀 Breakout Pullback Strategy
             </a>
+            <a href="/strategy/bollinger-band-01" class="action-btn" style="background: linear-gradient(135deg, #3b82f6, #1e40af); color: white;">
+                📊 Bollinger Band Strategy
+            </a>
             <button onclick="executeManualExit()" class="action-btn danger">
                 🚨 Manual Exit
             </button>
@@ -526,6 +571,10 @@ class TradingBot {
                     <span class="method" style="background: rgba(255,255,255,0.2);">GET</span>
                     <span>/breakout-strategy-v2 (Breakout Pullback Strategy Dashboard)</span>
                 </a>
+                <a href="/strategy/bollinger-band-01" class="endpoint" style="background: linear-gradient(135deg, #3b82f6, #1e40af); color: white; border-color: #3b82f6;">
+                    <span class="method" style="background: rgba(255,255,255,0.2);">GET</span>
+                    <span>/strategy/bollinger-band-01 (Bollinger Band Strategy Dashboard)</span>
+                </a>
                 <a href="/breakout-strategy/status" class="endpoint">
                     <span class="method">GET</span>
                     <span>/breakout-strategy/status (Breakout Strategy Status)</span>
@@ -537,6 +586,10 @@ class TradingBot {
                 <a href="/execution/status" class="endpoint">
                     <span class="method">GET</span>
                     <span>/execution/status (Trade Execution Status)</span>
+                </a>
+                <a href="/debug/pivots" class="endpoint" style="background: linear-gradient(135deg, #f59e0b, #d97706); color: white; border-color: #f59e0b;">
+                    <span class="method">GET</span>
+                    <span>/debug/pivots (Pivot Debug & OHLC Verification)</span>
                 </a>
                 
                 <div style="margin-top: 20px; padding-top: 20px; border-top: 2px solid #e1e5e9;">
@@ -853,6 +906,184 @@ class TradingBot {
       }
     });
 
+    // Access token debug endpoint - shows what access token the strategy sees
+    this.app.get('/debug/access-token', async (req: Request, res: Response): Promise<void> => {
+      try {
+        const kiteAccessToken = this.kiteConnect.access_token;
+        const sessionData = this.authService.getSessionData();
+        
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          kiteConnect_access_token: kiteAccessToken || null,
+          kiteConnect_access_token_type: typeof kiteAccessToken,
+          session_access_token: sessionData?.access_token || null,
+          session_access_token_type: typeof sessionData?.access_token,
+          tokens_match: kiteAccessToken === sessionData?.access_token,
+          authenticated: this.authService.isAuthenticated(),
+          session_user: sessionData?.user_name || null
+        });
+      } catch (error) {
+        this.logger.error('Error getting access token debug info:', error);
+        res.status(500).json({ 
+          error: 'Failed to get access token info',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Pivot debug endpoint - shows raw OHLC data used for pivot calculation
+    this.app.get('/debug/pivots', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        // Fetch the daily data similar to how the strategy does it
+        // Use yesterday as toDate to ensure complete data
+        const toDate = new Date();
+        toDate.setDate(toDate.getDate() - 1);
+        
+        const fromDate = new Date();
+        fromDate.setDate(toDate.getDate() - 10);
+        
+        const dailyData = await this.kiteConnect.getHistoricalData(
+          256265, // NIFTY50 instrument token
+          'day',
+          fromDate,
+          toDate
+        );
+
+        if (!dailyData || dailyData.length < 1) {
+          res.status(500).json({ error: 'No daily data available' });
+          return;
+        }
+
+        // Get the most recent completed trading day (same logic as strategy)
+        const previousDay = dailyData[dailyData.length - 1];
+        
+        // Debug: Show all available dates
+        const availableDates = dailyData.map((d: any) => ({
+          date: d.date,
+          ohlc: { open: d.open, high: d.high, low: d.low, close: d.close }
+        }));
+        
+        // Calculate pivots using the TradingView formula
+        const { high, low, close } = previousDay;
+        const pp = (high + low + close) / 3;
+        const r1 = 2 * pp - low;
+        const s1 = 2 * pp - high;
+        const r2 = pp + (high - low);
+        const s2 = pp - (high - low);
+        const r3 = high + 2 * (pp - low);
+        const s3 = low - 2 * (high - pp);
+
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          currentDate: new Date().toISOString().split('T')[0],
+          pivotDate: previousDay.date,
+          availableTradingDays: availableDates.slice(-5), // Show last 5 trading days
+          rawOHLC: {
+            date: previousDay.date,
+            open: previousDay.open,
+            high: previousDay.high,
+            low: previousDay.low,
+            close: previousDay.close
+          },
+          calculatedPivots: {
+            pp: parseFloat(pp.toFixed(2)),
+            r1: parseFloat(r1.toFixed(2)),
+            s1: parseFloat(s1.toFixed(2)),
+            r2: parseFloat(r2.toFixed(2)),
+            s2: parseFloat(s2.toFixed(2)),
+            r3: parseFloat(r3.toFixed(2)),
+            s3: parseFloat(s3.toFixed(2))
+          },
+          tradingViewFormula: {
+            pp: `(${high} + ${low} + ${close}) / 3 = ${pp.toFixed(2)}`,
+            r1: `2 * ${pp.toFixed(2)} - ${low} = ${r1.toFixed(2)}`,
+            s1: `2 * ${pp.toFixed(2)} - ${high} = ${s1.toFixed(2)}`
+          },
+          instructions: 'Compare these values with your TradingView NIFTY50 daily pivots. Use the same date and verify OHLC values match.'
+        });
+
+      } catch (error) {
+        this.logger.error('Error in pivot debug endpoint:', error);
+        res.status(500).json({ 
+          error: 'Failed to fetch pivot debug data',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Simple instrument verification endpoint - checks specific instrument token details
+    this.app.get('/debug/instrument/:token', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const token = req.params.token;
+        if (!token) {
+          res.status(400).json({ error: 'Token parameter required' });
+          return;
+        }
+
+        // Get quote for this instrument to see its details
+        const quote = await this.kiteConnect.getQuote([token]);
+        
+        // Also try to get historical data to verify it works
+        const toDate = new Date();
+        const fromDate = new Date();
+        fromDate.setDate(toDate.getDate() - 3); // Get last 3 days
+        
+        let historicalData = null;
+        try {
+          historicalData = await this.kiteConnect.getHistoricalData(
+            parseInt(token),
+            'day',
+            fromDate,
+            toDate
+          );
+        } catch (histError) {
+          historicalData = { error: 'Could not fetch historical data', details: histError };
+        }
+
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          token: token,
+          quoteData: quote,
+          historicalDataSample: historicalData && !historicalData.error ? {
+            totalCandles: historicalData.length,
+            latestCandle: historicalData[historicalData.length - 1],
+            oldestCandle: historicalData[0]
+          } : historicalData,
+          analysis: {
+            isNifty50Index: quote[token]?.tradingsymbol === 'NIFTY 50',
+            instrumentType: 'Check if this matches expected NIFTY 50 INDEX vs other instruments',
+            recommendation: 'Compare OHLC values with TradingView for the same dates'
+          }
+        });
+
+      } catch (error) {
+        this.logger.error('Error in instrument verification endpoint:', error);
+        res.status(500).json({ 
+          error: 'Failed to fetch instrument details',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
     // Portfolio endpoint (placeholder)
     this.app.get('/portfolio', async (req: Request, res: Response): Promise<void> => {
       try {
@@ -1072,11 +1303,14 @@ class TradingBot {
         let currentCapital: number | undefined;
         let activePosition: any;
         let selectedInstrument: any;
+        let healthReport: any;
         try {
           executionStatus = this.breakoutStrategy.getExecutionStatus();
           currentCapital = this.breakoutStrategy.getCurrentCapital();
           activePosition = this.breakoutStrategy.getActivePosition();
           selectedInstrument = this.breakoutStrategy.getSelectedInstrument();
+          // Get health monitoring data from the new error monitoring system
+          healthReport = this.breakoutStrategy.getHealthReport ? this.breakoutStrategy.getHealthReport() : null;
         } catch (error) {
           this.logger.error('Error getting execution service data:', error);
         }
@@ -1107,6 +1341,8 @@ class TradingBot {
           current_capital: currentCapital || null,
           active_position: activePosition || null,
           selected_instrument: selectedInstrument || null,
+          // Health Monitoring Information
+          health_status: healthReport || null,
           timestamp: new Date().toISOString()
         });
       } catch (error) {
@@ -1217,6 +1453,79 @@ class TradingBot {
       } catch (error) {
         this.logger.error('Failed to get pivot data:', error);
         res.status(500).json({ error: 'Failed to get pivot data' });
+      }
+    });
+
+    // Test endpoint for volume calculation fixes
+    this.app.post('/breakout-strategy/test-volume-fixes', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        this.logger.info('🧪 Testing volume calculation fixes via API endpoint...');
+        this.breakoutStrategy.testVolumeCalculationFixes();
+        
+        res.json({
+          success: true,
+          message: 'Volume calculation tests completed. Check logs for detailed output.',
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Failed to test volume fixes:', error);
+        res.status(500).json({ error: 'Failed to test volume fixes' });
+      }
+    });
+
+    // Manual pivot detection trigger (for debugging)
+    this.app.post('/breakout-strategy/trigger-pivot-detection', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Authentication required',
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        this.logger.info('🔄 Manual pivot detection triggered via API');
+        await this.breakoutStrategy.triggerManualPivotDetection();
+        
+        const latestPivots = this.breakoutStrategy.getLatestPivots();
+        res.json({
+          success: true,
+          message: 'Pivot detection completed',
+          pivots: latestPivots,
+          candle_count: this.breakoutStrategy.getCandleCount(),
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Failed to trigger pivot detection:', error);
+        res.status(500).json({ error: 'Failed to trigger pivot detection' });
+      }
+    });
+
+    // Debug endpoint to get 1-minute candles for breakout analysis
+    this.app.get('/breakout-strategy/one-minute-candles', (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ error: 'Not authenticated' });
+          return;
+        }
+
+        const oneMinuteCandles = this.breakoutStrategy.getOneMinuteCandles();
+        res.json({
+          success: true,
+          candles: oneMinuteCandles,
+          count: oneMinuteCandles.length
+        });
+      } catch (error) {
+        this.logger.error('Failed to get 1-minute candles:', error);
+        res.status(500).json({ error: 'Failed to get 1-minute candles' });
       }
     });
 
@@ -2142,6 +2451,10 @@ class TradingBot {
       const strategyState = this.breakoutStrategy.getStrategyState();
       const currentContract = strategyState?.currentContract;
       const latestPivots = this.breakoutStrategy.getLatestPivots();
+      
+      // DEBUG: Log pivot data inconsistency
+      this.logger.info(`🔍 DASHBOARD PIVOT DEBUG: High=${latestPivots.pivotHigh ? latestPivots.pivotHigh.price : 'null'}, Low=${latestPivots.pivotLow ? latestPivots.pivotLow.price : 'null'}`);
+      
       const livePrice = this.breakoutStrategy.getLivePrice();
       const priceStreamingActive = this.breakoutStrategy.isPriceStreamingActive();
       const isMarketHours = this.breakoutStrategy.isMarketHours();
@@ -2251,12 +2564,13 @@ class TradingBot {
         }
         
         .status-card {
-            background: linear-gradient(135deg, #f7fafc, #edf2f7);
+            background: #ffffff;
             border-radius: 16px;
             padding: 24px;
             border: 1px solid #e2e8f0;
             position: relative;
             overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
         }
         
         .status-card::before {
@@ -2321,13 +2635,15 @@ class TradingBot {
         }
         
         .breakout-signal.long_breakout {
-            background: linear-gradient(135deg, #f0fff4, #e6fffa);
-            border-color: #48bb78;
+            background: #ffffff;
+            border: 1px solid #10b981;
+            border-left: 4px solid #10b981;
         }
         
         .breakout-signal.short_breakout {
-            background: linear-gradient(135deg, #fff5f5, #fed7d7);
-            border-color: #f56565;
+            background: #ffffff;
+            border: 1px solid #ef4444;
+            border-left: 4px solid #ef4444;
         }
         
         .signal-title {
@@ -2417,10 +2733,9 @@ class TradingBot {
         }
     </style>
     <script>
-        // Auto refresh every 30 seconds
-        setTimeout(() => {
-            window.location.reload();
-        }, 30000);
+        // TODO: Replace auto-refresh with server-sent events to eliminate API waste
+        // Auto refresh disabled to prevent excessive API calls
+        // setTimeout(() => { window.location.reload(); }, 30000);
         
         async function startStrategy() {
             try {
@@ -2623,64 +2938,112 @@ class TradingBot {
                   tradeStateInfo?.tradeState === 'waiting_for_entry' ? '#F59E0B' :
                   tradeStateInfo?.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
                 };">
-                    <div class="card-title">🎯 Trade State</div>
+                    <div class="card-title">🎯 Trade State & Setup</div>
                     <div class="card-content">
                         <div style="font-weight: 600; color: ${
                           tradeStateInfo?.tradeState === 'waiting_for_breakout' ? '#3B82F6' :
                           tradeStateInfo?.tradeState === 'waiting_for_entry' ? '#F59E0B' :
                           tradeStateInfo?.tradeState === 'in_trade' ? '#10B981' : '#6B7280'
                         }; font-size: 18px; text-transform: capitalize; margin-bottom: 10px;">
-                            ${tradeStateInfo?.tradeState?.replace(/_/g, ' ') || 'Loading...'}
+                            ${tradeStateInfo?.tradeState?.replace(/_/g, ' ') || 'Initializing...'}
                         </div>
-                        ${
-                          !tradeStateInfo ? '<div style="color: #6b7280;">Strategy initializing...</div>' :
-                          tradeStateInfo.tradeState === 'waiting_for_breakout' ? 
-                            '<div style="color: #6b7280;">Monitoring for breakout signals</div>' :
-                          tradeStateInfo.tradeState === 'waiting_for_entry' && tradeStateInfo.tradeSetupRequest ?
-                            `<div style="font-size: 14px;">
-                               <strong>Direction:</strong> ${tradeStateInfo.tradeSetupRequest.direction}<br>
-                               <strong>Entry:</strong> ₹${tradeStateInfo.tradeSetupRequest.entryLevel}<br>
-                               <strong>Stop Loss:</strong> ₹${tradeStateInfo.tradeSetupRequest.stopLossLevel}<br>
-                               <strong>Target:</strong> ₹${tradeStateInfo.tradeSetupRequest.targetLevel}
-                             </div>` :
-                          tradeStateInfo.tradeState === 'in_trade' && tradeStateInfo.tradeSetupRequest ?
-                            `<div style="font-size: 14px;">
-                               <strong>Active ${tradeStateInfo.tradeSetupRequest.direction} Trade</strong><br>
-                               <strong>Entry:</strong> ₹${tradeStateInfo.tradeSetupRequest.entryLevel}<br>
-                               <strong>Stop Loss:</strong> ₹${tradeStateInfo.tradeSetupRequest.stopLossLevel}<br>
-                               <strong>Target:</strong> ₹${tradeStateInfo.tradeSetupRequest.targetLevel}<br>
-                               ${tradeStateInfo.currentTradeId ? `<strong>Trade ID:</strong> ${tradeStateInfo.currentTradeId}` : ''}
-                             </div>` :
-                          '<div style="color: #6b7280;">Trade state active</div>'
-                        }
+                        
+                        <!-- Always show trade setup information -->
+                        <div style="background: #f8fafc; border-radius: 8px; padding: 12px; margin-top: 10px;">
+                            <div style="font-size: 14px; line-height: 1.5;">
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                    <div><strong>Direction:</strong> ${
+                                      tradeStateInfo?.tradeSetupRequest?.direction || 
+                                      (latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'LONG' : 'SHORT') : 'Waiting for breakout')
+                                    }</div>
+                                    <div><strong>Entry Level:</strong> ₹${
+                                      tradeStateInfo?.tradeSetupRequest?.entryLevel || 
+                                      (latestBreakoutSignal ? latestBreakoutSignal.price.toFixed(2) : '---')
+                                    }</div>
+                                    <div><strong>Stop Loss:</strong> ₹${
+                                      tradeStateInfo?.tradeSetupRequest?.stopLossLevel || '---'
+                                    }</div>
+                                    <div><strong>Target:</strong> ₹${
+                                      tradeStateInfo?.tradeSetupRequest?.targetLevel || '---'
+                                    }</div>
+                                </div>
+                                ${tradeStateInfo?.currentTradeId ? 
+                                  `<div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb;"><strong>Trade ID:</strong> ${tradeStateInfo.currentTradeId}</div>` : 
+                                  ''
+                                }
+                            </div>
+                        </div>
+                        
+                        <!-- Status description -->
+                        <div style="margin-top: 10px; font-size: 13px; color: #6b7280;">
+                            ${
+                              !tradeStateInfo ? 'Strategy is starting up...' :
+                              tradeStateInfo.tradeState === 'waiting_for_breakout' ? 
+                                'Monitoring 5-minute candles for pivot breakouts with volume confirmation' :
+                              tradeStateInfo.tradeState === 'waiting_for_entry' ?
+                                'Breakout detected, tracking marking candle for optimal entry timing' :
+                              tradeStateInfo.tradeState === 'in_trade' ?
+                                'Position is active, monitoring for exit conditions' :
+                              'Trade state is active'
+                            }
+                        </div>
                     </div>
                 </div>
                 <div class="status-card info">
-                    <div class="card-title">📝 Option Instrument & Trade Execution</div>
+                    <div class="card-title">📝 Option Instrument & Trade Details</div>
                     <div class="card-content">
-                        ${activePosition && activePosition.instrument ? `
-                        <div style="font-size: 14px; margin-bottom: 10px;">
-                            <strong>Instrument:</strong> ${activePosition.instrument.tradingsymbol} (${activePosition.instrument.instrument_type})<br>
-                            <strong>Strike:</strong> ₹${activePosition.instrument.strike}<br>
-                            <strong>Expiry:</strong> ${new Date(activePosition.instrument.expiry).toLocaleDateString()}<br>
-                            <strong>Lot Size:</strong> ${activePosition.instrument.lot_size}<br>
+                        <!-- Always show instrument section -->
+                        <div style="background: #f8fafc; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+                            <div style="font-weight: 600; color: #1f2937; margin-bottom: 8px;">Selected Instrument</div>
+                            <div style="font-size: 14px; line-height: 1.5;">
+                                ${activePosition && activePosition.instrument ? `
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                        <div><strong>Symbol:</strong> ${activePosition.instrument.tradingsymbol}</div>
+                                        <div><strong>Type:</strong> ${activePosition.instrument.instrument_type}</div>
+                                        <div><strong>Strike:</strong> ₹${activePosition.instrument.strike}</div>
+                                        <div><strong>Lot Size:</strong> ${activePosition.instrument.lot_size}</div>
+                                    </div>
+                                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb;">
+                                        <strong>Expiry:</strong> ${new Date(activePosition.instrument.expiry).toLocaleDateString()}
+                                    </div>
+                                ` : `
+                                    <div style="color: #6b7280; font-style: italic;">
+                                        Instrument will be selected automatically when breakout is detected<br>
+                                        <small>ATM options based on 1% premium of NIFTY futures price</small>
+                                    </div>
+                                `}
+                            </div>
                         </div>
-                        <div style="font-size: 14px;">
-                            <strong>Order ID:</strong> ${activePosition.entryOrderId}<br>
-                            <strong>Direction:</strong> ${activePosition.direction}<br>
-                            <strong>Quantity:</strong> ${activePosition.quantity}<br>
-                            <strong>Entry Price:</strong> ₹${activePosition.entryPrice}<br>
-                            <strong>Status:</strong> OPEN<br>
+                        
+                        <!-- Always show trade execution section -->
+                        <div style="background: #f1f5f9; border-radius: 8px; padding: 12px;">
+                            <div style="font-weight: 600; color: #1f2937; margin-bottom: 8px;">Trade Execution</div>
+                            <div style="font-size: 14px; line-height: 1.5;">
+                                ${activePosition ? `
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                        <div><strong>Order ID:</strong> ${activePosition.entryOrderId || 'Pending'}</div>
+                                        <div><strong>Direction:</strong> ${activePosition.direction}</div>
+                                        <div><strong>Quantity:</strong> ${activePosition.quantity || 'Calculated'}</div>
+                                        <div><strong>Entry Price:</strong> ₹${activePosition.entryPrice || 'Market'}</div>
+                                        <div><strong>Status:</strong> ${activePosition.pnl !== undefined ? 'CLOSED' : 'OPEN'}</div>
+                                        <div><strong>P&L:</strong> <span style="color: ${(activePosition.pnl || 0) >= 0 ? '#10b981' : '#ef4444'};">₹${(activePosition.pnl || 0).toLocaleString()}</span></div>
+                                    </div>
+                                    ${activePosition.exitPrice ? `
+                                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb;">
+                                        <div><strong>Exit Price:</strong> ₹${activePosition.exitPrice}</div>
+                                        <div><strong>Exit Reason:</strong> ${activePosition.exitReason || 'Manual'}</div>
+                                    </div>
+                                    ` : ''}
+                                ` : `
+                                    <div style="color: #6b7280;">
+                                        <div><strong>Status:</strong> Waiting for trade signal</div>
+                                        <div><strong>Position Size:</strong> Auto-calculated (${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}% risk)</div>
+                                        <div><strong>Order Type:</strong> Market order execution</div>
+                                        <div><strong>Mode:</strong> ${tradingConfig?.paperTradingMode ? 'Paper Trading' : 'Live Trading'}</div>
+                                    </div>
+                                `}
+                            </div>
                         </div>
-                        ` : '<div style="color: #6b7280;">No active option trade</div>'}
-                        ${activePosition && activePosition.pnl !== undefined ? `
-                        <div style="font-size: 14px; margin-top: 10px;">
-                            <strong>P&L:</strong> ₹${activePosition.pnl.toLocaleString()}<br>
-                            <strong>Exit Price:</strong> ₹${activePosition.exitPrice || '-'}<br>
-                            <strong>Exit Reason:</strong> ${activePosition.exitReason || '-'}<br>
-                            <strong>Status:</strong> CLOSED
-                        </div>
-                        ` : ''}
                     </div>
                 </div>
 
@@ -2841,6 +3204,107 @@ class TradingBot {
                     </div>
                 </div>
 
+                <div class="status-card ${(() => {
+                    const wsHealth = this.breakoutStrategy.getWebSocketHealthStatus();
+                    if (!wsHealth.websocketActive) return 'neutral';
+                    if (!wsHealth.connected || wsHealth.circuitBreakerOpen) return 'danger';
+                    const successRate = wsHealth.totalAttempts > 0 ? (wsHealth.successCount / wsHealth.totalAttempts) * 100 : 0;
+                    if (successRate < 90) return 'warning';
+                    return 'success';
+                })()}">
+                    <div class="card-title">🌐 WebSocket Health Monitor</div>
+                    <div class="card-content">
+                        ${(() => {
+                            const wsHealth = this.breakoutStrategy.getWebSocketHealthStatus();
+                            const successRate = wsHealth.totalAttempts > 0 ? (wsHealth.successCount / wsHealth.totalAttempts) * 100 : 0;
+                            return `
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; font-size: 14px;">
+                                    <div>
+                                        <div><strong>Status:</strong> ${wsHealth.websocketActive ? (wsHealth.connected ? '🟢 CONNECTED' : '🔴 DISCONNECTED') : '⚪ INACTIVE'}</div>
+                                        <div><strong>Success Rate:</strong> ${wsHealth.successRate} (${wsHealth.successCount}/${wsHealth.totalAttempts})</div>
+                                        <div><strong>Reconnect Attempts:</strong> ${wsHealth.reconnectAttempts}</div>
+                                        <div><strong>Circuit Breaker:</strong> ${wsHealth.circuitBreakerOpen ? '🔴 OPEN' : '🟢 CLOSED'}</div>
+                                    </div>
+                                    <div>
+                                        <div><strong>Last Data:</strong> ${wsHealth.lastDataReceived}</div>
+                                        <div><strong>Time Since Last:</strong> ${wsHealth.timeSinceLastData} ago</div>
+                                        <div><strong>Data Source:</strong> ${wsHealth.websocketActive ? 'WebSocket' : 'REST API Fallback'}</div>
+                                        <div><strong>Health Score:</strong> ${wsHealth.websocketActive && wsHealth.connected && successRate > 95 ? '🟢 Excellent' : successRate > 90 ? '🟡 Good' : successRate > 75 ? '🟠 Fair' : '🔴 Poor'}</div>
+                                    </div>
+                                </div>
+                                <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #6b7280;">
+                                    💡 WebSocket provides real-time tick data for 1-minute candle building and volume analysis
+                                </div>
+                            `;
+                        })()}
+                    </div>
+                </div>
+
+                <div class="status-card ${volumeSMA50 ? 'success' : 'warning'}">
+                    <div class="card-title">📊 Volume Analysis Monitor</div>
+                    <div class="card-content">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; font-size: 14px;">
+                            <div>
+                                <div><strong>1-Min Candles:</strong> ${oneMinuteCandleCount}/50 (${(oneMinuteCandleCount/50*100).toFixed(1)}%)</div>
+                                <div><strong>Volume SMA50:</strong> ${volumeSMA50 ? volumeSMA50.toLocaleString() : 'Calculating...'}</div>
+                                <div><strong>SMA Status:</strong> ${volumeSMA50 ? '🟢 Ready' : `🟡 Building (${oneMinuteCandleCount}/50)`}</div>
+                                ${latestOneMinuteCandle ? `<div><strong>Last Candle Vol:</strong> ${latestOneMinuteCandle.volume.toLocaleString()}</div>` : ''}
+                            </div>
+                            <div>
+                                ${latestOneMinuteCandle ? `
+                                    <div><strong>Volume vs SMA:</strong> ${volumeSMA50 ? `${((latestOneMinuteCandle.volume / volumeSMA50) * 100).toFixed(0)}% of SMA` : 'N/A'}</div>
+                                    <div><strong>Volume Rating:</strong> ${volumeSMA50 ? (
+                                        latestOneMinuteCandle.volume > volumeSMA50 * 1.5 ? '🔥 Very High' :
+                                        latestOneMinuteCandle.volume > volumeSMA50 * 1.2 ? '📈 High' :
+                                        latestOneMinuteCandle.volume > volumeSMA50 * 0.8 ? '📊 Normal' : '📉 Low'
+                                    ) : 'N/A'}</div>
+                                    <div><strong>Last Update:</strong> ${new Date(latestOneMinuteCandle.timestamp).toLocaleTimeString()}</div>
+                                ` : '<div>No 1-minute candle data yet</div>'}
+                                <div><strong>Data Source:</strong> ${this.breakoutStrategy.getWebSocketHealthStatus().websocketActive ? 'WebSocket Ticks' : 'REST API'}</div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #6b7280;">
+                            💡 Volume SMA50 needed for breakout confirmation • WebSocket ticks provide real-time volume calculation
+                        </div>
+                    </div>
+                </div>
+
+                <div class="status-card ${(() => {
+                    const wsHealth = this.breakoutStrategy.getWebSocketHealthStatus();
+                    const candleCount = oneMinuteCandleCount;
+                    if (wsHealth.websocketActive && wsHealth.connected && candleCount >= 5) return 'success';
+                    if (wsHealth.websocketActive && candleCount >= 1) return 'info';
+                    if (!wsHealth.websocketActive) return 'warning';
+                    return 'neutral';
+                })()}">
+                    <div class="card-title">🕯️ Real-time Candle Building</div>
+                    <div class="card-content">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; font-size: 14px;">
+                            <div>
+                                <div><strong>Candle Builder:</strong> ${this.breakoutStrategy.getWebSocketHealthStatus().websocketActive ? '🟢 WebSocket Active' : '🟡 REST Fallback'}</div>
+                                <div><strong>Total 1-Min Candles:</strong> ${oneMinuteCandleCount}</div>
+                                <div><strong>Builder Status:</strong> ${oneMinuteCandleCount >= 50 ? '🟢 Fully Operational' : `🟡 Building History (${oneMinuteCandleCount}/50)`}</div>
+                                <div><strong>Tick Processing:</strong> ${this.breakoutStrategy.getWebSocketHealthStatus().websocketActive ? '🟢 Real-time' : '🔄 Polling'}</div>
+                            </div>
+                            <div>
+                                ${latestOneMinuteCandle ? `
+                                    <div><strong>Latest Candle:</strong></div>
+                                    <div style="font-size: 12px; margin-left: 10px;">
+                                        O: ₹${latestOneMinuteCandle.open.toFixed(2)}<br>
+                                        H: ₹${latestOneMinuteCandle.high.toFixed(2)}<br>
+                                        L: ₹${latestOneMinuteCandle.low.toFixed(2)}<br>
+                                        C: ₹${latestOneMinuteCandle.close.toFixed(2)}<br>
+                                        V: ${latestOneMinuteCandle.volume.toLocaleString()}
+                                    </div>
+                                ` : '<div>No candle data available</div>'}
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #6b7280;">
+                            💡 1-minute candles built from WebSocket ticks • Cumulative volume converted to incremental • Essential for breakout detection
+                        </div>
+                    </div>
+                </div>
+
                 <div class="status-card warning">
                     <div class="card-title">⚙️ System Configuration</div>
                     <div class="card-content">
@@ -2946,7 +3410,7 @@ class TradingBot {
             `}
 
             <div class="refresh-info">
-                🔄 This page auto-refreshes every 30 seconds<br>
+                🔄 Manual refresh recommended for latest updates<br>
                 💡 Strategy recalculates pivots every 5 minutes during market hours (9:15 AM - 3:30 PM)
             </div>
         </div>
@@ -2983,6 +3447,9 @@ class TradingBot {
       const activePosition = this.breakoutStrategy.getActivePosition();
       const tradingConfig = this.breakoutStrategy.getTradingConfig();
       const tradeHistory = this.breakoutStrategy.getTradeHistory();
+      
+      // Get health monitoring data
+      const healthReport = this.breakoutStrategy.getHealthReport ? this.breakoutStrategy.getHealthReport() : null;
       
       // Calculate performance metrics
       const totalTrades = tradeHistory.length;
@@ -3155,6 +3622,61 @@ class TradingBot {
         .status-indicator.active { background: #22c55e; color: white; }
         .status-indicator.inactive { background: #ef4444; color: white; }
         .status-indicator.warning { background: #f59e0b; color: white; }
+        
+        /* QC Checklist Styles */
+        .qc-checklist {
+            background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(22, 163, 74, 0.05));
+            border: 2px solid rgba(34, 197, 94, 0.3);
+            border-radius: 16px;
+            padding: 25px;
+            margin: 20px 0;
+        }
+        .qc-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 15px;
+            margin: 8px 0;
+            background: rgba(255, 255, 255, 0.8);
+            border-radius: 12px;
+            border-left: 4px solid #e5e7eb;
+            transition: all 0.3s ease;
+        }
+        .qc-item.pass { border-left-color: #22c55e; background: rgba(34, 197, 94, 0.1); }
+        .qc-item.fail { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+        .qc-item.warning { border-left-color: #f59e0b; background: rgba(245, 158, 11, 0.1); }
+        .qc-icon {
+            font-size: 1.2rem;
+            margin-right: 12px;
+            min-width: 24px;
+        }
+        .qc-content {
+            flex: 1;
+        }
+        .qc-label {
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 4px;
+        }
+        .qc-detail {
+            font-size: 0.9rem;
+            color: #64748b;
+        }
+        .qc-summary {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .qc-score {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .qc-score.excellent { color: #22c55e; }
+        .qc-score.good { color: #3b82f6; }
+        .qc-score.warning { color: #f59e0b; }
+        .qc-score.critical { color: #ef4444; }
         
         /* Enhanced Mobile Responsiveness */
         @media (max-width: 1200px) {
@@ -3481,8 +4003,9 @@ class TradingBot {
         // Load instrument info when page loads (if breakout signal exists)
         document.addEventListener('DOMContentLoaded', loadInstrumentInfo);
         
-        // Auto refresh every 10 seconds
-        setInterval(() => window.location.reload(), 10000);
+        // TODO: Replace auto-refresh with server-sent events to eliminate API waste
+        // Auto refresh disabled to prevent excessive API calls
+        // setInterval(() => window.location.reload(), 10000);
     </script>
 </head>
 <body>
@@ -4209,6 +4732,239 @@ class TradingBot {
             </div>
         </div>
         
+        <!-- QC CHECKLIST SECTION -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">✅ Quality Control Checklist</div>
+            </div>
+            <div class="section-content">
+                <div class="qc-checklist">
+                    <div class="qc-summary">
+                        <div class="qc-score ${(() => {
+                            const checks = [];
+                            
+                            // Authentication Check
+                            checks.push(isAuthenticated);
+                            
+                            // Market Hours Check  
+                            checks.push(isMarketHours);
+                            
+                            // Strategy Status Check
+                            checks.push(strategyActive);
+                            
+                            // Price Streaming Check
+                            checks.push(priceStreamingActive);
+                            
+                            // Breakout Detection Check
+                            checks.push(breakoutDetectionActive);
+                            
+                            // Candle Data Check (at least 30 candles for partial readiness)
+                            checks.push(oneMinuteCandleCount >= 30);
+                            
+                            // Pivot Detection Check
+                            checks.push(latestPivots.pivotHigh && latestPivots.pivotLow);
+                            
+                            // Volume SMA Check
+                            checks.push(typeof volumeSMA50 === 'number' && volumeSMA50 > 0);
+                            
+                            // Health Check
+                            checks.push(healthReport && healthReport.overallStatus !== 'CRITICAL');
+                            
+                            // Capital Check
+                            checks.push(currentCapital && currentCapital > 0);
+                            
+                            const passedChecks = checks.filter(check => check).length;
+                            const totalChecks = checks.length;
+                            const percentage = (passedChecks / totalChecks) * 100;
+                            
+                            if (percentage >= 90) return 'excellent';
+                            if (percentage >= 75) return 'good';
+                            if (percentage >= 50) return 'warning';
+                            return 'critical';
+                        })()}">
+                            ${(() => {
+                                const checks = [];
+                                checks.push(isAuthenticated);
+                                checks.push(isMarketHours);
+                                checks.push(strategyActive);
+                                checks.push(priceStreamingActive);
+                                checks.push(breakoutDetectionActive);
+                                checks.push(oneMinuteCandleCount >= 30);
+                                checks.push(latestPivots.pivotHigh && latestPivots.pivotLow);
+                                checks.push(typeof volumeSMA50 === 'number' && volumeSMA50 > 0);
+                                checks.push(healthReport && healthReport.overallStatus !== 'CRITICAL');
+                                checks.push(currentCapital && currentCapital > 0);
+                                
+                                const passedChecks = checks.filter(check => check).length;
+                                const totalChecks = checks.length;
+                                return Math.round((passedChecks / totalChecks) * 100) + '%';
+                            })()}
+                        </div>
+                        <div style="color: #64748b; font-size: 0.9rem; margin-top: 5px;">System Readiness Score</div>
+                    </div>
+                    
+                    <!-- Authentication & System -->
+                    <div class="qc-item ${isAuthenticated ? 'pass' : 'fail'}">
+                        <div class="qc-icon">${isAuthenticated ? '✅' : '❌'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">🔐 Authentication Status</div>
+                            <div class="qc-detail">${isAuthenticated ? 'Successfully authenticated with Zerodha' : 'Authentication required'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="qc-item ${isMarketHours ? 'pass' : 'warning'}">
+                        <div class="qc-icon">${isMarketHours ? '✅' : '⚠️'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">🕒 Market Hours</div>
+                            <div class="qc-detail">${isMarketHours ? 'Market is open for trading' : 'Market is closed - trading unavailable'}</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Strategy Status -->
+                    <div class="qc-item ${strategyActive ? 'pass' : 'fail'}">
+                        <div class="qc-icon">${strategyActive ? '✅' : '❌'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">🚀 Strategy Status</div>
+                            <div class="qc-detail">${strategyActive ? 'Breakout strategy is active and running' : 'Strategy is stopped - activate to begin trading'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="qc-item ${priceStreamingActive ? 'pass' : 'fail'}">
+                        <div class="qc-icon">${priceStreamingActive ? '✅' : '❌'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">📡 Price Streaming</div>
+                            <div class="qc-detail">${priceStreamingActive ? 'Live NIFTY price data streaming (1-second polling)' : 'Price streaming is inactive'}</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Signal Detection -->
+                    <div class="qc-item ${breakoutDetectionActive ? 'pass' : 'fail'}">
+                        <div class="qc-icon">${breakoutDetectionActive ? '✅' : '❌'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">🎯 Breakout Detection</div>
+                            <div class="qc-detail">${breakoutDetectionActive ? 'Breakout detection engine is active' : 'Breakout detection is inactive'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="qc-item ${(oneMinuteCandleCount >= 50) ? 'pass' : (oneMinuteCandleCount >= 30) ? 'warning' : 'fail'}">
+                        <div class="qc-icon">${(oneMinuteCandleCount >= 50) ? '✅' : (oneMinuteCandleCount >= 30) ? '⚠️' : '❌'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">🕯️ 1-Minute Candle Data</div>
+                            <div class="qc-detail">
+                                ${oneMinuteCandleCount}/50 candles loaded 
+                                ${oneMinuteCandleCount >= 50 ? '(Excellent - Full dataset)' : 
+                                  oneMinuteCandleCount >= 30 ? '(Good - Partial dataset)' : 
+                                  '(Poor - Insufficient data)'}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Pivot Analysis -->
+                    <div class="qc-item ${(latestPivots.pivotHigh && latestPivots.pivotLow) ? 'pass' : 'warning'}">
+                        <div class="qc-icon">${(latestPivots.pivotHigh && latestPivots.pivotLow) ? '✅' : '⚠️'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">📊 Pivot Detection (15,15)</div>
+                            <div class="qc-detail">
+                                ${(latestPivots.pivotHigh && latestPivots.pivotLow) ? 
+                                    'Both pivot high and low detected - ready for breakout signals' : 
+                                    'Waiting for pivot points - algorithm scanning 5-minute candles'}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="qc-item ${(typeof volumeSMA50 === 'number' && volumeSMA50 > 0) ? 'pass' : 'warning'}">
+                        <div class="qc-icon">${(typeof volumeSMA50 === 'number' && volumeSMA50 > 0) ? '✅' : '⚠️'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">📈 Volume SMA-50</div>
+                            <div class="qc-detail">
+                                ${(typeof volumeSMA50 === 'number' && volumeSMA50 > 0) ? 
+                                    'Volume baseline established: ' + volumeSMA50.toFixed(0) + ' (filtering noise)' : 
+                                    'Building volume baseline - requires 50 candles for accuracy'}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Health Monitoring -->
+                    <div class="qc-item ${(healthReport && healthReport.overallStatus !== 'CRITICAL') ? 'pass' : 'fail'}">
+                        <div class="qc-icon">${(healthReport && healthReport.overallStatus !== 'CRITICAL') ? '✅' : '❌'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">🏥 System Health</div>
+                            <div class="qc-detail">
+                                ${healthReport ? 
+                                    'Status: ' + healthReport.overallStatus + ' - ' + 
+                                    (healthReport.totalErrors || 0) + ' total errors detected' : 
+                                    'Health monitoring data unavailable'}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Capital & Trading Mode -->
+                    <div class="qc-item ${(currentCapital && currentCapital > 0) ? 'pass' : 'fail'}">
+                        <div class="qc-icon">${(currentCapital && currentCapital > 0) ? '✅' : '❌'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">💰 Trading Capital</div>
+                            <div class="qc-detail">
+                                ${currentCapital ? 
+                                    'Available: ₹' + currentCapital.toLocaleString() + ' (' + (tradingConfig?.paperTradingMode ? 'Paper Mode' : 'Live Mode') + ')' : 
+                                    'Capital information unavailable'}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Current Signal Status -->
+                    <div class="qc-item ${latestBreakoutSignal ? 'pass' : 'warning'}">
+                        <div class="qc-icon">${latestBreakoutSignal ? '🚨' : '👁️'}</div>
+                        <div class="qc-content">
+                            <div class="qc-label">🎯 Active Signals</div>
+                            <div class="qc-detail">
+                                ${latestBreakoutSignal ? 
+                                    latestBreakoutSignal.type.replace('_', ' ').toUpperCase() + ' signal at ₹' + latestBreakoutSignal.price.toFixed(2) : 
+                                    'No active breakout signals - monitoring for opportunities'}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Strategy Rules Summary -->
+                    <div style="margin-top: 25px; padding: 20px; background: rgba(255,255,255,0.1); border-radius: 12px; border-left: 4px solid #3b82f6;">
+                        <h4 style="color: #1e293b; margin-bottom: 15px; display: flex; align-items: center;">
+                            <span style="margin-right: 10px;">📋</span>
+                            Breakout Strategy Rules Summary
+                        </h4>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; font-size: 0.9rem; color: #64748b;">
+                            <div>
+                                <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px;">🎯 Entry Conditions</div>
+                                <div>• 5-minute breakout above/below pivot (15,15)</div>
+                                <div>• Volume > SMA-50 (confirmation)</div>
+                                <div>• Clear breakout candle formation</div>
+                                <div>• Opposite marking candle (retracement)</div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px;">⏰ Timing Rules</div>
+                                <div>• 1-minute timeframe execution</div>
+                                <div>• 18-minute marking candle window</div>
+                                <div>• Maximum 2 candle updates</div>
+                                <div>• Real-time price monitoring (1-sec polling)</div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px;">🛡️ Risk Management</div>
+                                <div>• Stop loss at marking candle low/high</div>
+                                <div>• Target level optimization</div>
+                                <div>• Position sizing: 75 units (1 lot)</div>
+                                <div>• Capital risk: ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}% per trade</div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px;">📊 Option Selection</div>
+                                <div>• ATM strike selection</div>
+                                <div>• CALL for long breakouts</div>
+                                <div>• PUT for short breakouts</div>
+                                <div>• Premium-based optimization</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <!-- Footer with refresh info -->
         <div style="text-align: center; margin-top: 40px; padding: 20px; background: rgba(0,0,0,0.05); border-radius: 12px; border: 1px solid rgba(0,0,0,0.1);">
             <div style="color: #64748b; font-size: 0.9rem;">
@@ -4623,6 +5379,7 @@ class TradingBot {
     const strategyName = status.config.name;
     const isActive = status.metrics.isActive;
     const healthStatus = status.metrics.healthStatus;
+    const isBollingerBand = strategyId === 'bollinger-band-01';
     
     return `
       <!DOCTYPE html>
@@ -4745,32 +5502,7 @@ class TradingBot {
             </button>
           </div>
 
-          <div class="metrics">
-            <div class="metric-card">
-              <div class="metric-value">${status.metrics.totalTrades}</div>
-              <div>Total Trades</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-value">₹${status.metrics.profitLoss.toFixed(2)}</div>
-              <div>Profit & Loss</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-value">${status.metrics.winRate.toFixed(1)}%</div>
-              <div>Win Rate</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-value">${status.metrics.errorCount}</div>
-              <div>Error Count</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-value">${status.config.timeframe}</div>
-              <div>Timeframe</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-value">${status.config.riskPerTrade}%</div>
-              <div>Risk Per Trade</div>
-            </div>
-          </div>
+          ${isBollingerBand ? this.renderBollingerBandMetrics(status) : this.renderGenericMetrics(status)}
 
           <div style="margin-top: 30px;">
             <h3>Configuration</h3>
@@ -4826,13 +5558,416 @@ ${JSON.stringify(status.config, null, 2)}
             window.location.reload();
           }
 
-          // Auto-refresh every 30 seconds
-          setTimeout(() => {
-            window.location.reload();
-          }, 30000);
+          // TODO: Replace auto-refresh with server-sent events to eliminate API waste
+          // Auto refresh disabled to prevent excessive API calls
+          // setTimeout(() => { window.location.reload(); }, 30000);
         </script>
       </body>
       </html>
+    `;
+  }
+
+  /**
+   * Render Bollinger Band strategy specific metrics
+   */
+  private renderBollingerBandMetrics(status: any): string {
+    // Extract real-time data from the strategy status
+    const indicators = status.indicators || {};
+    const pivots = status.pivots || {};
+    const currentPosition = status.currentPosition || null;
+    const candleCount = status.candleCount || 0;
+    const isActive = status.metrics?.isActive || false;
+    
+    // Get NIFTY50 price from last completed 5-minute candle close
+    const currentNiftyPrice = status.currentNiftyPrice || indicators.bollingerBands?.middle || 25170;
+    const currentNifty50Price = currentNiftyPrice.toFixed(2);
+
+    return `
+      <div class="metrics">
+        <!-- Strategy Status Banner -->
+        <div class="metric-card" style="grid-column: span 3; background: #ffffff; border: 2px solid ${isActive ? '#22c55e' : '#6c757d'}; border-left: 6px solid ${isActive ? '#22c55e' : '#6c757d'};">
+          <div class="metric-value" style="font-size: 2em; font-weight: bold; color: ${isActive ? '#22c55e' : '#6c757d'};">${isActive ? '🟢 ACTIVE' : '🔴 STOPPED'}</div>
+          <div style="font-size: 1.2em; margin-top: 5px; color: #1f2937;">Strategy Status</div>
+          <div style="font-size: 0.9em; margin-top: 5px; color: #6b7280;">Real-time monitoring ${isActive ? 'ON' : 'OFF'}</div>
+        </div>
+
+        <!-- NIFTY50 5-Minute Close Price -->
+        <div class="metric-card" style="grid-column: span 2; background: #ffffff; border: 2px solid #3b82f6; border-left: 6px solid #3b82f6;">
+          <div class="metric-value" style="font-size: 2.5em; font-weight: bold; color: #3b82f6;">₹${currentNifty50Price}</div>
+          <div style="font-size: 1.2em; margin-top: 5px; color: #1f2937;">5-Minute OHLC Close</div>
+          <div style="font-size: 0.9em; margin-top: 5px; color: #6b7280;">Last Completed Candle (${candleCount} total)</div>
+        </div>
+
+        <!-- Current 5-Minute Candle (Entry Signal Basis) -->
+        ${this.render5MinuteCandle(status.currentCandle)}
+
+        <!-- Trading Metrics -->
+        <div class="metric-card">
+          <div class="metric-value">${status.metrics.totalTrades}</div>
+          <div>Total Trades</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">₹${status.metrics.profitLoss.toFixed(2)}</div>
+          <div>Profit & Loss</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${status.metrics.winRate.toFixed(1)}%</div>
+          <div>Win Rate</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${status.fixedLots || 10} Lots</div>
+          <div>Fixed Position Size</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">₹${(status.capitalAllocation || 200000).toLocaleString()}</div>
+          <div>Capital Allocation</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${status.config.timeframe}</div>
+          <div>Timeframe</div>
+        </div>
+      </div>
+
+      <!-- Technical Indicators Section -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📊 Technical Indicators</h3>
+        <div class="metrics" style="margin-top: 20px;">
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${indicators.rsi >= 70 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'}; border-left: 6px solid ${indicators.rsi >= 70 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'};">
+            <div class="metric-value" style="color: ${indicators.rsi >= 70 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'};">${indicators.rsi ? indicators.rsi.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">RSI (10)</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${indicators.rsi >= 70 && indicators.rsi <= 80 ? '✅ LONG Range' : 
+                indicators.rsi >= 10 && indicators.rsi <= 30 ? '✅ SHORT Range' : 
+                indicators.rsi > 80 ? '⚠️ Overbought' : 
+                indicators.rsi < 10 ? '⚠️ Oversold' : '⏸️ Neutral'}
+            </div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${indicators.supertrend?.trend === 'UP' ? '#22c55e' : '#ef4444'}; border-left: 6px solid ${indicators.supertrend?.trend === 'UP' ? '#22c55e' : '#ef4444'};">
+            <div class="metric-value" style="color: ${indicators.supertrend?.trend === 'UP' ? '#22c55e' : '#ef4444'};">${indicators.supertrend?.trend || 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">Supertrend (10,2)</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              Level: ₹${indicators.supertrend?.value ? indicators.supertrend.value.toFixed(2) : 'N/A'}
+            </div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #3b82f6; border-left: 6px solid #3b82f6;">
+            <div class="metric-value" style="color: #3b82f6;">₹${indicators.bollingerBands?.upper ? indicators.bollingerBands.upper.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">BB Upper</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${currentNiftyPrice > (indicators.bollingerBands?.upper || 0) ? '🟢 Above' : '🔴 Below'}
+            </div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #6366f1; border-left: 6px solid #6366f1;">
+            <div class="metric-value" style="color: #6366f1;">₹${indicators.bollingerBands?.middle ? indicators.bollingerBands.middle.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">BB Middle</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">SMA(20)</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #8b5cf6; border-left: 6px solid #8b5cf6;">
+            <div class="metric-value" style="color: #8b5cf6;">₹${indicators.bollingerBands?.lower ? indicators.bollingerBands.lower.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">BB Lower</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${currentNiftyPrice < (indicators.bollingerBands?.lower || 0) ? '🟢 Below' : '🔴 Above'}
+            </div>
+          </div>
+          ${currentPosition ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #ef4444; border-left: 6px solid #ef4444;">
+            <div class="metric-value" style="color: #ef4444;">${currentPosition.type}</div>
+            <div style="color: #1f2937; font-weight: 600;">Current Position</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              Entry: ₹${currentPosition.entryPrice || 'N/A'}
+            </div>
+          </div>
+          ` : `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #6c757d; border-left: 6px solid #6c757d;">
+            <div class="metric-value" style="color: #6c757d;">None</div>
+            <div style="color: #1f2937; font-weight: 600;">Current Position</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">No active trades</div>
+          </div>
+          `}
+        </div>
+      </div>
+
+      <!-- Daily Pivots Section -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">🎯 Daily Pivot Levels</h3>
+        <div class="metrics" style="margin-top: 20px;">
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #ef4444; border-left: 6px solid #ef4444;">
+            <div class="metric-value" style="color: #ef4444;">₹${pivots.r2 ? pivots.r2.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">R2 (Resistance)</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${currentNiftyPrice > (pivots.r2 || 0) ? '🟢 Above' : '🔴 Below'}
+            </div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #f97316; border-left: 6px solid #f97316;">
+            <div class="metric-value" style="color: #f97316;">₹${pivots.r1 ? pivots.r1.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">R1 (Resistance)</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${currentNiftyPrice > (pivots.r1 || 0) ? '🟢 Above' : '🔴 Below'}
+            </div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #6366f1; border-left: 6px solid #6366f1;">
+            <div class="metric-value" style="color: #6366f1;">₹${pivots.pp ? pivots.pp.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">PP (Pivot Point)</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">Central level</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #22c55e; border-left: 6px solid #22c55e;">
+            <div class="metric-value" style="color: #22c55e;">₹${pivots.s1 ? pivots.s1.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">S1 (Support)</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${currentNiftyPrice < (pivots.s1 || 0) ? '🟢 Below' : '🔴 Above'}
+            </div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #10b981; border-left: 6px solid #10b981;">
+            <div class="metric-value" style="color: #10b981;">₹${pivots.s2 ? pivots.s2.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">S2 (Support)</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${currentNiftyPrice < (pivots.s2 || 0) ? '🟢 Below' : '🔴 Above'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Option Instrument & Trade Setup -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📝 Option Instrument & Trade Setup</h3>
+        <div class="metrics" style="margin-top: 20px;">
+          <div class="metric-card" style="grid-column: span 2; background: #ffffff; border: 2px solid #3b82f6; border-left: 6px solid #3b82f6;">
+            <div style="color: #1f2937; font-weight: 600; margin-bottom: 12px;">Selected Instrument</div>
+            <div style="background: #f8fafc; border-radius: 8px; padding: 12px;">
+              <div style="color: #6b7280; font-style: italic; font-size: 14px;">
+                Instrument will be selected automatically when entry signal is detected<br>
+                <small>ATM options based on strategy rules and market conditions</small>
+              </div>
+            </div>
+          </div>
+          <div class="metric-card" style="grid-column: span 1; background: #ffffff; border: 2px solid #f59e0b; border-left: 6px solid #f59e0b;">
+            <div style="color: #1f2937; font-weight: 600; margin-bottom: 8px;">Trade Setup</div>
+            <div style="font-size: 14px; line-height: 1.5; color: #374151;">
+              <div><strong>Entry:</strong> Waiting for signal</div>
+              <div><strong>Stop Loss:</strong> 12% trailing</div>
+              <div><strong>Target:</strong> Mid BB exit</div>
+              <div><strong>Position Size:</strong> ${status.fixedLots || 10} lots</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Entry/Exit Signal Analysis -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">🎯 Live Signal Analysis</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+          ${this.renderSignalAnalysis('LONG', indicators, pivots, currentNiftyPrice)}
+          ${this.renderSignalAnalysis('SHORT', indicators, pivots, currentNiftyPrice)}
+        </div>
+      </div>
+
+      <!-- Strategy Rules -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📋 Strategy Rules</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+          <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #22c55e;">
+            <h4 style="color: #22c55e; margin-top: 0;">🚀 LONG Entry</h4>
+            <ul style="margin: 10px 0; padding-left: 20px;">
+              <li>Price > Bollinger Upper Band</li>
+              <li>RSI between 65-85</li>
+              <li>Supertrend = UP</li>
+              <li>Price above R1 or R2</li>
+            </ul>
+            <p style="margin: 10px 0 0 0; font-weight: bold; color: #22c55e;">Exit: NIFTY50 < Mid BB</p>
+          </div>
+          <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #ef4444;">
+            <h4 style="color: #ef4444; margin-top: 0;">🔻 SHORT Entry</h4>
+            <ul style="margin: 10px 0; padding-left: 20px;">
+              <li>Price < Bollinger Lower Band</li>
+              <li>RSI between 15-35</li>
+              <li>Supertrend = DOWN</li>
+              <li>Price below R1</li>
+            </ul>
+            <p style="margin: 10px 0 0 0; font-weight: bold; color: #ef4444;">Exit: 12% Trailing SL</p>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Render current 5-minute candle data (used for entry signals)
+   */
+  private render5MinuteCandle(currentCandle: any): string {
+    if (!currentCandle) {
+      return `
+        <div class="metric-card" style="grid-column: span 4; background: #ffffff; border: 2px solid #6c757d; border-left: 6px solid #6c757d;">
+          <div class="metric-value" style="color: #6c757d;">No Active Candle</div>
+          <div style="font-size: 1.2em; margin-top: 5px; color: #1f2937;">5-Minute Candle (Entry Signal Basis)</div>
+          <div style="font-size: 0.9em; margin-top: 5px; color: #6b7280;">Waiting for market data...</div>
+        </div>
+      `;
+    }
+
+    const isComplete = currentCandle.isComplete;
+    const candleColor = currentCandle.close >= currentCandle.open ? '#22c55e' : '#ef4444';
+    const statusColor = isComplete ? '#22c55e' : '#f59e0b';
+    const statusText = isComplete ? '🟢 COMPLETED' : '🟡 BUILDING';
+    
+    const startTime = new Date(currentCandle.timestamp).toLocaleTimeString('en-US', { 
+      hour12: false, 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    
+    const endTime = new Date(new Date(currentCandle.timestamp).getTime() + 5 * 60 * 1000).toLocaleTimeString('en-US', { 
+      hour12: false, 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+
+    return `
+      <div class="metric-card" style="grid-column: span 4; background: #ffffff; border: 2px solid ${statusColor}; border-left: 6px solid ${statusColor};">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+          <div>
+            <div class="metric-value" style="color: ${statusColor}; font-size: 1.5em;">${statusText}</div>
+            <div style="font-size: 1.2em; margin-top: 5px; color: #1f2937;">5-Minute Candle (Entry Signal Basis)</div>
+            <div style="font-size: 0.9em; margin-top: 5px; color: #6b7280;">${startTime} - ${endTime}</div>
+          </div>
+          <div style="text-align: right;">
+            <div style="font-size: 0.9em; color: #6b7280;">Candle Progress</div>
+            <div style="font-size: 1.1em; color: ${candleColor}; font-weight: bold;">
+              ${currentCandle.close >= currentCandle.open ? '🟢 Bullish' : '🔴 Bearish'}
+            </div>
+          </div>
+        </div>
+        
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px;">
+          <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 8px;">
+            <div style="font-size: 0.9em; color: #6b7280; margin-bottom: 5px;">OPEN</div>
+            <div style="font-size: 1.2em; font-weight: bold; color: #1f2937;">₹${currentCandle.open.toFixed(2)}</div>
+          </div>
+          <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 8px;">
+            <div style="font-size: 0.9em; color: #6b7280; margin-bottom: 5px;">HIGH</div>
+            <div style="font-size: 1.2em; font-weight: bold; color: #22c55e;">₹${currentCandle.high.toFixed(2)}</div>
+          </div>
+          <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 8px;">
+            <div style="font-size: 0.9em; color: #6b7280; margin-bottom: 5px;">LOW</div>
+            <div style="font-size: 1.2em; font-weight: bold; color: #ef4444;">₹${currentCandle.low.toFixed(2)}</div>
+          </div>
+          <div style="text-align: center; padding: 10px; background: #f8f9fa; border-radius: 8px;">
+            <div style="font-size: 0.9em; color: #6b7280; margin-bottom: 5px;">CLOSE</div>
+            <div style="font-size: 1.2em; font-weight: bold; color: ${candleColor};">₹${currentCandle.close.toFixed(2)}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Render signal analysis for LONG/SHORT entry conditions
+   */
+  private renderSignalAnalysis(signalType: 'LONG' | 'SHORT', indicators: any, pivots: any, currentPrice: number): string {
+    const price = currentPrice;
+    const rsi = indicators.rsi || 0;
+    const supertrend = indicators.supertrend?.trend || 'N/A';
+    const bbUpper = indicators.bollingerBands?.upper || 0;
+    const bbLower = indicators.bollingerBands?.lower || 0;
+    const r1 = pivots.r1 || 0;
+    const r2 = pivots.r2 || 0;
+    
+    let conditions = [];
+    let metCount = 0;
+    let signalStrength = 'No Signal';
+    let signalColor = '#6c757d';
+    
+    if (signalType === 'LONG') {
+      const priceAboveUpper = price > bbUpper;
+      const rsiInRange = rsi >= 65 && rsi <= 85;
+      const supertrendUp = supertrend === 'UP';
+      const aboveR1orR2 = price > r1 || price > r2;
+      
+      conditions = [
+        { name: 'Price > BB Upper', met: priceAboveUpper, value: `₹${price.toFixed(2)} ${priceAboveUpper ? '>' : '<='} ₹${bbUpper.toFixed(2)}` },
+        { name: 'RSI 65-85', met: rsiInRange, value: `${rsi.toFixed(2)} ${rsiInRange ? 'in' : 'out of'} range` },
+        { name: 'Supertrend UP', met: supertrendUp, value: supertrend },
+        { name: 'Above R1/R2', met: aboveR1orR2, value: `Above R1:${price > r1 ? '✅' : '❌'} R2:${price > r2 ? '✅' : '❌'}` }
+      ];
+      
+      metCount = conditions.filter(c => c.met).length;
+      signalStrength = metCount === 4 ? '🟢 STRONG BUY' : metCount >= 2 ? '🟡 WEAK' : '🔴 NO SIGNAL';
+      signalColor = metCount === 4 ? '#22c55e' : metCount >= 2 ? '#f59e0b' : '#ef4444';
+    } else {
+      const priceBelowLower = price < bbLower;
+      const rsiInRange = rsi >= 15 && rsi <= 35;
+      const supertrendDown = supertrend === 'DOWN';
+      const belowR1 = price <= r1;
+      
+      conditions = [
+        { name: 'Price < BB Lower', met: priceBelowLower, value: `₹${price.toFixed(2)} ${priceBelowLower ? '<' : '>='} ₹${bbLower.toFixed(2)}` },
+        { name: 'RSI 15-35', met: rsiInRange, value: `${rsi.toFixed(2)} ${rsiInRange ? 'in' : 'out of'} range` },
+        { name: 'Supertrend DOWN', met: supertrendDown, value: supertrend },
+        { name: 'Below R1', met: belowR1, value: `₹${price.toFixed(2)} ${belowR1 ? '<=' : '>'} ₹${r1.toFixed(2)}` }
+      ];
+      
+      metCount = conditions.filter(c => c.met).length;
+      signalStrength = metCount === 4 ? '🔴 STRONG SELL' : metCount >= 2 ? '🟡 WEAK' : '🔴 NO SIGNAL';
+      signalColor = metCount === 4 ? '#ef4444' : metCount >= 2 ? '#f59e0b' : '#6c757d';
+    }
+    
+    return `
+      <div style="background: #ffffff; border: 2px solid ${signalColor}; border-left: 6px solid ${signalColor}; padding: 20px; border-radius: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+          <h4 style="color: ${signalColor}; margin: 0; font-weight: 600;">${signalType === 'LONG' ? '🚀' : '🔻'} ${signalType} Entry Analysis</h4>
+          <div style="background: ${signalColor}; color: white; padding: 5px 10px; border-radius: 15px; font-size: 0.8em; font-weight: bold;">
+            ${signalStrength}
+          </div>
+        </div>
+        <div style="margin-bottom: 10px;">
+          <div style="background: #e9ecef; border-radius: 10px; height: 8px; margin-bottom: 5px;">
+            <div style="background: ${signalColor}; height: 100%; border-radius: 10px; width: ${(metCount/4)*100}%; transition: width 0.3s ease;"></div>
+          </div>
+          <small style="color: #6c757d;">${metCount}/4 conditions met</small>
+        </div>
+        <ul style="margin: 10px 0; padding-left: 15px; list-style: none;">
+          ${conditions.map(condition => `
+            <li style="margin: 8px 0; padding-left: 20px; position: relative;">
+              <span style="position: absolute; left: 0; color: ${condition.met ? '#22c55e' : '#ef4444'};">
+                ${condition.met ? '✅' : '❌'}
+              </span>
+              <strong>${condition.name}:</strong> <span style="color: ${condition.met ? '#22c55e' : '#ef4444'};">${condition.value}</span>
+            </li>
+          `).join('')}
+        </ul>
+      </div>
+    `;
+  }
+
+  /**
+   * Render generic strategy metrics
+   */
+  private renderGenericMetrics(status: any): string {
+    return `
+      <div class="metrics">
+        <div class="metric-card">
+          <div class="metric-value">${status.metrics.totalTrades}</div>
+          <div>Total Trades</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">₹${status.metrics.profitLoss.toFixed(2)}</div>
+          <div>Profit & Loss</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${status.metrics.winRate.toFixed(1)}%</div>
+          <div>Win Rate</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${status.metrics.errorCount}</div>
+          <div>Error Count</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${status.config.timeframe}</div>
+          <div>Timeframe</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${status.config.riskPerTrade}%</div>
+          <div>Risk Per Trade</div>
+        </div>
+      </div>
     `;
   }
 }

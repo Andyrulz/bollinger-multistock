@@ -2,9 +2,11 @@ import { Logger } from '../../utils/Logger';
 import { TradeExecutionService } from './BreakoutPullbackExecutor';
 import { globalStateLock } from '../../utils/StateLock';
 import { StrategyStatePersistence, PersistedStrategyState } from '../../services/StrategyStatePersistence';
+import { KiteTicker } from 'kiteconnect';
 
-// Manual polling system - no WebSocket dependencies needed
-// We'll use REST API to fetch live quotes every second
+// WebSocket-based real-time price streaming for optimal performance
+// Eliminates REST API rate limiting issues by using WebSocket ticks
+// Includes REST API fallback for maximum reliability
 
 // Define types locally since we removed the utility class
 export interface NiftyFuturesData {
@@ -138,11 +140,23 @@ export class BreakoutPullbackStrategy {
   private tradeExecutionService: TradeExecutionService;
   private strategyPersistence: StrategyStatePersistence;
   
-  // Manual polling properties
+  // WebSocket properties (replacing manual polling)
+  private kiteTicker: any | null = null;
+  private isWebSocketActive = false;
+  private webSocketReconnectAttempts = 0;
+  private maxWebSocketReconnectAttempts = 10;
+
+  // Circuit breaker properties for WebSocket management
+  private webSocketFailureCount = 0;
+  private lastWebSocketFailureTime: Date | null = null;
+  private webSocketSuccessCount = 0;
+  private totalWebSocketAttempts = 0;
+  private isWebSocketCircuitBreakerOpen = false;
+  private nextWebSocketRetryTime: Date | null = null;
+
+  // Legacy properties (kept for backward compatibility and fallback)
   private pricePollingInterval: NodeJS.Timeout | null = null;
   private isManualStreamingActive = false;
-
-  // Circuit breaker properties for resource management
   private pollingFailureCount = 0;
   private lastPollingFailureTime: Date | null = null;
   private pollingSuccessCount = 0;
@@ -150,9 +164,9 @@ export class BreakoutPullbackStrategy {
   private isCircuitBreakerOpen = false;
   private nextRetryTime: Date | null = null;
 
-  // Throttling and resource management
+  // Throttling and resource management (legacy - kept for fallback)
   private lastApiCallTime: Date | null = null;
-  private minTimeBetweenCalls = 300; // Minimum 300ms between API calls (max 3.33 calls/sec, under Zerodha's 3/sec limit)
+  private minTimeBetweenCalls = 300;
 
   /**
    * RACE CONDITION PROTECTION STATUS
@@ -179,6 +193,23 @@ export class BreakoutPullbackStrategy {
 
   // Health monitoring
   private healthMonitoringInterval: NodeJS.Timeout | null = null;
+
+  // Error monitoring and health tracking
+  private errorCounts: Map<string, number> = new Map();
+  private lastErrorTime: Map<string, Date> = new Map();
+  private healthStatus: {
+    dataStreamHealthy: boolean;
+    executionHealthy: boolean;
+    lastHeartbeat: Date;
+    consecutiveErrors: number;
+    criticalErrorsToday: number;
+  } = {
+    dataStreamHealthy: true,
+    executionHealthy: true,
+    lastHeartbeat: new Date(),
+    consecutiveErrors: 0,
+    criticalErrorsToday: 0
+  };
 
   private breakoutDetectionInterval: NodeJS.Timeout | null = null;
 
@@ -398,13 +429,16 @@ export class BreakoutPullbackStrategy {
       // Start persistence system
       this.startPersistenceTimer();
       
+      // Start health monitoring system
+      this.startHealthMonitoring();
+      
       this.strategyState.isActive = true;
       this.markStateAsDirty(); // Save initial state
       
-      this.logger.info('Nifty Breakout Retracement Strategy started successfully');
+      this.logger.info('Nifty Breakout Retracement Strategy started successfully with health monitoring');
       
     } catch (error) {
-      this.logger.error('Failed to start strategy:', error);
+      this.trackError('strategy_start', error, true);
       throw error;
     }
   }
@@ -505,7 +539,7 @@ export class BreakoutPullbackStrategy {
       this.logger.info(`Loaded ${this.strategyState.candles.length} historical 5-minute candles`);
       
     } catch (error) {
-      this.logger.error('Error loading historical candles:', error);
+      this.trackError('historical_candles_load', error, true);
       throw error;
     }
   }
@@ -636,19 +670,84 @@ export class BreakoutPullbackStrategy {
       // Stop manual price streaming
       await this.stopManualPriceStreaming();
       
+      // Stop health monitoring
+      this.stopHealthMonitoring();
+      
       if (this.updateTimer) {
         clearTimeout(this.updateTimer);
         this.updateTimer = undefined;
       }
 
-      this.logger.info('Nifty Breakout Retracement Strategy stopped');
+      this.logger.info('Nifty Breakout Retracement Strategy stopped with health monitoring cleanup');
     } catch (error) {
-      this.logger.error('Error stopping strategy:', error);
+      this.trackError('strategy_stop', error, false);
     }
   }
 
   /**
-   * Start manual price streaming using REST API polling
+   * Daily cleanup for intraday strategy
+   * Called at market open to clear previous day's data (keeps logs)
+   */
+  public async dailyCleanup(): Promise<void> {
+    this.logger.info('🧹 Starting daily cleanup for new trading day...');
+    
+    try {
+      // Clear historical data (keep only logs)
+      this.strategyState.candles = [];
+      this.strategyState.oneMinuteCandles = [];
+      delete this.strategyState.latestPivotHigh;
+      delete this.strategyState.latestPivotLow;
+      delete this.strategyState.latestBreakoutSignal;
+      delete this.strategyState.livePrice;
+      delete this.strategyState.lastUpdateTime;
+      this.strategyState.currentVolumeSMA50 = 0;
+      this.strategyState.lastCumulativeVolume = 0;
+      this.strategyState.currentMinuteAccumulatedVolume = 0;
+      delete this.strategyState.lastProcessedOneMinuteCandleTime;
+      
+      // Reset trade state to waiting for breakout
+      this.strategyState.tradeState = TradeState.WAITING_FOR_BREAKOUT;
+      delete this.strategyState.currentTradeId;
+      delete this.strategyState.tradeSetupRequest;
+      
+      // Reset marking candle state
+      this.strategyState.markingCandleState = {
+        isActive: false,
+        breakoutReference: null,
+        startTime: null,
+        currentMarkingCandle: null,
+        searchPhase: 'initial',
+        barsProcessedSinceBreakout: 0,
+        maxUpdatesReached: false,
+        timeExpired: false,
+        tradeSkipped: false
+      };
+      
+      // Reset health status
+      this.healthStatus = {
+        dataStreamHealthy: true,
+        executionHealthy: true,
+        lastHeartbeat: new Date(),
+        consecutiveErrors: 0,
+        criticalErrorsToday: 0
+      };
+      
+      // Reset error tracking (keep logs but reset counters)
+      this.errorCounts.clear();
+      this.lastErrorTime.clear();
+      
+      // Save cleaned state
+      await this.saveStateImmediate();
+      
+      this.logger.info('✅ Daily cleanup completed - ready for new trading day');
+    } catch (error) {
+      this.logger.error('❌ Error during daily cleanup:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Start WebSocket-based real-time price streaming
    */
   public async startManualPriceStreaming(): Promise<void> {
     try {
@@ -656,38 +755,30 @@ export class BreakoutPullbackStrategy {
         throw new Error('No current contract available for price streaming');
       }
       
-      this.logger.info(`🚀 Starting MANUAL price streaming for ${this.strategyState.currentContract.tradingsymbol}`);
+      this.logger.info(`🚀 Starting WEBSOCKET price streaming for ${this.strategyState.currentContract.tradingsymbol}`);
       
-      this.isManualStreamingActive = true;
+      // Initialize WebSocket connection and subscribe to instruments
+      await this.initializeWebSocket();
+      
+      // Mark WebSocket as active
+      this.isWebSocketActive = true;
       this.strategyState.priceStreamingActive = true;
       
-      // Start polling every 1 second with proper error handling
-      this.pricePollingInterval = setInterval(async () => {
-        try {
-          await this.fetchAndProcessLivePrice();
-        } catch (error) {
-          // Log error but don't stop the polling interval
-          this.logger.error('❌ Error in price polling interval callback:', error);
-          // Note: fetchAndProcessLivePrice() has its own try-catch, but this prevents
-          // unhandled promise rejections at the setInterval level
-        }
-      }, 1000);
-      
-      // Fetch first price immediately
-      await this.fetchAndProcessLivePrice();
-
       // Start health monitoring (log health status every 30 seconds)
       this.healthMonitoringInterval = setInterval(() => {
-        this.logHealthStatus();
+        this.logWebSocketHealthStatus();
       }, 30000);
       
-      this.logger.info('✅ MANUAL price streaming started successfully - polling every 1 second with health monitoring');
+      this.logger.info('✅ WEBSOCKET price streaming started successfully - real-time tick data with health monitoring');
 
     } catch (error) {
-      this.logger.error('❌ Failed to start MANUAL price streaming:', error);
+      this.logger.error('❌ Failed to start WEBSOCKET price streaming:', error);
       this.strategyState.priceStreamingActive = false;
-      this.isManualStreamingActive = false;
-      throw error;
+      this.isWebSocketActive = false;
+      
+      // Fallback to REST API polling if WebSocket fails
+      this.logger.warn('🔄 Falling back to REST API polling as backup...');
+      await this.startRestApiFallback();
     }
   }
 
@@ -811,10 +902,14 @@ export class BreakoutPullbackStrategy {
       }
 
       // Convert quote to tick data format
+      // Validate and normalize REST API data  
+      const rawVolume = quote.volume || 0;
+      const validatedVolume = Math.max(0, rawVolume); // Ensure non-negative volume
+
       const tickData: TickData = {
         instrument_token: quote.instrument_token,
         last_price: quote.last_price || 0,
-        volume: quote.volume || 0,
+        volume: validatedVolume,
         buy_quantity: quote.buy_quantity || 0,
         sell_quantity: quote.sell_quantity || 0,
         ohlc: {
@@ -833,8 +928,8 @@ export class BreakoutPullbackStrategy {
       this.strategyState.livePrice = tickData;
       this.strategyState.lastUpdateTime = new Date();
 
-      // Enhanced logging for manual polling
-      this.logger.info(`💹 MANUAL POLL: ${this.strategyState.currentContract.tradingsymbol} | LTP: ₹${tickData.last_price.toFixed(2)} | Vol: ${tickData.volume.toLocaleString()} | Change: ₹${tickData.change.toFixed(2)}`);
+      // Enhanced logging for manual polling with data source identification
+      this.logger.info(`💹 MANUAL POLL: ${this.strategyState.currentContract.tradingsymbol} | LTP: ₹${tickData.last_price.toFixed(2)} | Vol: ${tickData.volume.toLocaleString()} | Change: ₹${tickData.change.toFixed(2)} | Source=REST_API`);
 
       // Monitor trade levels based on current state
       this.monitorTradeLevels(tickData.last_price);
@@ -857,18 +952,366 @@ export class BreakoutPullbackStrategy {
   }
 
   /**
-   * Stop manual price streaming
+   * Initialize WebSocket connection
    */
-  public async stopManualPriceStreaming(): Promise<void> {
+  private async initializeWebSocket(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        this.logger.info('🔌 Initializing WebSocket connection...');
+
+        // Get access token from kiteConnect instance
+        const accessToken = this.kiteConnect.access_token;
+        const apiKey = process.env.ZERODHA_API_KEY;
+
+        if (!accessToken || !apiKey) {
+          throw new Error('Missing access token or API key for WebSocket initialization');
+        }
+
+        this.kiteTicker = new KiteTicker({
+          api_key: apiKey,
+          access_token: accessToken
+        });
+
+        // Connection opened
+        this.kiteTicker.on('connect', () => {
+          this.logger.info('✅ WebSocket connected successfully');
+          this.isWebSocketActive = true;
+          this.webSocketReconnectAttempts = 0;
+          this.recordWebSocketSuccess();
+          
+          // CRITICAL: Stop REST API fallback when WebSocket connects
+          this.stopRestApiFallback();
+          
+          // Subscribe to instruments immediately after connection is established
+          try {
+            this.subscribeToInstrument();
+          } catch (error) {
+            this.logger.error('❌ Failed to subscribe after WebSocket connection:', error);
+            reject(error);
+            return;
+          }
+          
+          resolve();
+        });
+
+        // Connection closed
+        this.kiteTicker.on('disconnect', (error: any) => {
+          this.logger.warn('🔌 WebSocket disconnected:', error);
+          this.isWebSocketActive = false;
+          
+          // Start REST API fallback when WebSocket disconnects
+          this.logger.warn('🔄 WebSocket disconnected, starting REST API fallback...');
+          this.startRestApiFallback().catch(err => {
+            this.logger.error('❌ Failed to start REST API fallback after WebSocket disconnect:', err);
+          });
+        });
+
+        // Connection error
+        this.kiteTicker.on('error', (error: any) => {
+          this.logger.error('❌ WebSocket error:', error);
+          this.recordWebSocketFailure(error);
+          this.isWebSocketActive = false;
+          
+          // Start REST API fallback when WebSocket errors
+          this.logger.warn('🔄 WebSocket error, starting REST API fallback...');
+          this.startRestApiFallback().catch(err => {
+            this.logger.error('❌ Failed to start REST API fallback after WebSocket error:', err);
+          });
+          
+          reject(error);
+        });
+
+        // Reconnection attempt
+        this.kiteTicker.on('reconnect', (reconnect_count: number, reconnect_interval: number) => {
+          this.webSocketReconnectAttempts = reconnect_count;
+          this.logger.info(`🔄 WebSocket reconnecting... Attempt: ${reconnect_count}/${this.maxWebSocketReconnectAttempts}, Interval: ${reconnect_interval}ms`);
+          
+          if (reconnect_count >= this.maxWebSocketReconnectAttempts) {
+            this.logger.error('❌ WebSocket max reconnection attempts reached, falling back to REST API');
+            this.startRestApiFallback();
+          }
+        });
+
+        // No reconnection
+        this.kiteTicker.on('noreconnect', () => {
+          this.logger.error('❌ WebSocket unable to reconnect after maximum attempts');
+          this.isWebSocketActive = false;
+          this.startRestApiFallback();
+        });
+
+        // Tick data received - this is the main event handler
+        this.kiteTicker.on('ticks', (ticks: any[]) => {
+          this.processWebSocketTicks(ticks);
+        });
+
+        // Connect to WebSocket
+        this.kiteTicker.connect();
+
+      } catch (error) {
+        this.logger.error('❌ Failed to initialize WebSocket:', error);
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Subscribe to NIFTY futures instrument
+   */
+  private subscribeToInstrument(): void {
+    if (!this.kiteTicker || !this.strategyState.currentContract) {
+      throw new Error('WebSocket not initialized or no current contract available');
+    }
+
+    const instrumentToken = parseInt(this.strategyState.currentContract.instrument_token.toString());
+    this.logger.info(`📡 Subscribing to NIFTY futures (Token: ${instrumentToken})...`);
+
     try {
-      this.logger.info('🛑 Stopping MANUAL price streaming...');
+      // Subscribe to the instrument - must pass numbers, not strings
+      this.kiteTicker.subscribe([instrumentToken]);
       
-      this.isManualStreamingActive = false;
-      this.strategyState.priceStreamingActive = false;
+      // Set mode to FULL for complete tick data - must pass numbers, not strings
+      this.kiteTicker.setMode(this.kiteTicker.modeFull, [instrumentToken]);
       
+      this.logger.info('✅ WebSocket subscription completed successfully');
+    } catch (error) {
+      this.logger.error('❌ WebSocket subscription failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process incoming WebSocket tick data
+   */
+  private processWebSocketTicks(ticks: any[]): void {
+    if (!this.strategyState.currentContract) {
+      this.logger.warn('⚠️ Received WebSocket ticks but no current contract available');
+      return;
+    }
+
+    const instrumentToken = parseInt(this.strategyState.currentContract.instrument_token.toString());
+    this.logger.debug(`📡 Received ${ticks.length} WebSocket tick(s) for token ${instrumentToken}`);
+    
+    ticks.forEach((tick: any) => {
+      if (tick.instrument_token === instrumentToken) {
+        this.logger.debug(`💹 Processing tick for ${this.strategyState.currentContract?.tradingsymbol}: LTP ₹${tick.last_price}`);
+        try {
+          // DEBUG: Log the entire tick structure to understand what fields are available
+          if (Math.random() < 0.05) { // Log only 5% of ticks to avoid spam, but ensure we see the structure
+            this.logger.info(`🔍 WEBSOCKET TICK STRUCTURE: ${JSON.stringify(tick, null, 2)}`);
+          }
+
+          // Convert WebSocket tick to our TickData format with validation
+          // CRITICAL FIX: Use volume_traded as the primary volume field for WebSocket ticks
+          const rawVolume = tick.volume_traded || tick.volume || tick.total_volume || tick.day_volume || tick.cumulative_volume || 0;
+          const validatedVolume = Math.max(0, rawVolume); // Ensure non-negative volume
+          
+          // Log successful volume extraction
+          if (validatedVolume > 0 && Math.random() < 0.02) { // 2% of ticks
+            this.logger.info(`✅ WebSocket volume extracted: ${validatedVolume} from volume_traded field`);
+          } else if (validatedVolume === 0) {
+            this.logger.error(`� CRITICAL: All WebSocket volume fields are ZERO! volume_traded=${tick.volume_traded}, volume=${tick.volume}`);
+          }
+          
+          const tickData: TickData = {
+            instrument_token: tick.instrument_token,
+            last_price: tick.last_price || 0,
+            volume: validatedVolume,
+            buy_quantity: tick.buy_quantity || 0,
+            sell_quantity: tick.sell_quantity || 0,
+            ohlc: {
+              open: tick.ohlc?.open || 0,
+              high: tick.ohlc?.high || 0,
+              low: tick.ohlc?.low || 0,
+              close: tick.ohlc?.close || 0
+            },
+            change: tick.change || 0,
+            last_trade_time: new Date(tick.last_trade_time) || new Date(),
+            exchange_timestamp: new Date(tick.exchange_timestamp) || new Date(),
+            timestamp: new Date()
+          };
+
+          // Log data source for debugging
+          this.logger.debug(`📡 WebSocket tick: Price=₹${tickData.last_price}, Volume=${tickData.volume}, Source=WebSocket`);
+
+          // Update strategy state with latest tick
+          this.strategyState.livePrice = tickData;
+          this.strategyState.lastUpdateTime = new Date();
+
+          // Process the tick for one-minute candle building
+          this.processTickForOneMinuteCandle(tickData);
+
+          // Record successful WebSocket data reception
+          this.recordWebSocketSuccess();
+
+        } catch (error) {
+          this.logger.error('❌ Error processing WebSocket tick:', error);
+          this.recordWebSocketFailure(error);
+        }
+      }
+    });
+  }
+
+  /**
+   * Log WebSocket health status
+   */
+  private logWebSocketHealthStatus(): void {
+    const now = new Date();
+    const lastUpdate = this.strategyState.lastUpdateTime;
+    const timeSinceLastUpdate = lastUpdate ? now.getTime() - lastUpdate.getTime() : 0;
+    
+    const healthStatus = {
+      websocketActive: this.isWebSocketActive,
+      connected: this.kiteTicker?.connected || false,
+      reconnectAttempts: this.webSocketReconnectAttempts,
+      lastDataReceived: lastUpdate?.toLocaleTimeString() || 'Never',
+      timeSinceLastData: `${Math.floor(timeSinceLastUpdate / 1000)}s`,
+      successRate: this.totalWebSocketAttempts > 0 ? 
+        ((this.webSocketSuccessCount / this.totalWebSocketAttempts) * 100).toFixed(1) + '%' : 'N/A',
+      circuitBreakerOpen: this.isWebSocketCircuitBreakerOpen
+    };
+
+    this.logger.info('📊 WebSocket Health Status:', healthStatus);
+
+    // Alert if no data received for more than 60 seconds during active market hours
+    // Increased threshold to avoid false alerts during low-volume periods (lunch, early morning)
+    if (timeSinceLastUpdate > 60000 && this.isWebSocketActive && this.isMarketHours()) {
+      // Only warn during market hours to avoid false alerts during low-volume periods
+      this.logger.warn('⚠️ No WebSocket data received for over 60 seconds during market hours');
+    }
+  }
+
+  /**
+   * Record WebSocket success and update circuit breaker state
+   */
+  private recordWebSocketSuccess(): void {
+    this.webSocketSuccessCount++;
+    this.totalWebSocketAttempts++;
+    
+    // Reset failure count on success
+    if (this.webSocketFailureCount > 0) {
+      this.logger.debug(`✅ WebSocket recovered - resetting failure count (was ${this.webSocketFailureCount})`);
+      this.webSocketFailureCount = 0;
+      this.lastWebSocketFailureTime = null;
+    }
+
+    // Close circuit breaker on success
+    if (this.isWebSocketCircuitBreakerOpen) {
+      this.isWebSocketCircuitBreakerOpen = false;
+      this.nextWebSocketRetryTime = null;
+      this.logger.info('🔓 WebSocket circuit breaker CLOSED - connection is healthy');
+    }
+  }
+
+  /**
+   * Record WebSocket failure and update circuit breaker state
+   */
+  private recordWebSocketFailure(error: any): void {
+    this.webSocketFailureCount++;
+    this.totalWebSocketAttempts++;
+    this.lastWebSocketFailureTime = new Date();
+
+    const failureThreshold = 5; // Open circuit after 5 consecutive failures
+    const successRate = this.totalWebSocketAttempts > 0 ? 
+      (this.webSocketSuccessCount / this.totalWebSocketAttempts) * 100 : 0;
+
+    this.logger.warn(`⚠️ WebSocket failure #${this.webSocketFailureCount} | Success rate: ${successRate.toFixed(1)}% | Error: ${error.message || error}`);
+
+    // Open circuit breaker if threshold exceeded
+    if (this.webSocketFailureCount >= failureThreshold && !this.isWebSocketCircuitBreakerOpen) {
+      this.isWebSocketCircuitBreakerOpen = true;
+      // Exponential backoff: 30s, 60s, 120s, 240s (max 4 minutes)
+      const backoffSeconds = Math.min(30 * Math.pow(2, Math.floor(this.webSocketFailureCount / 5)), 240);
+      this.nextWebSocketRetryTime = new Date(Date.now() + backoffSeconds * 1000);
+      
+      this.logger.error(`🔒 WEBSOCKET CIRCUIT BREAKER OPEN - Too many failures (${this.webSocketFailureCount}). Falling back to REST API`);
+      this.startRestApiFallback();
+    }
+  }
+
+  /**
+   * Fallback to REST API polling when WebSocket fails
+   */
+  private async startRestApiFallback(): Promise<void> {
+    try {
+      this.logger.warn('🔄 Starting REST API fallback due to WebSocket issues...');
+      
+      // CRITICAL: Stop any existing REST API polling first to avoid conflicts
       if (this.pricePollingInterval) {
         clearInterval(this.pricePollingInterval);
         this.pricePollingInterval = null;
+      }
+      
+      this.isManualStreamingActive = true;
+      
+      // Start polling every 1.5 seconds with proper error handling (safety margin for 1 req/sec limit)
+      // This should ONLY run when WebSocket is not active
+      this.pricePollingInterval = setInterval(async () => {
+        try {
+          if (!this.isWebSocketActive) {
+            await this.fetchAndProcessLivePrice();
+          } else {
+            // WebSocket came back online, stop REST API fallback completely
+            this.logger.info('✅ WebSocket is back online, stopping REST API fallback');
+            this.stopRestApiFallback();
+          }
+        } catch (error) {
+          this.logger.error('❌ Error in REST API fallback polling:', error);
+        }
+      }, 1500);
+      
+      // Fetch first price immediately (only if WebSocket is not active)
+      if (!this.isWebSocketActive) {
+        await this.fetchAndProcessLivePrice();
+      }
+      
+      this.logger.info('✅ REST API fallback started successfully');
+      
+    } catch (error) {
+      this.logger.error('❌ Failed to start REST API fallback:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Stop REST API fallback polling
+   */
+  private stopRestApiFallback(): void {
+    if (this.pricePollingInterval) {
+      clearInterval(this.pricePollingInterval);
+      this.pricePollingInterval = null;
+      this.logger.info('🛑 REST API fallback polling stopped - WebSocket is active');
+    }
+    this.isManualStreamingActive = false;
+  }
+
+  /**
+   * Stop price streaming (WebSocket and fallback REST API)
+   */
+  public async stopManualPriceStreaming(): Promise<void> {
+    try {
+      this.logger.info('🛑 Stopping price streaming...');
+      
+      this.strategyState.priceStreamingActive = false;
+      
+      // Stop WebSocket connection
+      if (this.kiteTicker) {
+        try {
+          this.kiteTicker.disconnect();
+          this.logger.info('🔌 WebSocket disconnected');
+        } catch (error) {
+          this.logger.warn('⚠️ Error disconnecting WebSocket:', error);
+        }
+        this.kiteTicker = null;
+      }
+      
+      this.isWebSocketActive = false;
+      
+      // Stop REST API fallback polling if active
+      this.isManualStreamingActive = false;
+      if (this.pricePollingInterval) {
+        clearInterval(this.pricePollingInterval);
+        this.pricePollingInterval = null;
+        this.logger.info('🛑 REST API fallback polling stopped');
       }
 
       // Stop health monitoring
@@ -881,15 +1324,21 @@ export class BreakoutPullbackStrategy {
       this.activeApiCallsCount = 0;
       this.lastApiCallTime = null;
       
-      // Reset circuit breaker state
+      // Reset circuit breaker states
       this.pollingFailureCount = 0;
       this.lastPollingFailureTime = null;
       this.isCircuitBreakerOpen = false;
       this.nextRetryTime = null;
       
-      this.logger.info('✅ MANUAL price streaming stopped - all resources cleaned up');
+      this.webSocketFailureCount = 0;
+      this.lastWebSocketFailureTime = null;
+      this.isWebSocketCircuitBreakerOpen = false;
+      this.nextWebSocketRetryTime = null;
+      this.webSocketReconnectAttempts = 0;
+      
+      this.logger.info('✅ Price streaming stopped - all resources cleaned up (WebSocket + REST API fallback)');
     } catch (error) {
-      this.logger.error('❌ Error stopping MANUAL price streaming:', error);
+      this.logger.error('❌ Error stopping price streaming:', error);
     }
   }
 
@@ -960,6 +1409,14 @@ export class BreakoutPullbackStrategy {
       pivotHigh: this.strategyState.latestPivotHigh,
       pivotLow: this.strategyState.latestPivotLow
     };
+  }
+
+  /**
+   * Manually trigger pivot detection (for debugging)
+   */
+  public async triggerManualPivotDetection(): Promise<void> {
+    this.logger.info('🔄 MANUAL PIVOT DETECTION triggered');
+    await this.detectPivotPoints();
   }
 
   /**
@@ -1047,6 +1504,38 @@ export class BreakoutPullbackStrategy {
   }
 
   /**
+   * Get WebSocket health status for dashboard monitoring
+   */
+  public getWebSocketHealthStatus(): {
+    websocketActive: boolean;
+    connected: boolean;
+    reconnectAttempts: number;
+    lastDataReceived: string;
+    timeSinceLastData: string;
+    successRate: string;
+    circuitBreakerOpen: boolean;
+    totalAttempts: number;
+    successCount: number;
+  } {
+    const now = new Date();
+    const lastUpdate = this.strategyState.lastUpdateTime;
+    const timeSinceLastUpdate = lastUpdate ? now.getTime() - lastUpdate.getTime() : 0;
+    
+    return {
+      websocketActive: this.isWebSocketActive,
+      connected: this.kiteTicker?.connected || false,
+      reconnectAttempts: this.webSocketReconnectAttempts,
+      lastDataReceived: lastUpdate?.toLocaleTimeString() || 'Never',
+      timeSinceLastData: `${Math.floor(timeSinceLastUpdate / 1000)}s`,
+      successRate: this.totalWebSocketAttempts > 0 ? 
+        ((this.webSocketSuccessCount / this.totalWebSocketAttempts) * 100).toFixed(1) + '%' : 'N/A',
+      circuitBreakerOpen: this.isWebSocketCircuitBreakerOpen,
+      totalAttempts: this.totalWebSocketAttempts,
+      successCount: this.webSocketSuccessCount
+    };
+  }
+
+  /**
    * Get latest one minute candle
    */
   public getLatestOneMinuteCandle(): Candle | undefined {
@@ -1054,6 +1543,13 @@ export class BreakoutPullbackStrategy {
       return undefined;
     }
     return this.strategyState.oneMinuteCandles[this.strategyState.oneMinuteCandles.length - 1];
+  }
+
+  /**
+   * Get all one-minute candles for debugging
+   */
+  public getOneMinuteCandles(): Candle[] {
+    return this.strategyState.oneMinuteCandles;
   }
 
   /**
@@ -1177,8 +1673,10 @@ export class BreakoutPullbackStrategy {
     const candles = this.strategyState.candles;
     const requiredCandles = (this.LOOKBACK_PERIOD * 2) + 1; // 31 candles minimum
 
+    this.logger.info(`🔍 PIVOT DETECTION: Checking ${candles.length} candles (need ${requiredCandles})`);
+
     if (candles.length < requiredCandles) {
-      this.logger.debug(`Not enough candles for pivot detection (need ${requiredCandles}, have ${candles.length})`);
+      this.logger.warn(`⚠️ Not enough candles for pivot detection (need ${requiredCandles}, have ${candles.length})`);
       return;
     }
 
@@ -1242,9 +1740,14 @@ export class BreakoutPullbackStrategy {
     }
 
     if (foundPivots === 0) {
-      this.logger.debug('No new pivot points detected in current 15,15 analysis');
+      this.logger.warn(`⚠️ NO PIVOTS FOUND in ${candles.length} candles using 15,15 lookback. Market might be in strong trend.`);
+      
+      // Log some sample candle data for debugging
+      const recent = candles.slice(-10);
+      this.logger.info(`📊 Recent 10 candles: High range ${Math.min(...recent.map(c => c.high)).toFixed(2)} - ${Math.max(...recent.map(c => c.high)).toFixed(2)}`);
+      this.logger.info(`📊 Recent 10 candles: Low range ${Math.min(...recent.map(c => c.low)).toFixed(2)} - ${Math.max(...recent.map(c => c.low)).toFixed(2)}`);
     } else {
-      this.logger.info(`✅ Pivot analysis complete (15,15) - analyzed ${foundPivots} pivot(s)`);
+      this.logger.info(`✅ Pivot analysis complete (15,15) - found ${foundPivots} pivot(s)`);
       this.logCurrentPivots();
     }
   }
@@ -1332,17 +1835,68 @@ export class BreakoutPullbackStrategy {
     const now = new Date(tick.timestamp || new Date());
     const currentMinute = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0);
 
-    // Calculate incremental volume from cumulative daily volume
+    // Calculate incremental volume from cumulative daily volume with robust fallback
     const cumulativeVolume = tick.volume || 0;
     let incrementalVolume = 0;
+    let volumeSource = 'unknown';
+    
+    // Volume calculation debugging (controlled by LOG_LEVEL)
+    this.logger.debug(`🔍 VOLUME CALCULATION: cumulative=${cumulativeVolume}, last=${this.strategyState.lastCumulativeVolume}, tick.volume=${tick.volume}, will_calc=${cumulativeVolume - this.strategyState.lastCumulativeVolume}, source=about_to_determine`);
     
     if (this.strategyState.lastCumulativeVolume > 0 && cumulativeVolume >= this.strategyState.lastCumulativeVolume) {
       incrementalVolume = cumulativeVolume - this.strategyState.lastCumulativeVolume;
+      volumeSource = 'cumulative_diff';
+      
+      // CRITICAL INSIGHT: If cumulative volume hasn't changed, that's normal! No trades happened.
+      // But we still need to process the tick for price updates, just with zero volume.
+      if (incrementalVolume === 0) {
+        // This is normal - no trades occurred since last tick, so no volume change
+        // We don't need to force volume here, zero is correct for this tick
+        volumeSource = 'no_trades_normal';
+      }
+    } else if (this.strategyState.lastCumulativeVolume === 0 && cumulativeVolume > 0) {
+      // First tick of the day or after reset - use a minimal volume to avoid zero volume candles
+      incrementalVolume = Math.max(1, Math.floor(cumulativeVolume * 0.001)); // Use 0.1% of cumulative as fallback
+      volumeSource = 'first_tick_fallback';
+      this.logger.info(`📊 Volume fallback: Using ${incrementalVolume} for first tick (cumulative: ${cumulativeVolume})`);
+    } else if (cumulativeVolume < this.strategyState.lastCumulativeVolume) {
+      // Volume reset detected (new day or data inconsistency) - use minimum viable volume
+      incrementalVolume = Math.max(1, 100); // Use conservative estimate
+      volumeSource = 'reset_fallback';
+      this.logger.warn(`⚠️ Volume reset detected: ${cumulativeVolume} < ${this.strategyState.lastCumulativeVolume}, using fallback: ${incrementalVolume}`);
+    } else if (cumulativeVolume === 0 && this.strategyState.lastCumulativeVolume === 0) {
+      // Both current and last are zero - for WebSocket estimated volumes, use the volume directly
+      if (tick.volume > 0) {
+        incrementalVolume = tick.volume; // This is likely an estimated volume from WebSocket processing
+        volumeSource = 'websocket_estimated';
+      } else {
+        incrementalVolume = Math.max(1, 50); // Use conservative minimum volume for tick
+        volumeSource = 'persistent_zero_fallback';
+      }
+      if (Math.random() < 0.01) { // Log 1% of these cases
+        this.logger.warn(`⚠️ Using volume=${incrementalVolume} (source: ${volumeSource})`);
+      }
     }
     
-    // Debug logging for volume calculations
+    // DEBUG: Log when we would have forced volume to understand the real issue
+    if (incrementalVolume === 0) {
+      if (Math.random() < 0.01) { // 1% of zero-volume ticks
+        this.logger.debug(`📊 Zero incremental volume (${volumeSource}): cumulative=${cumulativeVolume}, last=${this.strategyState.lastCumulativeVolume} - this is NORMAL when no trades occur`);
+      }
+      // DON'T force volume - zero incremental volume is correct when no trades happen
+    }
+    
+    // Enhanced debug logging for volume calculations with proper severity levels
     if (incrementalVolume > 0) {
-      this.logger.debug(`📊 Volume calc: Cumulative=${cumulativeVolume}, Last=${this.strategyState.lastCumulativeVolume}, Incremental=${incrementalVolume}`);
+      this.logger.debug(`📊 Volume calc (${volumeSource}): Cumulative=${cumulativeVolume}, Last=${this.strategyState.lastCumulativeVolume}, Incremental=${incrementalVolume}`);
+    } else if (volumeSource === 'no_trades_normal') {
+      // This is NORMAL - no trades occurred, so zero incremental volume is correct
+      if (Math.random() < 0.005) { // Log only 0.5% to avoid spam
+        this.logger.debug(`📊 Normal: No trades since last tick (cumulative=${cumulativeVolume} unchanged)`);
+      }
+    } else {
+      // This indicates a real problem with volume calculation
+      this.logger.error(`🚨 CRITICAL: Zero incremental volume after all fallbacks! Cumulative=${cumulativeVolume}, Last=${this.strategyState.lastCumulativeVolume}, Source=${volumeSource}`);
     }
     
     // Update tracking for next calculation
@@ -1371,13 +1925,15 @@ export class BreakoutPullbackStrategy {
         // Update volume SMA50
         this.updateVolumeSMA50();
         
-        // Check for breakout on the completed candle
+        // Enhanced logging for candle completion with market hours info
+        const marketHours = this.isMarketHours();
+        this.logger.info(`✅ 1m candle completed: O:${completedCandle.open.toFixed(2)} H:${completedCandle.high.toFixed(2)} L:${completedCandle.low.toFixed(2)} C:${completedCandle.close.toFixed(2)} V:${completedCandle.volume} | Market: ${marketHours ? 'OPEN' : 'CLOSED'}`);
+        
+        // Check for breakout on the completed candle (includes market hours validation)
         this.checkForBreakout(completedCandle);
         
         // Process marking candle logic after breakout check
         this.processMarkingCandle(completedCandle);
-        
-        this.logger.debug(`✅ 1m candle completed: O:${completedCandle.open.toFixed(2)} H:${completedCandle.high.toFixed(2)} L:${completedCandle.low.toFixed(2)} C:${completedCandle.close.toFixed(2)} V:${completedCandle.volume}`);
       }
 
       // Start a new one-minute candle - reset accumulated volume for new minute
@@ -1661,31 +2217,43 @@ export class BreakoutPullbackStrategy {
    */
   private checkForBreakout(completedCandle: Candle): void {
     try {
+      // Enhanced logging for comprehensive breakout analysis
+      this.logger.info(`🔍 BREAKOUT DETECTION ANALYSIS:`);
+      this.logger.info(`   📊 Candle: O:${completedCandle.open.toFixed(2)} H:${completedCandle.high.toFixed(2)} L:${completedCandle.low.toFixed(2)} C:${completedCandle.close.toFixed(2)} V:${completedCandle.volume}`);
+      this.logger.info(`   ⏰ Time: ${completedCandle.timestamp.toLocaleString()}`);
+      this.logger.info(`   🎯 Market Hours: ${this.isMarketHours()}`);
+      this.logger.info(`   📈 Trade State: ${this.strategyState.tradeState}`);
+      this.logger.info(`   📊 1m Candles: ${this.strategyState.oneMinuteCandles.length}/50`);
+      this.logger.info(`   📊 Volume SMA50: ${this.strategyState.currentVolumeSMA50.toFixed(0)}`);
+      this.logger.info(`   🎯 Pivot High: ${this.strategyState.latestPivotHigh?.price.toFixed(2) || 'N/A'}`);
+      this.logger.info(`   🎯 Pivot Low: ${this.strategyState.latestPivotLow?.price.toFixed(2) || 'N/A'}`);
+
       // Skip breakout detection if not in WAITING_FOR_BREAKOUT state
       if (this.strategyState.tradeState !== TradeState.WAITING_FOR_BREAKOUT) {
-        this.logger.debug(`🔒 Breakout detection disabled - Current state: ${this.strategyState.tradeState}`);
+        this.logger.info(`🔒 BREAKOUT SKIPPED - Current state: ${this.strategyState.tradeState} (need: WAITING_FOR_BREAKOUT)`);
         return;
       }
 
       // Skip if we don't have pivots or sufficient volume data
       if (!this.strategyState.latestPivotHigh && !this.strategyState.latestPivotLow) {
-        this.logger.debug('🔍 No pivots available for breakout detection');
+        this.logger.info('� BREAKOUT SKIPPED - No pivots available for breakout detection');
         return;
       }
       
       if (this.strategyState.oneMinuteCandles.length < 50) {
-        this.logger.debug(`🔍 Insufficient 1m candles for volume SMA50 (${this.strategyState.oneMinuteCandles.length}/50)`);
+        this.logger.info(`� BREAKOUT SKIPPED - Insufficient 1m candles for volume SMA50 (${this.strategyState.oneMinuteCandles.length}/50)`);
         return;
       }
       
       if (this.strategyState.currentVolumeSMA50 <= 0) {
-        this.logger.debug('🔍 Volume SMA50 not available');
+        this.logger.info('� BREAKOUT SKIPPED - Volume SMA50 not available or zero');
         return;
       }
       
       // Avoid processing the same candle multiple times
       if (this.strategyState.lastProcessedOneMinuteCandleTime && 
           completedCandle.timestamp.getTime() === this.strategyState.lastProcessedOneMinuteCandleTime.getTime()) {
+        this.logger.debug('⚠️ Skipping duplicate candle processing');
         return;
       }
       
@@ -1693,14 +2261,30 @@ export class BreakoutPullbackStrategy {
       
       const volumeRatio = completedCandle.volume / this.strategyState.currentVolumeSMA50;
       
-      this.logger.debug(`🔍 Breakout check: O:${completedCandle.open.toFixed(2)} C:${completedCandle.close.toFixed(2)} V:${completedCandle.volume} (${volumeRatio.toFixed(2)}x SMA50)`);
+      this.logger.info(`✅ BREAKOUT CONDITIONS MET - Analyzing candle: V:${completedCandle.volume} (${volumeRatio.toFixed(2)}x SMA50)`);
+      
+      // Add market hours validation for breakout detection
+      if (!this.isMarketHours()) {
+        this.logger.info('🔒 BREAKOUT SKIPPED - Outside market hours (9:15 AM - 3:30 PM). Post-market data ignored.');
+        return;
+      }
       
       // Check for LONG breakout (above pivot high)
       if (this.strategyState.latestPivotHigh) {
         const pivotHigh = this.strategyState.latestPivotHigh.price;
         
+        // Enhanced logging for breakout analysis
+        if (completedCandle.close > pivotHigh || completedCandle.high > pivotHigh) {
+          this.logger.info(`🔍 POTENTIAL LONG BREAKOUT ANALYSIS:`);
+          this.logger.info(`   📊 Candle: O:${completedCandle.open.toFixed(2)} H:${completedCandle.high.toFixed(2)} L:${completedCandle.low.toFixed(2)} C:${completedCandle.close.toFixed(2)}`);
+          this.logger.info(`   🎯 Pivot High: ${pivotHigh.toFixed(2)}`);
+          this.logger.info(`   ✅ Close > Pivot: ${completedCandle.close > pivotHigh}`);
+          this.logger.info(`   ✅ Low < Pivot: ${completedCandle.low < pivotHigh} (avoids gap-ups)`);
+          this.logger.info(`   ✅ Volume > SMA50: ${completedCandle.volume > this.strategyState.currentVolumeSMA50} (${completedCandle.volume} vs ${this.strategyState.currentVolumeSMA50.toFixed(0)})`);
+        }
+        
         if (completedCandle.close > pivotHigh && 
-            completedCandle.open < pivotHigh && 
+            completedCandle.low < pivotHigh && 
             completedCandle.volume > this.strategyState.currentVolumeSMA50) {
           
           const breakoutSignal: BreakoutSignal = {
@@ -1743,8 +2327,18 @@ export class BreakoutPullbackStrategy {
       if (this.strategyState.latestPivotLow) {
         const pivotLow = this.strategyState.latestPivotLow.price;
         
+        // Enhanced logging for breakout analysis
+        if (completedCandle.close < pivotLow || completedCandle.low < pivotLow) {
+          this.logger.info(`🔍 POTENTIAL SHORT BREAKOUT ANALYSIS:`);
+          this.logger.info(`   📊 Candle: O:${completedCandle.open.toFixed(2)} H:${completedCandle.high.toFixed(2)} L:${completedCandle.low.toFixed(2)} C:${completedCandle.close.toFixed(2)}`);
+          this.logger.info(`   🎯 Pivot Low: ${pivotLow.toFixed(2)}`);
+          this.logger.info(`   ✅ Close < Pivot: ${completedCandle.close < pivotLow}`);
+          this.logger.info(`   ✅ High > Pivot: ${completedCandle.high > pivotLow} (avoids gap-downs)`);
+          this.logger.info(`   ✅ Volume > SMA50: ${completedCandle.volume > this.strategyState.currentVolumeSMA50} (${completedCandle.volume} vs ${this.strategyState.currentVolumeSMA50.toFixed(0)})`);
+        }
+        
         if (completedCandle.close < pivotLow && 
-            completedCandle.open > pivotLow && 
+            completedCandle.high > pivotLow && 
             completedCandle.volume > this.strategyState.currentVolumeSMA50) {
           
           const breakoutSignal: BreakoutSignal = {
@@ -2904,6 +3498,53 @@ export class BreakoutPullbackStrategy {
     this.logger.info('✅ Test data cleared, strategy ready for real market data (1m candles optimized to max 50)');
   }
 
+  /**
+   * VALIDATION TEST: Test volume calculation fixes
+   */
+  public testVolumeCalculationFixes(): void {
+    this.logger.info('🧪 TESTING VOLUME CALCULATION FIXES...');
+    
+    // Test scenario 1: First tick (zero lastCumulativeVolume)
+    this.strategyState.lastCumulativeVolume = 0;
+    const testTick1: TickData = {
+      instrument_token: 13355010,
+      last_price: 25400,
+      volume: 1000000, // 1M cumulative volume
+      buy_quantity: 0,
+      sell_quantity: 0,
+      ohlc: { open: 25390, high: 25410, low: 25380, close: 25400 },
+      change: 0,
+      last_trade_time: new Date(),
+      exchange_timestamp: new Date(),
+      timestamp: new Date()
+    };
+    
+    this.logger.info('📊 Test 1: First tick scenario (lastCumulativeVolume = 0)');
+    this.processTickForOneMinuteCandle(testTick1);
+    
+    // Test scenario 2: Normal incremental volume
+    const testTick2: TickData = {
+      ...testTick1,
+      volume: 1000500, // +500 volume
+      timestamp: new Date(Date.now() + 1000) // 1 second later
+    };
+    
+    this.logger.info('📊 Test 2: Normal incremental volume');
+    this.processTickForOneMinuteCandle(testTick2);
+    
+    // Test scenario 3: Volume reset (new day scenario)
+    const testTick3: TickData = {
+      ...testTick1,
+      volume: 100, // Lower than previous (reset scenario)
+      timestamp: new Date(Date.now() + 2000) // 2 seconds later
+    };
+    
+    this.logger.info('📊 Test 3: Volume reset scenario');
+    this.processTickForOneMinuteCandle(testTick3);
+    
+    this.logger.info('✅ VOLUME CALCULATION TESTS COMPLETED');
+  }
+
   // ===========================
   // TRADE EXECUTION SERVICE ACCESS
   // ===========================
@@ -2955,5 +3596,117 @@ export class BreakoutPullbackStrategy {
    */
   public async initializeInstruments(): Promise<void> {
     await this.tradeExecutionService.loadInstruments();
+  }
+
+  /**
+   * Error monitoring and health tracking system
+   */
+  private trackError(errorType: string, error: any, isCritical: boolean = false): void {
+    const now = new Date();
+    
+    // Update error counts
+    const currentCount = this.errorCounts.get(errorType) || 0;
+    this.errorCounts.set(errorType, currentCount + 1);
+    this.lastErrorTime.set(errorType, now);
+    
+    // Update health status
+    this.healthStatus.consecutiveErrors += 1;
+    if (isCritical) {
+      this.healthStatus.criticalErrorsToday += 1;
+      this.healthStatus.executionHealthy = false;
+    }
+    
+    // Log error with enhanced context
+    const errorContext = {
+      errorType,
+      count: currentCount + 1,
+      isCritical,
+      consecutiveErrors: this.healthStatus.consecutiveErrors,
+      tradeState: this.strategyState.tradeState,
+      hasPosition: !!this.strategyState.currentTradeId,
+      marketDataAge: this.strategyState.lastUpdateTime ? new Date().getTime() - new Date(this.strategyState.lastUpdateTime).getTime() : 'unknown',
+      timestamp: now.toISOString()
+    };
+    
+    if (isCritical) {
+      this.logger.error(`🚨 CRITICAL ERROR [${errorType}]: ${error?.message || error}`, errorContext);
+    } else {
+      this.logger.warn(`⚠️ ERROR [${errorType}]: ${error?.message || error}`, errorContext);
+    }
+    
+    // Alert if too many consecutive errors
+    if (this.healthStatus.consecutiveErrors >= 5) {
+      this.logger.error(`🔥 BREAKOUT STRATEGY HEALTH ALERT: ${this.healthStatus.consecutiveErrors} consecutive errors detected!`, {
+        errorCounts: Object.fromEntries(this.errorCounts),
+        healthStatus: this.healthStatus
+      });
+    }
+  }
+
+  private resetErrorCount(): void {
+    this.healthStatus.consecutiveErrors = 0;
+    this.healthStatus.dataStreamHealthy = true;
+    this.healthStatus.executionHealthy = true;
+    this.healthStatus.lastHeartbeat = new Date();
+  }
+
+  public getHealthReport(): any {
+    const now = new Date();
+    const timeSinceHeartbeat = now.getTime() - this.healthStatus.lastHeartbeat.getTime();
+    
+    return {
+      overall: this.healthStatus.dataStreamHealthy && this.healthStatus.executionHealthy && timeSinceHeartbeat < 60000,
+      dataStream: this.healthStatus.dataStreamHealthy,
+      execution: this.healthStatus.executionHealthy,
+      timeSinceHeartbeat: Math.floor(timeSinceHeartbeat / 1000),
+      consecutiveErrors: this.healthStatus.consecutiveErrors,
+      criticalErrorsToday: this.healthStatus.criticalErrorsToday,
+      errorBreakdown: Object.fromEntries(this.errorCounts),
+      tradeState: this.strategyState.tradeState,
+      hasPosition: !!this.strategyState.currentTradeId,
+      pivotHighPrice: this.strategyState.latestPivotHigh?.price || 'none',
+      pivotLowPrice: this.strategyState.latestPivotLow?.price || 'none',
+      candleCount: this.strategyState.oneMinuteCandles.length,
+      lastUpdate: now.toISOString()
+    };
+  }
+
+  /**
+   * Start health monitoring with periodic status reports
+   */
+  private startHealthMonitoring(): void {
+    if (this.healthMonitoringInterval) return; // Already running
+    
+    // Report health status every 5 minutes
+    this.healthMonitoringInterval = setInterval(() => {
+      this.healthStatus.lastHeartbeat = new Date();
+      const healthReport = this.getHealthReport();
+      
+      if (!healthReport.overall) {
+        this.logger.warn('💊 BREAKOUT STRATEGY HEALTH REPORT (UNHEALTHY):', healthReport);
+      } else {
+        this.logger.info('💚 Breakout strategy health: OK', {
+          consecutiveErrors: healthReport.consecutiveErrors,
+          timeSinceHeartbeat: healthReport.timeSinceHeartbeat,
+          tradeState: healthReport.tradeState,
+          candleCount: healthReport.candleCount
+        });
+      }
+      
+      // Reset daily error counts at market open (9:15 AM)
+      const now = new Date();
+      if (now.getHours() === 9 && now.getMinutes() === 15) {
+        this.healthStatus.criticalErrorsToday = 0;
+        this.errorCounts.clear();
+        this.logger.info('🔄 Daily error counts reset for breakout strategy');
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+  }
+
+  private stopHealthMonitoring(): void {
+    if (this.healthMonitoringInterval) {
+      clearInterval(this.healthMonitoringInterval);
+      this.healthMonitoringInterval = null;
+    }
   }
 }

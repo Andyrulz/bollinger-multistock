@@ -1,7 +1,55 @@
 ## Pre-Session Setup
 
-At start of each trading day, fetch the LAST TRADING DAY's high, low, and close (skip weekends/holidays).
-Compute Daily Pivot Levels:- Strategy is on 5 minute candle
+At star## Strategy Execution Flow
+
+### **1. Strategy Initialization (when strategy.start() is called)**
+
+**Historical Data Loading:**
+
+- Load 7 days of 5-minute NIFTY50 spot historical candles to handle weekends/holidays
+- Ensure sufficient data for indicator calculations (minimum 20 candles for Bollinger Bands)
+- Calculate initial technical indicators from historical data
+- Fetch previous trading day's NIFTY50 spot OHLC and compute Daily Pivot Levels:
+  - PP = (High + Low + Close) / 3
+  - R1 = (2 × PP) - Low, S1 = (2 × PP) - High
+  - R2 = PP + (High - Low), S2 = PP - (High - Low)
+  - R3 = High + 2 × (PP - Low), S3 = Low - 2 × (High - PP)
+- Initialize real-time monitoring and 5-minute candle building
+
+### **2. Every 5-Minute Candle Close Processing**
+
+**Critical Sequence - Process in this exact order:**
+
+**Step 2.1: Position State Check**
+
+```
+If NOT in trade:
+  → Check entry conditions (LONG/SHORT)
+  → If satisfied: Initialize option instrument (1% of NIFTY50 spot LTP)
+  → Place market order for 10 lots fixed
+
+If ALREADY in trade:
+  → Check exit/SL conditions based on position type
+  → If satisfied: Execute immediate market order exit
+```
+
+**Step 2.2: Technical Indicator Updates**
+
+```
+After trade state processing:
+  → Add new 5-minute candle to historical data
+  → Recalculate all indicators with updated dataset:
+    - RSI(10)
+    - Supertrend(10,2)
+    - Bollinger Bands(20,2)
+```
+
+### **3. End-of-Day Protocol**
+
+- **3:28 PM Safety Check**: Force-close any remaining positions with market orders
+- **MIS Auto-Squareoff**: Broker automatically closes positions at market close
+- **Zero Overnight Positions**: No carry-forward beyond trading dayay, fetch the LAST TRADING DAY's high, low, and close (skip weekends/holidays).
+  Compute Daily Pivot Levels:- Strategy is on 5 minute candle
 
 ## Core Pillars
 
@@ -15,16 +63,16 @@ Compute Daily Pivot Levels:- Strategy is on 5 minute candle
 4. Volatility & Range Framework: Daily Pivot Levels + Bollinger Bands (20, 2) on 5-minute candles.
 5. Exit Discipline: Bollinger Midline or end-of-day flat-out rule (MIS order handles this).
 
-Signal generating instrument: Current month futures
-Trading Instrument: Option who's LTP is around 1% of Nifty fut price at time of breakout (similar to implementation in strategy 1)
+Signal generating instrument: Current month NIFTY50 spot
+Trading Instrument: Option who's LTP is around 1% of NIFTY50 spot price at time of breakout (similar to implementation in strategy 1 but change in instrument - NIFTY50 spot)
 
 ## Strategy Independence & Architecture
 
 - **Mutually Exclusive**: This strategy operates independently from Strategy 1 (Breakout-Pullback)
-- **Capital Management**: Independent 5% risk per trade, no capital splitting between strategies
+- **Capital Management**: Independent ₹200,000 capital allocation, completely separate from Strategy 1
 - **Session Management**: Reuses existing authentication and session system
 - **Dashboard Integration**: Separate page/controls for independent start/stop functionality
-- **Data Requirements**: 5-minute candle close data + Real-time option LTP monitoring (1-second polling)
+- **Data Requirements**: 5-minute candle close data + Real-time option LTP monitoring (1-second polling) after entry
 - **Single Script Architecture**: Combined strategy logic and trade execution in one class
 - **Independent Polling**: Own LTP monitoring system, completely isolated from Strategy 1
 - **Exit Orders**: Always use MARKET orders to ensure immediate fills on exit signals
@@ -86,7 +134,7 @@ Trigger when ALL conditions are satisfied simultaneously at 5-minute candle clos
 
 - Supertrend direction = bearish (Close < Supertrend line).
 - RSI ≤ 30 and RSI >=10 (confirmation of weakness but not exhaustion).
-- Close ≤ S1 AND Close ≤ Lower Bollinger Band (both conditions must be true).
+- Close ≤ R1 AND Close ≤ Lower Bollinger Band (both conditions must be true).
 - No open short position currently.
   → Enter Short at close of candle.
   → Stop further entries until this trade is closed.
@@ -99,10 +147,10 @@ Trigger when ALL conditions are satisfied simultaneously at 5-minute candle clos
 
 6. Exit Conditions:
 
-**LONG Trade Exit** (Futures-based signal at 5-minute candle close):
+**LONG Trade Exit** (NIFTY50 spot-based signal at 5-minute candle close):
 
-- Exit when NIFTY Futures Close < Bollinger Midline (strict mathematical comparison, no buffer)
-- Uses futures price signal, NOT option premium
+- Exit when NIFTY50 spot Close < Bollinger Midline (strict mathematical comparison, no buffer)
+- Uses spot price signal, NOT option premium
 - Evaluated only at 5-minute candle completion
 
 **SHORT Trade Exit** (Real-time option premium monitoring):
@@ -126,7 +174,7 @@ Trigger when ALL conditions are satisfied simultaneously at 5-minute candle clos
    **1. Option Selection Algorithm**
 
 ```typescript
-// Premium-based selection targeting 1% of NIFTY futures price
+// Premium-based selection targeting 1% of NIFTY50 spot price
 // Use Next Tuesday expiry for liquidity (copied from Strategy 1)
 const getNextTuesdayExpiry = (): Date => {
   const today = new Date();
@@ -139,12 +187,12 @@ const getNextTuesdayExpiry = (): Date => {
   return nextTuesday;
 };
 
-const targetPremium = niftyPrice * 0.01; // 1% of NIFTY futures price
+const targetPremium = nifty50Price * 0.01; // 1% of NIFTY50 spot price
 const nextTuesdayExpiry = getNextTuesdayExpiry();
 const optionType = direction === "LONG" ? "CE" : "PE";
 
 // Filter for next Tuesday expiry options
-const relevantOptions = niftyInstruments.filter(
+const relevantOptions = nifty50Instruments.filter(
   (opt) =>
     Math.abs(opt.expiry.getTime() - nextTuesdayExpiry.getTime()) <
       24 * 60 * 60 * 1000 && opt.instrument_type === optionType
@@ -162,7 +210,7 @@ const bestOption = optionsWithPremiums.reduce((closest, current) => {
 
 ```typescript
 // Fixed lot size approach - manual adjustment as needed
-const fixedLotSize = 1; // Default: 1 lot per trade
+const fixedLotSize = 10; // Fixed: 10 lots per trade
 // Can be adjusted manually based on market conditions and risk appetite
 // Future enhancement: Dynamic sizing based on volatility or account balance
 ```
@@ -225,10 +273,10 @@ Record trade outcome → Reset position state → Allow immediate re-entry if co
 
 ### **Data Monitoring Requirements**
 
-- **5-minute Historical Candles**: Fetch completed NIFTY futures candles for indicator calculations
+- **5-minute Historical Candles**: Fetch completed NIFTY50 spot candles for indicator calculations
 - **Candle Completion Detection**: Timer to check for new completed 5-minute candles
 - **Real-time Option LTP**: 1-second polling ONLY when SHORT position is active (for trailing SL)
-- **No Live Futures Polling**: Unlike Strategy 1, we don't need continuous futures LTP
+- **No Live NIFTY50 Polling**: Unlike Strategy 1, we don't need continuous NIFTY50 spot LTP
 - **Pre-Market EOD Check**: Additional check at 3:28 PM to force-close any remaining positions
 
 ### **Independent LTP Monitoring System**
@@ -289,18 +337,18 @@ class BollingerBandDataManager {
 
 **Benefits of Efficient Design**:
 
-- **Minimal API Usage**: No continuous futures polling (unlike Strategy 1)
+- **Minimal API Usage**: No continuous NIFTY50 spot polling (unlike Strategy 1)
 - **Smart Polling**: 30-second candle checks vs Strategy 1's 1-second LTP polling
 - **Conditional Monitoring**: Option LTP polling only when SHORT position active
 - **Resource Efficient**: Much lower API call frequency than real-time strategies
 
 ### **API Usage Comparison**
 
-| **Scenario**       | **Bollinger Band**                | **Strategy 1**            | **Efficiency Gain**    |
-| ------------------ | --------------------------------- | ------------------------- | ---------------------- |
-| **No Position**    | 2 calls/minute (candle checks)    | 60 calls/minute (LTP)     | **30x more efficient** |
-| **LONG Position**  | 2 calls/minute (candle checks)    | 60 calls/minute (LTP)     | **30x more efficient** |
-| **SHORT Position** | 62 calls/minute (candle + option) | 60 calls/minute (futures) | **Similar usage**      |
+| **Scenario**       | **Bollinger Band**                | **Strategy 1**                 | **Efficiency Gain**    |
+| ------------------ | --------------------------------- | ------------------------------ | ---------------------- |
+| **No Position**    | 2 calls/minute (candle checks)    | 60 calls/minute (LTP)          | **30x more efficient** |
+| **LONG Position**  | 2 calls/minute (candle checks)    | 60 calls/minute (LTP)          | **30x more efficient** |
+| **SHORT Position** | 62 calls/minute (candle + option) | 60 calls/minute (NIFTY50 spot) | **Similar usage**      |
 
 ### **Efficient Polling Lifecycle**
 
@@ -357,7 +405,7 @@ interface BollingerBandState {
 
 ### **Exit Monitoring Logic**
 
-- **LONG Positions**: Check futures price vs Bollinger Midline at candle close only
+- **LONG Positions**: Check NIFTY50 spot price vs Bollinger Midline at candle close only
 - **SHORT Positions**: Continuous real-time monitoring with immediate market order execution
 - **Market Orders**: Always use market orders for exits to ensure fills
 - **Persistence**: Save trailing SL state to survive system restarts
@@ -373,7 +421,7 @@ interface BollingerBandState {
 
 **Indicator Panel:**
 
-- Current NIFTY Futures Price
+- Current NIFTY50 Spot Price
 - Supertrend Direction & Value
 - RSI Value (10-period)
 - Bollinger Bands (Upper, Middle, Lower)

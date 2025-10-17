@@ -108,36 +108,10 @@ export class TradeExecutionService {
   // ===========================
 
   private setupGracefulShutdown(): void {
-    // Handle process termination signals
-    const shutdownSignals = ['SIGTERM', 'SIGINT', 'SIGUSR2'];
-    
-    shutdownSignals.forEach((signal) => {
-      process.on(signal, () => {
-        this.logger.info(`🔄 Received ${signal} - initiating graceful shutdown...`);
-        this.gracefulShutdown().then(() => {
-          process.exit(0);
-        }).catch((error) => {
-          this.logger.error(`❌ Error during graceful shutdown:`, error);
-          process.exit(1);
-        });
-      });
-    });
-
-    // Handle uncaught exceptions
-    process.on('uncaughtException', (error) => {
-      this.logger.error(`❌ Uncaught Exception:`, error);
-      this.gracefulShutdown().then(() => {
-        process.exit(1);
-      });
-    });
-
-    // Handle unhandled promise rejections
-    process.on('unhandledRejection', (reason, promise) => {
-      this.logger.error(`❌ Unhandled Rejection:`, { reason, promise });
-      this.gracefulShutdown().then(() => {
-        process.exit(1);
-      });
-    });
+    // NOTE: Process handlers removed from strategy component
+    // Strategy components should not control application lifecycle
+    // Process handlers are managed at application level (index.ts)
+    this.logger.info('🔧 TradeExecutionService initialized - process handlers managed at application level');
   }
 
   private async gracefulShutdown(): Promise<void> {

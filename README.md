@@ -4,6 +4,8 @@
 
 A professional algorithmic trading system using Zerodha's KiteConnect API with real-time breakout detection, enterprise-grade state persistence, and comprehensive risk management.
 
+## Callback URL:https://98.70.40.23/auth/callback
+
 ## ✨ Production Features
 
 - **🎯 Professional Strategy**: NIFTY Breakout-Retracement with 15,15 pivot detection algorithm
