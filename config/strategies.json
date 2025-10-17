@@ -51,7 +51,7 @@
     }
   ],
   "global": {
-    "autoStart": false,
+    "autoStart": true,
     "healthCheckInterval": 30000,
     "logging": {
       "level": "info",
