@@ -1,16 +1,35 @@
 ﻿# VM Quick Reference - Trading Bot
 
-**VM**: `98.70.40.23` | \*\*Statuscccurl http://localhost:3000/strategies | grep isActive
+**VM**: `98.70.40.23` | **Timezone**: IST (Asia/Kolkata) | **Auto-Shutdown**: 4:30 PM Daily
 
-````-s http://localhost:3000/strategies | grep isActive
-```-s http://localhost:3000/strategies | grep isActive
-```Enhanced Position Sizing Deployed (Oct 8, 2025)
+**Latest Deployment**: October 17, 2025 - AutoStart Enabled, PM2 Auto-Recovery Configured
 
 ## Connection
 
 ```bash
 ssh -i "C:\Users\aabishek\Downloads\nifty-trading-bot_key.pem" azureuser@98.70.40.23
-````
+```
+
+## Daily Operations (Auto-Shutdown at 4:30 PM)
+
+### Morning Startup (After 9:00 AM)
+```bash
+# VM will auto-start the trading bot via PM2
+# Just verify everything is running:
+ssh -i "C:\Users\aabishek\Downloads\nifty-trading-bot_key.pem" azureuser@98.70.40.23
+pm2 status
+curl -s http://localhost:3000/health
+
+# If strategies need manual start (check autoStart setting):
+curl -s http://localhost:3000/strategies | grep "isActive"
+```
+
+### Pre-Shutdown Check (Before 4:30 PM)
+```bash
+# Check if any active trades before shutdown
+curl -s http://localhost:3000/strategies | grep -E "isActive|totalTrades"
+pm2 logs trading-bot-multi-strategy --lines 20 | grep -E "trade|position|error"
+```
 
 ## Service Control
 
@@ -111,7 +130,52 @@ htop                                         # Process monitor
 ## Quick Status Script
 
 ```bash
-echo "=== Status Check ==="
+echo "=== Daily Status Check ==="
+echo "VM Time: $(date)"
+echo "--- PM2 Status ---"
 pm2 list
+echo "--- Health Check ---"
 curl -s http://localhost:3000/health
+echo "--- Strategy Status ---"
+curl -s http://localhost:3000/strategies | grep -o '"isActive":[^,]*' | head -2
+echo "--- Recent Activity ---"
+pm2 logs trading-bot-multi-strategy --lines 5 | tail -3
+```
+
+## Auto-Recovery & Monitoring
+
+### PM2 Auto-Start (Configured)
+- ✅ **PM2 will automatically start** the trading bot when VM restarts
+- ✅ **Ecosystem config** loads all environment variables
+- ✅ **Health monitoring** resumes automatically
+- ✅ **AutoStart strategies** will activate if market is open
+
+### Manual Verification After VM Restart
+```bash
+# Complete verification script
+echo "=== Post-Restart Verification ==="
+echo "1. VM Timezone: $(timedatectl | grep 'Time zone')"
+echo "2. PM2 Status:"
+pm2 status
+echo "3. App Health:"
+curl -s http://localhost:3000/health
+echo "4. Auth Status:"
+curl -s http://localhost:3000/auth/status 2>/dev/null || echo "Needs authentication"
+echo "5. Strategies:"
+curl -s http://localhost:3000/strategies | grep -E '"isActive":[^,]*|"healthStatus":[^,]*' | head -4
+```
+
+### Troubleshooting Auto-Start Issues
+```bash
+# If PM2 didn't auto-start after VM restart:
+sudo systemctl status pm2-azureuser
+sudo systemctl start pm2-azureuser
+pm2 resurrect
+
+# If app is running but not authenticated:
+curl http://localhost:3000/auth/login
+
+# If strategies are not auto-starting:
+# Check config: autoStart should be true
+curl -s http://localhost:3000/ | grep autoStart
 ```
