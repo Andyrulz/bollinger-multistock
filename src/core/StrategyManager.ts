@@ -333,7 +333,11 @@ export class StrategyManager {
     }
 
     this.healthCheckTimer = setInterval(async () => {
-      await this.performHealthCheck();
+      try {
+        await this.performHealthCheck();
+      } catch (error) {
+        this.logger.error('❌ Health check failed:', error);
+      }
     }, this.config.healthCheckInterval);
 
     this.logger.info(`💓 Started health monitoring (interval: ${this.config.healthCheckInterval}ms)`);

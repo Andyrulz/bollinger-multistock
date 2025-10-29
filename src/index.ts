@@ -519,6 +519,9 @@ class TradingBot {
             <button onclick="executeManualExit()" class="action-btn danger">
                 🚨 Manual Exit
             </button>
+            <button onclick="clearOrphanedState()" class="action-btn warning" title="Use this if you manually exited position on broker platform">
+                🧹 Clear Orphaned State
+            </button>
             ` : ''}
         </div>
 
@@ -656,6 +659,41 @@ class TradingBot {
                 
                 if (response.ok) {
                     alert('Manual exit executed successfully!');
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + data.error + '\\n' + (data.details || ''));
+                }
+            } catch (error) {
+                alert('Network error: ' + error.message);
+            } finally {
+                button.textContent = originalText;
+                button.disabled = false;
+            }
+        }
+        
+        async function clearOrphanedState() {
+            if (!confirm('This will clear the strategy state if you already manually exited the position on your broker platform.\\n\\nDid you already close the position manually?')) {
+                return;
+            }
+            
+            const button = event.target;
+            const originalText = button.textContent;
+            
+            try {
+                button.textContent = 'Clearing...';
+                button.disabled = true;
+                
+                const response = await fetch('/execution/clear-orphaned-state', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert('✅ Orphaned state cleared!\\n\\nStrategy has been reset to WAITING_FOR_BREAKOUT.');
                     window.location.reload();
                 } else {
                     alert('Error: ' + data.error + '\\n' + (data.details || ''));
@@ -2092,6 +2130,37 @@ class TradingBot {
         this.logger.error('Error executing manual exit:', error);
         res.status(500).json({ 
           error: 'Failed to execute manual exit',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Clear orphaned trade state (when user manually exited on broker platform)
+    this.app.post('/execution/clear-orphaned-state', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        this.logger.info('🧹 Clearing orphaned trade state - user manually exited position');
+        
+        // Synchronize strategy state after manual exit
+        await this.breakoutStrategy.handleManualExit();
+        
+        res.json({
+          success: true,
+          message: 'Orphaned trade state cleared successfully',
+          info: 'Strategy state has been reset to WAITING_FOR_BREAKOUT',
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        this.logger.error('Error clearing orphaned state:', error);
+        res.status(500).json({ 
+          error: 'Failed to clear orphaned state',
           details: error instanceof Error ? error.message : 'Unknown error'
         });
       }
@@ -5250,6 +5319,88 @@ class TradingBot {
         res.status(500).send('Error loading strategy page');
       }
     });
+
+    // Test endpoint to verify order placement fix
+    this.app.post('/test/order-placement', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        this.logger.info('🧪 Testing order placement functionality...');
+
+        // Get NIFTY instruments for testing
+        const instruments = await this.kiteConnect.getInstruments('NFO');
+        const niftyOptions = instruments.filter((inst: any) => 
+          inst.name === 'NIFTY' && 
+          inst.instrument_type === 'CE' &&
+          new Date(inst.expiry).getMonth() === 9 // October
+        );
+
+        if (niftyOptions.length === 0) {
+          res.status(404).json({ error: 'No NIFTY options found for testing' });
+          return;
+        }
+
+        const testInstrument = niftyOptions[0];
+        
+        // Test order parameters (MARKET order like the actual strategy)
+        const orderParams = {
+          exchange: testInstrument.exchange,
+          tradingsymbol: testInstrument.tradingsymbol,
+          transaction_type: 'BUY' as 'BUY',
+          quantity: testInstrument.lot_size,
+          product: 'MIS' as 'MIS',
+          order_type: 'MARKET' as 'MARKET',
+          validity: 'DAY' as 'DAY'
+        };
+
+        this.logger.info(`🎯 Testing with instrument: ${testInstrument.tradingsymbol}`);
+        this.logger.info(`📤 Order params: ${JSON.stringify(orderParams, null, 2)}`);
+
+        // Place the test order using the FIXED API call
+        const orderResponse = await this.kiteConnect.placeOrder('regular', orderParams);
+        const orderId = orderResponse.order_id;
+
+        this.logger.info(`✅ Order placed successfully! Order ID: ${orderId}`);
+
+        // Immediately cancel the order
+        await this.kiteConnect.cancelOrder('regular', orderId);
+        this.logger.info(`🚫 Test order cancelled: ${orderId}`);
+
+        res.json({
+          success: true,
+          message: 'Order placement fix verified successfully!',
+          testResults: {
+            orderPlaced: true,
+            orderId: orderId,
+            orderCancelled: true,
+            instrument: testInstrument.tradingsymbol,
+            fixVerified: 'placeOrder(\'regular\', orderParams) works correctly'
+          }
+        });
+
+      } catch (error: any) {
+        this.logger.error('❌ Order placement test failed:', error);
+        
+        if (error.message && error.message.includes('variety')) {
+          res.status(500).json({ 
+            error: 'Order placement fix FAILED - still getting variety error!',
+            details: error.message,
+            fixNeeded: 'The placeOrder call still needs the variety parameter'
+          });
+        } else {
+          res.status(500).json({ 
+            error: 'Order placement test failed',
+            details: error.message 
+          });
+        }
+      }
+    });
   }
 
   public async start(): Promise<void> {
@@ -5559,8 +5710,16 @@ ${JSON.stringify(status.config, null, 2)}
           }
 
           // TODO: Replace auto-refresh with server-sent events to eliminate API waste
-          // Auto refresh disabled to prevent excessive API calls
+          // Auto refresh for strategy dashboards to show real-time updates
+          ${strategyId === 'bollinger-band-01' ? `
+          // Consistent 30-second refresh (entry happens on 5-minute candle close, no prediction phase)
+          setTimeout(() => { 
+            window.location.reload(); 
+          }, 30000);
+          ` : `
+          // Standard refresh for other strategies (disabled to prevent API waste)
           // setTimeout(() => { window.location.reload(); }, 30000);
+          `}
         </script>
       </body>
       </html>
@@ -5668,22 +5827,140 @@ ${JSON.stringify(status.config, null, 2)}
               ${currentNiftyPrice < (indicators.bollingerBands?.lower || 0) ? '🟢 Below' : '🔴 Above'}
             </div>
           </div>
-          ${currentPosition ? `
-          <div class="metric-card" style="background: #ffffff; border: 2px solid #ef4444; border-left: 6px solid #ef4444;">
-            <div class="metric-value" style="color: #ef4444;">${currentPosition.type}</div>
-            <div style="color: #1f2937; font-weight: 600;">Current Position</div>
-            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
-              Entry: ₹${currentPosition.entryPrice || 'N/A'}
+        </div>
+      </div>
+
+      <!-- Active Position Monitoring Section -->
+      ${status.positionInfo ? `
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">
+          🎯 Active Position Monitoring
+        </h3>
+        <div class="metrics" style="margin-top: 20px;">
+          
+          <!-- Position Type & Symbol -->
+          <div class="metric-card" style="grid-column: span 2; background: #ffffff; border: 2px solid ${status.positionInfo.type === 'LONG' ? '#22c55e' : '#ef4444'}; border-left: 6px solid ${status.positionInfo.type === 'LONG' ? '#22c55e' : '#ef4444'};">
+            <div class="metric-value" style="color: ${status.positionInfo.type === 'LONG' ? '#22c55e' : '#ef4444'}; font-size: 2em;">
+              ${status.positionInfo.type === 'LONG' ? '🚀' : '🔻'} ${status.positionInfo.type}
+            </div>
+            <div style="color: #1f2937; font-weight: 600; margin-top: 8px;">Position Type</div>
+            <div style="font-size: 0.9em; margin-top: 5px; color: #6b7280;">
+              ${status.positionInfo.tradingSymbol}
+            </div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #9ca3af;">
+              Qty: ${status.positionInfo.quantity} shares (${status.fixedLots || 10} lots)
             </div>
           </div>
-          ` : `
-          <div class="metric-card" style="background: #ffffff; border: 2px solid #6c757d; border-left: 6px solid #6c757d;">
-            <div class="metric-value" style="color: #6c757d;">None</div>
-            <div style="color: #1f2937; font-weight: 600;">Current Position</div>
-            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">No active trades</div>
+
+          <!-- Entry Price -->
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #3b82f6; border-left: 6px solid #3b82f6;">
+            <div class="metric-value" style="color: #3b82f6;">₹${status.positionInfo.entryPrice.toFixed(2)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Entry Price</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              ${new Date(status.positionInfo.entryTime).toLocaleTimeString()}
+            </div>
           </div>
-          `}
+
+          <!-- Current Price (LTP) - Already cached from 1s polling -->
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${status.positionInfo.currentPrice >= status.positionInfo.entryPrice ? '#22c55e' : '#ef4444'}; border-left: 6px solid ${status.positionInfo.currentPrice >= status.positionInfo.entryPrice ? '#22c55e' : '#ef4444'};">
+            <div class="metric-value" style="color: ${status.positionInfo.currentPrice >= status.positionInfo.entryPrice ? '#22c55e' : '#ef4444'};">
+              ₹${status.positionInfo.currentPrice.toFixed(2)}
+            </div>
+            <div style="color: #1f2937; font-weight: 600;">Current LTP</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: ${status.positionInfo.currentPrice >= status.positionInfo.entryPrice ? '#22c55e' : '#ef4444'};">
+              ${status.positionInfo.currentPrice >= status.positionInfo.entryPrice ? '🟢' : '🔴'} 
+              ${((status.positionInfo.currentPrice - status.positionInfo.entryPrice) / status.positionInfo.entryPrice * 100).toFixed(2)}%
+            </div>
+          </div>
+
+          <!-- Unrealized P&L - Already cached from 1s polling -->
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${status.positionInfo.unrealizedPnL >= 0 ? '#22c55e' : '#ef4444'}; border-left: 6px solid ${status.positionInfo.unrealizedPnL >= 0 ? '#22c55e' : '#ef4444'};">
+            <div class="metric-value" style="color: ${status.positionInfo.unrealizedPnL >= 0 ? '#22c55e' : '#ef4444'};">
+              ₹${status.positionInfo.unrealizedPnL.toFixed(2)}
+            </div>
+            <div style="color: #1f2937; font-weight: 600;">Unrealized P&L</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              Live tracking
+            </div>
+          </div>
+
+          <!-- Trailing Stop Loss - NEW DATA -->
+          ${status.positionInfo.trailingSL ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #f59e0b; border-left: 6px solid #f59e0b;">
+            <div class="metric-value" style="color: #f59e0b;">₹${status.positionInfo.trailingSL.toFixed(2)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Trailing Stop Loss</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: ${status.positionInfo.currentPrice <= status.positionInfo.trailingSL * 1.02 ? '#ef4444' : '#6b7280'};">
+              ${status.positionInfo.currentPrice <= status.positionInfo.trailingSL * 1.02 ? '⚠️ Near SL!' : '✅ Safe'}
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- Highest Premium Achieved - NEW DATA -->
+          ${status.positionInfo.highestPremium ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #8b5cf6; border-left: 6px solid #8b5cf6;">
+            <div class="metric-value" style="color: #8b5cf6;">₹${status.positionInfo.highestPremium.toFixed(2)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Highest Premium</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              Peak: ${((status.positionInfo.highestPremium - status.positionInfo.entryPrice) / status.positionInfo.entryPrice * 100).toFixed(2)}%
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- Last Update Time -->
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #6b7280; border-left: 6px solid #6b7280;">
+            <div class="metric-value" style="color: #6b7280; font-size: 1.2em;">
+              ${status.positionInfo.lastUpdated ? new Date(status.positionInfo.lastUpdated).toLocaleTimeString() : 'N/A'}
+            </div>
+            <div style="color: #1f2937; font-weight: 600;">Last Updated</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              Live polling
+            </div>
+          </div>
+
         </div>
+      </div>
+      ` : ''}
+
+      <!-- Selected Option Section (Simplified 5-minute Entry) -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">🎯 Entry Signal Status</h3>
+        ${!status.positionInfo ? `
+        <div style="text-align: center; padding: 40px; background: #f9fafb; border-radius: 8px; border: 2px dashed #d1d5db;">
+          <div style="font-size: 1.5em; color: #6b7280; margin-bottom: 10px;">⏳</div>
+          <div style="color: #374151; font-weight: 500;">Waiting for Entry Signal</div>
+          <div style="color: #6b7280; font-size: 0.9em; margin-top: 5px;">Entry signals evaluated on 5-minute candle completion</div>
+        </div>
+        ` : `
+        <div class="metrics" style="margin-top: 20px;">
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${status.positionInfo.type === 'LONG' ? '#22c55e' : '#ef4444'}; border-left: 6px solid ${status.positionInfo.type === 'LONG' ? '#22c55e' : '#ef4444'};">
+            <div class="metric-value" style="color: ${status.positionInfo.type === 'LONG' ? '#22c55e' : '#ef4444'};">${status.positionInfo.type}</div>
+            <div style="color: #1f2937; font-weight: 600;">Position Type</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${status.positionInfo.type === 'LONG' ? '📈 Call Option' : '📉 Put Option'}
+            </div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #3b82f6; border-left: 6px solid #3b82f6;">
+            <div class="metric-value" style="color: #3b82f6;">${status.positionInfo.tradingSymbol || 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">Trading Symbol</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">Quantity: ${status.positionInfo.quantity}</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #f59e0b; border-left: 6px solid #f59e0b;">
+            <div class="metric-value" style="color: #f59e0b;">₹${status.positionInfo.entryPrice ? status.positionInfo.entryPrice.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">Entry Price</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">Premium Paid</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #8b5cf6; border-left: 6px solid #8b5cf6;">
+            <div class="metric-value" style="color: #8b5cf6;">₹${status.positionInfo.currentPrice ? status.positionInfo.currentPrice.toFixed(2) : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">Current LTP</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">Real-time</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #10b981; border-left: 6px solid #10b981;">
+            <div class="metric-value" style="color: #10b981;">${status.positionInfo.entryTime ? new Date(status.positionInfo.entryTime).toLocaleTimeString() : 'N/A'}</div>
+            <div style="color: #1f2937; font-weight: 600;">Entry Time</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">On Candle Close</div>
+          </div>
+        </div>
+        `}
       </div>
 
       <!-- Daily Pivots Section -->
@@ -5726,30 +6003,7 @@ ${JSON.stringify(status.config, null, 2)}
         </div>
       </div>
 
-      <!-- Option Instrument & Trade Setup -->
-      <div style="margin-top: 30px;">
-        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📝 Option Instrument & Trade Setup</h3>
-        <div class="metrics" style="margin-top: 20px;">
-          <div class="metric-card" style="grid-column: span 2; background: #ffffff; border: 2px solid #3b82f6; border-left: 6px solid #3b82f6;">
-            <div style="color: #1f2937; font-weight: 600; margin-bottom: 12px;">Selected Instrument</div>
-            <div style="background: #f8fafc; border-radius: 8px; padding: 12px;">
-              <div style="color: #6b7280; font-style: italic; font-size: 14px;">
-                Instrument will be selected automatically when entry signal is detected<br>
-                <small>ATM options based on strategy rules and market conditions</small>
-              </div>
-            </div>
-          </div>
-          <div class="metric-card" style="grid-column: span 1; background: #ffffff; border: 2px solid #f59e0b; border-left: 6px solid #f59e0b;">
-            <div style="color: #1f2937; font-weight: 600; margin-bottom: 8px;">Trade Setup</div>
-            <div style="font-size: 14px; line-height: 1.5; color: #374151;">
-              <div><strong>Entry:</strong> Waiting for signal</div>
-              <div><strong>Stop Loss:</strong> 12% trailing</div>
-              <div><strong>Target:</strong> Mid BB exit</div>
-              <div><strong>Position Size:</strong> ${status.fixedLots || 10} lots</div>
-            </div>
-          </div>
-        </div>
-      </div>
+
 
       <!-- Entry/Exit Signal Analysis -->
       <div style="margin-top: 30px;">
@@ -5971,6 +6225,44 @@ ${JSON.stringify(status.config, null, 2)}
     `;
   }
 }
+
+// Add process exit monitoring
+process.on('exit', (code) => {
+  console.error(`🔍 PROCESS DEBUG: Process exiting with code ${code}`);
+  console.error('🔍 PROCESS DEBUG: Exit timestamp:', new Date().toISOString());
+});
+
+process.on('beforeExit', (code) => {
+  console.error(`🔍 PROCESS DEBUG: Before exit with code ${code}`);
+  console.error('🔍 PROCESS DEBUG: Event loop is empty but process is still running');
+});
+
+// Handle unhandled promise rejections and exceptions
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🚨 Unhandled Promise Rejection at:', promise, 'reason:', reason);
+  console.error('🔍 Rejection details:', {
+    reason: reason instanceof Error ? reason.message : reason,
+    stack: reason instanceof Error ? reason.stack : 'No stack trace available'
+  });
+  console.error('🔍 PROCESS DEBUG: Unhandled rejection occurred but continuing execution');
+  // Log but don't exit - let the application continue running
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('🚨 Uncaught Exception:', error);
+  console.error('Stack:', error.stack);
+  console.error('🔍 PROCESS DEBUG: Uncaught exception occurred');
+  
+  // Don't exit for WebSocket-related errors
+  if (error.message && (error.message.includes('WebSocket') || error.message.includes('websocket'))) {
+    console.error('🔌 WebSocket-related error caught - continuing execution');
+    return;
+  }
+  
+  // Exit gracefully for other uncaught exceptions
+  console.error('🔍 PROCESS DEBUG: Exiting due to uncaught exception');
+  process.exit(1);
+});
 
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {

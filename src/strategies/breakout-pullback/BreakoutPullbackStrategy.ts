@@ -231,6 +231,10 @@ export class BreakoutPullbackStrategy {
 
   private updateTimer: NodeJS.Timeout | undefined;
 
+  // Execution guard flags to prevent race conditions
+  private isExecutingEntry: boolean = false;
+  private isExecutingExit: boolean = false;
+
   constructor(kiteConnect: any, logger?: Logger) {
     this.kiteConnect = kiteConnect;
     this.logger = logger || new Logger();
@@ -1095,18 +1099,13 @@ export class BreakoutPullbackStrategy {
       if (tick.instrument_token === instrumentToken) {
         this.logger.debug(`💹 Processing tick for ${this.strategyState.currentContract?.tradingsymbol}: LTP ₹${tick.last_price}`);
         try {
-          // DEBUG: Log the entire tick structure to understand what fields are available
-          if (Math.random() < 0.05) { // Log only 5% of ticks to avoid spam, but ensure we see the structure
-            this.logger.info(`🔍 WEBSOCKET TICK STRUCTURE: ${JSON.stringify(tick, null, 2)}`);
-          }
-
           // Convert WebSocket tick to our TickData format with validation
           // CRITICAL FIX: Use volume_traded as the primary volume field for WebSocket ticks
           const rawVolume = tick.volume_traded || tick.volume || tick.total_volume || tick.day_volume || tick.cumulative_volume || 0;
           const validatedVolume = Math.max(0, rawVolume); // Ensure non-negative volume
           
-          // Log successful volume extraction
-          if (validatedVolume > 0 && Math.random() < 0.02) { // 2% of ticks
+          // Log successful volume extraction less frequently to reduce noise
+          if (validatedVolume > 0 && Math.random() < 0.005) { // 0.5% of ticks - much less frequent
             this.logger.info(`✅ WebSocket volume extracted: ${validatedVolume} from volume_traded field`);
           } else if (validatedVolume === 0) {
             this.logger.error(`� CRITICAL: All WebSocket volume fields are ZERO! volume_traded=${tick.volume_traded}, volume=${tick.volume}`);
@@ -1136,6 +1135,9 @@ export class BreakoutPullbackStrategy {
           // Update strategy state with latest tick
           this.strategyState.livePrice = tickData;
           this.strategyState.lastUpdateTime = new Date();
+
+          // Monitor trade levels based on current state (CRITICAL: was missing in WebSocket processing)
+          this.monitorTradeLevels(tickData.last_price);
 
           // Process the tick for one-minute candle building
           this.processTickForOneMinuteCandle(tickData);
@@ -2127,15 +2129,49 @@ export class BreakoutPullbackStrategy {
           this.logger.info(`✅ Trade state validation passed - Active position confirmed`);
         }
       } else {
-        // No active trade ID, but check for stale breakout signals that could cause phantom detection
-        if (this.strategyState.latestBreakoutSignal) {
-          this.logger.info(`🧹 Found stale breakout signal without active trade - clearing to prevent phantom detection`);
-          this.logger.info(`   Signal: ${this.strategyState.latestBreakoutSignal.type} @ ₹${this.strategyState.latestBreakoutSignal.price} from ${new Date(this.strategyState.latestBreakoutSignal.timestamp).toLocaleString()}`);
-          this.strategyState.latestBreakoutSignal = undefined;
-          this.markStateAsDirty();
-          this.logger.info(`✅ Stale breakout signal cleared - Ready for fresh detection`);
+        // REVERSE CASE: Strategy has no trade ID, but check if TradeExecutionService has an active position
+        const activePosition = this.tradeExecutionService.getActivePosition();
+        
+        if (activePosition) {
+          // CRITICAL BUG FIX: Service has active position but strategy doesn't know about it
+          this.logger.warn(`🚨 CRITICAL: TradeExecutionService has active position but strategy state is missing!`);
+          this.logger.warn(`   Active Position ID: ${activePosition.tradeId}`);
+          this.logger.warn(`   Direction: ${activePosition.direction}`);
+          this.logger.warn(`   Entry: ₹${activePosition.entryPrice} | SL: ₹${activePosition.stopLoss} | Target: ₹${activePosition.target}`);
+          this.logger.warn(`   Cause: Strategy state corruption or restart without proper state restoration`);
+          
+          // RESTORE STRATEGY STATE to match active position
+          this.strategyState.currentTradeId = activePosition.tradeId;
+          
+          // Reconstruct trade setup request from active position
+          this.strategyState.tradeSetupRequest = {
+            strategyId: 'breakout-pullback',
+            direction: activePosition.direction,
+            entryLevel: activePosition.entryPrice, // Use actual entry price from executed trade
+            stopLossLevel: activePosition.stopLoss,
+            targetLevel: activePosition.target,
+            underlyingPrice: (activePosition.instrument as any).underlyingPrice || 0,
+            timestamp: activePosition.entryTime
+          };
+          
+          // Transition to IN_TRADE state to enable price monitoring
+          this.transitionToState(TradeState.IN_TRADE, `Restored active trade: ${activePosition.tradeId}`);
+          
+          this.logger.info(`✅ STRATEGY STATE RESTORED - Now monitoring SL/Target levels`);
+          this.logger.info(`   🎯 Monitoring Target: ₹${activePosition.target} (${activePosition.direction})`);
+          this.logger.info(`   🛑 Monitoring Stop Loss: ₹${activePosition.stopLoss} (${activePosition.direction})`);
+          
         } else {
-          this.logger.info(`✅ Trade state validation passed - No active trade ID found, state is clean`);
+          // No active trade ID and no active position - check for stale breakout signals
+          if (this.strategyState.latestBreakoutSignal) {
+            this.logger.info(`🧹 Found stale breakout signal without active trade - clearing to prevent phantom detection`);
+            this.logger.info(`   Signal: ${this.strategyState.latestBreakoutSignal.type} @ ₹${this.strategyState.latestBreakoutSignal.price} from ${new Date(this.strategyState.latestBreakoutSignal.timestamp).toLocaleString()}`);
+            this.strategyState.latestBreakoutSignal = undefined;
+            this.markStateAsDirty();
+            this.logger.info(`✅ Stale breakout signal cleared - Ready for fresh detection`);
+          } else {
+            this.logger.info(`✅ Trade state validation passed - No active trade ID found, state is clean`);
+          }
         }
       }
     } catch (error) {
@@ -2280,11 +2316,13 @@ export class BreakoutPullbackStrategy {
           this.logger.info(`   🎯 Pivot High: ${pivotHigh.toFixed(2)}`);
           this.logger.info(`   ✅ Close > Pivot: ${completedCandle.close > pivotHigh}`);
           this.logger.info(`   ✅ Low < Pivot: ${completedCandle.low < pivotHigh} (avoids gap-ups)`);
+          this.logger.info(`   ✅ Candle Direction: ${completedCandle.close > completedCandle.open ? 'BULLISH (Green)' : 'BEARISH (Red)'}`);
           this.logger.info(`   ✅ Volume > SMA50: ${completedCandle.volume > this.strategyState.currentVolumeSMA50} (${completedCandle.volume} vs ${this.strategyState.currentVolumeSMA50.toFixed(0)})`);
         }
         
         if (completedCandle.close > pivotHigh && 
             completedCandle.low < pivotHigh && 
+            completedCandle.close > completedCandle.open && 
             completedCandle.volume > this.strategyState.currentVolumeSMA50) {
           
           const breakoutSignal: BreakoutSignal = {
@@ -2334,11 +2372,13 @@ export class BreakoutPullbackStrategy {
           this.logger.info(`   🎯 Pivot Low: ${pivotLow.toFixed(2)}`);
           this.logger.info(`   ✅ Close < Pivot: ${completedCandle.close < pivotLow}`);
           this.logger.info(`   ✅ High > Pivot: ${completedCandle.high > pivotLow} (avoids gap-downs)`);
+          this.logger.info(`   ✅ Candle Direction: ${completedCandle.close < completedCandle.open ? 'BEARISH (Red)' : 'BULLISH (Green)'}`);
           this.logger.info(`   ✅ Volume > SMA50: ${completedCandle.volume > this.strategyState.currentVolumeSMA50} (${completedCandle.volume} vs ${this.strategyState.currentVolumeSMA50.toFixed(0)})`);
         }
         
         if (completedCandle.close < pivotLow && 
             completedCandle.high > pivotLow && 
+            completedCandle.close < completedCandle.open && 
             completedCandle.volume > this.strategyState.currentVolumeSMA50) {
           
           const breakoutSignal: BreakoutSignal = {
@@ -2487,6 +2527,12 @@ export class BreakoutPullbackStrategy {
 
   private disableBreakoutDetection(): void {
     this.strategyState.breakoutDetectionActive = false;
+    
+    // CRITICAL FIX: Clear stale breakout signals to prevent phantom processing on restart
+    if (this.strategyState.latestBreakoutSignal) {
+      this.logger.info(`🧹 Clearing stale breakout signal: ${this.strategyState.latestBreakoutSignal.type} @ ₹${this.strategyState.latestBreakoutSignal.price}`);
+      this.strategyState.latestBreakoutSignal = undefined;
+    }
   }
 
   private enableBreakoutDetection(): void {
@@ -2495,6 +2541,17 @@ export class BreakoutPullbackStrategy {
 
   private disableMarkingCandleSystem(): void {
     this.strategyState.markingCandleState.isActive = false;
+    
+    // CRITICAL FIX: Reset marking candle state to prevent phantom processing on restart
+    this.strategyState.markingCandleState.searchPhase = 'initial';
+    this.strategyState.markingCandleState.barsProcessedSinceBreakout = 0;
+    this.strategyState.markingCandleState.tradeSkipped = false;
+    this.strategyState.markingCandleState.maxUpdatesReached = false;
+    this.strategyState.markingCandleState.currentMarkingCandle = null;
+    this.strategyState.markingCandleState.breakoutReference = null;
+    this.strategyState.markingCandleState.startTime = null;
+    
+    this.logger.info(`🧹 Marking candle system disabled and state reset`);
   }
 
   /**
@@ -2612,10 +2669,24 @@ export class BreakoutPullbackStrategy {
     }
 
     if (entryTriggered) {
+      // Guard against concurrent entry executions
+      if (this.isExecutingEntry) {
+        this.logger.debug('🔒 Entry execution already in progress, skipping duplicate trigger');
+        return;
+      }
+
+      // Set guard flag before starting execution
+      this.isExecutingEntry = true;
+
       // Fire and forget async execution to avoid blocking price monitoring
-      this.executeTradeEntry().catch(error => {
-        this.logger.error('Entry execution error handled in async context:', error);
-      });
+      this.executeTradeEntry()
+        .catch(error => {
+          this.logger.error('Entry execution error handled in async context:', error);
+        })
+        .finally(() => {
+          // Always reset guard flag after execution completes
+          this.isExecutingEntry = false;
+        });
     }
   }
 
@@ -2661,10 +2732,24 @@ export class BreakoutPullbackStrategy {
     }
 
     if (exitTriggered) {
+      // Guard against concurrent exit executions
+      if (this.isExecutingExit) {
+        this.logger.debug('🔒 Exit execution already in progress, skipping duplicate trigger');
+        return;
+      }
+
+      // Set guard flag before starting execution
+      this.isExecutingExit = true;
+
       // Fire and forget async execution to avoid blocking price monitoring
-      this.executeTradeExit(exitReason).catch(error => {
-        this.logger.error('Exit execution error handled in async context:', error);
-      });
+      this.executeTradeExit(exitReason)
+        .catch(error => {
+          this.logger.error('Exit execution error handled in async context:', error);
+        })
+        .finally(() => {
+          // Always reset guard flag after execution completes
+          this.isExecutingExit = false;
+        });
     }
   }
 
@@ -2704,7 +2789,29 @@ export class BreakoutPullbackStrategy {
         this.logger.info(`✅ Trade entry executed - Trade ID: ${tradeId} - Now monitoring SL/Target levels`);
       } catch (error) {
         this.logger.error('❌ Error executing trade entry:', error);
-        // On error, reset back to waiting for breakout
+        
+        // Smart error handling to prevent state corruption from race conditions
+        const activePosition = this.tradeExecutionService.getActivePosition();
+        
+        if (activePosition) {
+          // Position exists - likely a race condition where another execution succeeded
+          this.logger.warn(`⚠️ Entry error but position exists: ${activePosition.tradeId}`);
+          
+          // Check if we're already in IN_TRADE state
+          if (this.strategyState.tradeState === TradeState.IN_TRADE) {
+            this.logger.info(`✅ Already IN_TRADE - preserving state (race condition handled)`);
+            return; // Keep current state, don't reset
+          } else {
+            // Position exists but state is wrong - recover
+            this.logger.warn(`🔧 State recovery: Setting currentTradeId and transitioning to IN_TRADE`);
+            this.strategyState.currentTradeId = activePosition.tradeId;
+            this.transitionToState(TradeState.IN_TRADE, 'State recovered from orphaned position');
+            return;
+          }
+        }
+        
+        // No position exists - genuine entry failure
+        this.logger.info(`📉 No position found - genuine entry failure, resetting to WAITING_FOR_BREAKOUT`);
         this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, 'Entry execution failed');
       }
     });
@@ -2758,9 +2865,22 @@ export class BreakoutPullbackStrategy {
         this.logger.info(`✅ Trade exit executed - Returning to breakout monitoring`);
       } catch (error) {
         this.logger.error('❌ Error executing trade exit:', error);
-        // Even on error, try to reset state to avoid being stuck
-        delete this.strategyState.currentTradeId;
-        this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade exit error: ${reason}`);
+        
+        // Smart error handling to verify actual position state
+        const remainingPosition = this.tradeExecutionService.getActivePosition();
+        
+        if (remainingPosition) {
+          // Position still exists despite exit error - stay in IN_TRADE to keep monitoring
+          this.logger.warn(`⚠️ Exit error but position still exists: ${remainingPosition.tradeId}`);
+          this.logger.warn(`🔧 Keeping state as IN_TRADE to continue monitoring SL/Target`);
+          // Don't clear trade ID or change state - keep monitoring
+          return;
+        } else {
+          // Position was closed (or never existed) - safe to reset
+          this.logger.info(`✅ No position found after exit error - safe to reset state`);
+          delete this.strategyState.currentTradeId;
+          this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade exit error: ${reason}`);
+        }
       }
     });
   }
@@ -2775,9 +2895,25 @@ export class BreakoutPullbackStrategy {
       try {
         this.logger.info(`🔄 Processing manual exit - Current state: ${this.strategyState.tradeState}`);
         
-        // Check if we're actually in a trade
+        // CRITICAL: Clear TradeExecutionService persisted data first
+        // This handles cases where user manually exited on broker platform
+        const remainingPosition = this.tradeExecutionService.getActivePosition();
+        if (remainingPosition) {
+          this.logger.warn(`⚠️ Found orphaned position in TradeExecutionService: ${remainingPosition.tradeId}`);
+          this.logger.info(`🧹 Clearing orphaned position data from persistence...`);
+          this.tradeExecutionService.clearOrphanedPosition();
+          this.logger.info(`✅ Orphaned position data cleared`);
+        }
+        
+        // Check if we're actually in a trade state
         if (this.strategyState.tradeState !== TradeState.IN_TRADE) {
           this.logger.warn(`⚠️ Manual exit called but not in trade state: ${this.strategyState.tradeState}`);
+          // Still reset to ensure clean state
+          delete this.strategyState.currentTradeId;
+          delete this.strategyState.tradeSetupRequest;
+          this.disableMarkingCandleSystem();
+          this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, 'Manual exit - State cleanup');
+          this.logger.info(`✅ Strategy state reset to WAITING_FOR_BREAKOUT`);
           return;
         }
 
@@ -2788,18 +2924,15 @@ export class BreakoutPullbackStrategy {
           return;
         }
 
-        // Verify position was actually closed by TradeExecutionService
-        const remainingPosition = this.tradeExecutionService.getActivePosition();
-        if (remainingPosition) {
-          this.logger.warn(`⚠️ Manual exit called but position still active: ${remainingPosition.tradeId}`);
-          // Position still exists, this is unexpected but we'll clear our state anyway
-        }
-
         this.logger.info(`🚨 Manual exit executed for trade ID: ${this.strategyState.currentTradeId}`);
         
         // Clear trade data
         const exitedTradeId = this.strategyState.currentTradeId;
         delete this.strategyState.currentTradeId;
+        delete this.strategyState.tradeSetupRequest;
+        
+        // Disable marking candle system
+        this.disableMarkingCandleSystem();
         
         // Transition back to WAITING_FOR_BREAKOUT
         this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Manual exit - Trade ID: ${exitedTradeId}`);
@@ -2809,7 +2942,14 @@ export class BreakoutPullbackStrategy {
       } catch (error) {
         this.logger.error('❌ Error processing manual exit:', error);
         // Even on error, try to reset state to avoid being stuck
+        try {
+          this.tradeExecutionService.clearOrphanedPosition();
+        } catch (clearError) {
+          this.logger.error('❌ Error clearing orphaned position during error recovery:', clearError);
+        }
         delete this.strategyState.currentTradeId;
+        delete this.strategyState.tradeSetupRequest;
+        this.disableMarkingCandleSystem();
         this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Manual exit error recovery`);
       }
     });

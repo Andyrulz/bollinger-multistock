@@ -6,6 +6,8 @@ A professional algorithmic trading system using Zerodha's KiteConnect API with r
 
 ## Callback URL:https://98.70.40.23/auth/callback
 
+## Local URL: http://localhost:3000/auth/callback
+
 ## ✨ Production Features
 
 - **🎯 Professional Strategy**: NIFTY Breakout-Retracement with 15,15 pivot detection algorithm

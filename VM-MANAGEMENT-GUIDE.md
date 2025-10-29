@@ -13,6 +13,7 @@ ssh -i "C:\Users\aabishek\Downloads\nifty-trading-bot_key.pem" azureuser@98.70.4
 ## Daily Operations (Auto-Shutdown at 4:30 PM)
 
 ### Morning Startup (After 9:00 AM)
+
 ```bash
 # VM will auto-start the trading bot via PM2
 # Just verify everything is running:
@@ -25,6 +26,7 @@ curl -s http://localhost:3000/strategies | grep "isActive"
 ```
 
 ### Pre-Shutdown Check (Before 4:30 PM)
+
 ```bash
 # Check if any active trades before shutdown
 curl -s http://localhost:3000/strategies | grep -E "isActive|totalTrades"
@@ -145,12 +147,14 @@ pm2 logs trading-bot-multi-strategy --lines 5 | tail -3
 ## Auto-Recovery & Monitoring
 
 ### PM2 Auto-Start (Configured)
+
 - ✅ **PM2 will automatically start** the trading bot when VM restarts
 - ✅ **Ecosystem config** loads all environment variables
 - ✅ **Health monitoring** resumes automatically
 - ✅ **AutoStart strategies** will activate if market is open
 
 ### Manual Verification After VM Restart
+
 ```bash
 # Complete verification script
 echo "=== Post-Restart Verification ==="
@@ -166,6 +170,7 @@ curl -s http://localhost:3000/strategies | grep -E '"isActive":[^,]*|"healthStat
 ```
 
 ### Troubleshooting Auto-Start Issues
+
 ```bash
 # If PM2 didn't auto-start after VM restart:
 sudo systemctl status pm2-azureuser

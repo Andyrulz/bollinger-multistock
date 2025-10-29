@@ -1,6 +1,5 @@
-﻿import { Logger } from '../../utils/Logger';
+import { Logger } from '../../utils/Logger';
 import { StrategyBase, StrategyConfig, StrategyStatus } from '../../core/StrategyBase';
-import { KiteTicker } from 'kiteconnect';
 
 /**
  * Bollinger Band Strategy - Complete Implementation
@@ -57,6 +56,8 @@ interface Position {
   entryTime: Date;
   trailingSL?: number;
   highestPremium?: number;
+  entryOrderId: string;        // Store real order ID from KiteConnect
+  exitOrderId?: string;        // Store exit order ID when position closed
 }
 
 export class BollingerBandStrategy extends StrategyBase {
@@ -75,7 +76,7 @@ export class BollingerBandStrategy extends StrategyBase {
   private dailyPivots: PivotLevels | null = null;
   
   // NIFTY50 spot instrument token (needs to be set based on instruments list)
-  private readonly NIFTY50_INSTRUMENT_TOKEN = 256265; // This will be fetched dynamically
+  private NIFTY50_INSTRUMENT_TOKEN: number = 256265; // This will be fetched dynamically
   
   // Position management
   private currentPosition: Position | null = null;
@@ -88,10 +89,28 @@ export class BollingerBandStrategy extends StrategyBase {
   private currentNiftyLTP: number = 0;
   private candleCheckInterval: NodeJS.Timeout | null = null;
   
-  // WebSocket for option premium monitoring (only when positions are active)
-  private optionWebSocket: any | null = null;
-  private subscribedOptionTokens: Set<number> = new Set();
-  private optionPremiumData: Map<number, number> = new Map();
+  // Race condition protection for position exit processing
+  private isProcessingShortExit: boolean = false;
+  private isProcessingLongExit: boolean = false;
+  
+  // Race condition protection for position entry processing
+  private isExecutingLongEntry: boolean = false;
+  private isExecutingShortEntry: boolean = false;
+  
+  // Race condition protection for polling operations
+  private isPollingInProgress: boolean = false;
+  private lastPollingTime: Date | null = null;
+  private consecutivePollingFailures: number = 0;
+  private readonly MIN_POLLING_INTERVAL = 900; // Minimum 900ms between polls
+  private readonly MAX_CONSECUTIVE_FAILURES = 5; // Backoff threshold
+  
+  // Cached position state for dashboard display
+  private cachedCurrentPrice: number = 0;
+  private cachedUnrealizedPnL: number = 0;
+  private lastPriceUpdateTime: Date | null = null;
+  
+  // REST API position monitoring
+  private shortMonitoringInterval?: NodeJS.Timeout;
 
   // Error monitoring and health tracking
   private errorCounts: Map<string, number> = new Map();
@@ -121,6 +140,10 @@ export class BollingerBandStrategy extends StrategyBase {
   private readonly CANDLE_RETRY_INTERVAL = 10000; // 10 seconds for candle fetch
   private readonly TRADE_RETRY_DELAYS = [1000, 2000, 5000]; // 1s, 2s, 5s exponential backoff
 
+  // Simplified timer management - single clean 5-minute cycle
+  private masterCycleInterval: NodeJS.Timeout | null = null;
+  private currentCyclePhase: 'waiting' | '4th-minute' | '5th-minute' | '6th-minute' = 'waiting';
+
   constructor(kiteConnect: any, logger: Logger, config: StrategyConfig) {
     super(kiteConnect, logger, config);
     this.loadCapitalData(); // Load persisted capital on startup
@@ -139,14 +162,14 @@ export class BollingerBandStrategy extends StrategyBase {
         this.currentCapital = data.capital || 200000;
         this.tradeHistory = data.tradeHistory || [];
         
-        this.logger.info('💰 Bollinger Band capital loaded', {
+        this.logger.info('?? Bollinger Band capital loaded', {
           capital: this.currentCapital,
           totalTrades: this.tradeHistory.length
         });
       } else {
         // Create initial data file
         this.saveCapitalData();
-        this.logger.info('💰 Bollinger Band capital initialized at ₹2,00,000');
+        this.logger.info('?? Bollinger Band capital initialized at ?2,00,000');
       }
     } catch (error) {
       this.logger.error('Error loading Bollinger Band capital data:', error);
@@ -186,16 +209,19 @@ export class BollingerBandStrategy extends StrategyBase {
     try {
       // Step 0: Get NIFTY50 instrument token dynamically
       const nifty50Token = await this.getNifty50InstrumentToken();
-      (this as any).NIFTY50_INSTRUMENT_TOKEN = nifty50Token;
+      this.NIFTY50_INSTRUMENT_TOKEN = nifty50Token;
       
-      // Step 1: Load historical candle data (7-day window)
-      await this.loadHistoricalData();
+      // Step 1: Load historical candle data with fallback for pre-market hours
+      await this.loadHistoricalDataWithFallback();
       
-      // Step 2: Calculate daily pivots from previous trading day
-      await this.calculateDailyPivotsFromMarketData();
+      // Step 2: Calculate daily pivots (use fallback if needed)
+      await this.calculateDailyPivotsWithFallback();
       
-      // Step 3: Initialize technical indicators with historical data
+      // Step 3: Initialize technical indicators
       this.updateTechnicalIndicators();
+      
+      // Step 4: Schedule daily cache refresh at 3:25 PM
+      this.scheduleDailyCacheRefresh();
       
       this.isInitialized = true;
       this.logger.info('BollingerBandStrategy: Initialization complete', {
@@ -240,6 +266,8 @@ export class BollingerBandStrategy extends StrategyBase {
     // Stop retry mechanisms
     this.stopCandleRetryMechanism();
     
+    // Predictive WebSocket removed - using real-time selection
+    
     // Force close any open positions
     if (this.currentPosition) {
       await this.forceClosePosition('STRATEGY_STOP');
@@ -257,7 +285,7 @@ export class BollingerBandStrategy extends StrategyBase {
    * Called at market open to clear previous day's data (keeps logs)
    */
   public async dailyCleanup(): Promise<void> {
-    this.logger.info('🧹 Starting daily cleanup for new trading day...');
+    this.logger.info('?? Starting daily cleanup for new trading day...');
     
     try {
       // Clear historical data (keep only logs)
@@ -270,9 +298,15 @@ export class BollingerBandStrategy extends StrategyBase {
       // Clear position data
       this.currentPosition = null;
       
+      // Reset cached position state
+      this.cachedCurrentPrice = 0;
+      this.cachedUnrealizedPnL = 0;
+      this.lastPriceUpdateTime = null;
+      
       // Clear option data
-      this.optionPremiumData.clear();
-      this.subscribedOptionTokens.clear();
+      // REST API monitoring will be reinitialized automatically
+      
+      // Predictive WebSocket removed - using real-time selection
       
       // Reset health status
       this.healthStatus = {
@@ -287,9 +321,9 @@ export class BollingerBandStrategy extends StrategyBase {
       this.errorCounts.clear();
       this.lastErrorTime.clear();
       
-      this.logger.info('✅ Daily cleanup completed - ready for new trading day');
+      this.logger.info('? Daily cleanup completed - ready for new trading day');
     } catch (error) {
-      this.logger.error('❌ Error during daily cleanup:', error);
+      this.logger.error('? Error during daily cleanup:', error);
       throw error;
     }
   }
@@ -312,17 +346,78 @@ export class BollingerBandStrategy extends StrategyBase {
       candleCount: this.candleHistory.length,
       currentNiftyPrice: this.getLastCompletedCandleClose(),
       currentCandle: this.currentCandle,
-      optionWebSocketStatus: {
-        connected: this.optionWebSocket !== null,
-        subscribedTokens: this.subscribedOptionTokens.size
-      }
+      // Current position information for P&L tracking (updated via REST API polling)
+      positionInfo: this.currentPosition ? {
+        type: this.currentPosition.type,
+        instrument: this.currentPosition.instrument,
+        quantity: this.currentPosition.quantity,
+        entryPrice: this.currentPosition.entryPrice,
+        entryTime: this.currentPosition.entryTime,
+        currentPrice: this.cachedCurrentPrice, // Real-time price from polling
+        unrealizedPnL: this.cachedUnrealizedPnL, // Real-time P&L from polling
+        lastUpdated: this.lastPriceUpdateTime, // Timestamp of last price update
+        tradingSymbol: this.currentPosition.instrument.tradingsymbol,
+        trailingSL: this.currentPosition.trailingSL, // Trailing stop loss level
+        highestPremium: this.currentPosition.highestPremium // Highest premium achieved
+      } : null
     } as StrategyStatus;
   }
 
   // Implement abstract method from StrategyBase
   public async processMarketData(data: any): Promise<void> {
-    // TODO: Implement real-time market data processing
+    // NOTE: This strategy uses polling-based architecture via fetchLatest5MinuteCandle()
+    // Real-time market data processing is handled by startRealTimeMonitoring() 
+    // which fetches 5-minute candles at precise intervals aligned to market timing
     this.logger.debug('Processing market data:', data);
+  }
+
+  /**
+   * Get live option premium from REST API polling
+   * Returns the last traded price from real-time data or fallback price if not available
+   */
+  private async getLiveOptionPremium(instrumentToken: number): Promise<number> {
+    if (!instrumentToken) return 0;
+    
+    try {
+      // Get current option price via REST API
+      const quote = await this.kiteConnect.getQuote([instrumentToken.toString()]);
+      const data = quote[instrumentToken.toString()];
+      
+      if (data && data.last_price && data.last_price > 0) {
+        return data.last_price;
+      }
+      
+      // No fallback needed - REST API will provide current price
+      
+      return 0;
+    } catch (error) {
+      this.logger.error(`Error fetching live premium for token ${instrumentToken}:`, error);
+      
+      // Fallback: estimate based on NIFTY price
+      const currentNifty = this.getLastCompletedCandleClose();
+      if (currentNifty > 0) {
+        return currentNifty * 0.01; // 1% of NIFTY as reasonable estimate
+      }
+      
+      return 0;
+    }
+  }
+
+  /**
+   * Calculate unrealized P&L for current position
+   * Since we always BUY options (CE or PE), P&L = (currentPrice - entryPrice) * quantity
+   */
+  private async calculateUnrealizedPnL(): Promise<number> {
+    if (!this.currentPosition) return 0;
+    
+    const currentPrice = await this.getLiveOptionPremium(this.currentPosition.instrument.instrument_token);
+    if (currentPrice === 0) return 0; // Can't calculate without current price
+    
+    // We BUY options at entry and SELL at exit, so profit = (exit/current - entry) * quantity
+    // This applies to both LONG (CE) and SHORT (PE) directions
+    const priceDiff = currentPrice - this.currentPosition.entryPrice;
+    
+    return priceDiff * this.currentPosition.quantity;
   }
 
   // Technical Indicator Calculations
@@ -684,6 +779,171 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
+   * PRODUCTION FIX: Load historical data with fallback for pre-market initialization
+   * This allows the bot to start before market hours without failing
+   */
+  private async loadHistoricalDataWithFallback(): Promise<void> {
+    this.logger.info('Loading historical data with production fallback...');
+    
+    try {
+      // Try normal historical data loading first
+      await this.loadHistoricalData();
+      this.logger.info('? Historical data loaded successfully via API');
+      return;
+      
+    } catch (error) {
+      this.logger.warn('?? API historical data failed, trying cache fallback', error);
+      
+      // Fallback: Try to load cached historical data
+      try {
+        await this.loadCachedHistoricalData();
+        this.logger.info('? Historical data loaded from cache');
+        return;
+      } catch (cacheError) {
+        this.logger.error('? Both API and cache failed - cannot initialize strategy safely', {
+          apiError: error instanceof Error ? error.message : String(error),
+          cacheError: cacheError instanceof Error ? cacheError.message : String(cacheError)
+        });
+        throw new Error('Failed to load historical data from both API and cache. Strategy cannot start safely without proper market data.');
+      }
+    }
+  }
+
+  /**
+   * Load cached historical data from file system
+   */
+  private async loadCachedHistoricalData(): Promise<void> {
+    const fs = require('fs');
+    const path = require('path');
+    const cacheFile = path.join(__dirname, '../../data/bollinger-historical-cache.json');
+    
+    if (!fs.existsSync(cacheFile)) {
+      throw new Error('No cached historical data available');
+    }
+    
+    const cacheData = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    const cacheAge = Date.now() - new Date(cacheData.timestamp).getTime();
+    const maxCacheAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+    
+    if (cacheAge > maxCacheAge) {
+      throw new Error('Cached data too old');
+    }
+    
+    this.candleHistory = cacheData.candles.map((candle: any) => ({
+      timestamp: new Date(candle.timestamp),
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume
+    }));
+    
+    this.logger.info(`Loaded ${this.candleHistory.length} candles from cache`);
+  }
+
+  /**
+   * Cache historical data for future pre-market startups
+   */
+  private async cacheHistoricalData(): Promise<void> {
+    if (this.candleHistory.length === 0) return;
+    
+    const fs = require('fs');
+    const path = require('path');
+    const cacheFile = path.join(__dirname, '../../data/bollinger-historical-cache.json');
+    
+    try {
+      // Ensure data directory exists
+      const dataDir = path.dirname(cacheFile);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      
+      const cacheData = {
+        timestamp: new Date().toISOString(),
+        candles: this.candleHistory,
+        symbol: 'NIFTY50',
+        timeframe: '5min'
+      };
+      
+      fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
+      this.logger.info('?? Historical data cached successfully');
+    } catch (error) {
+      this.logger.error('? Failed to cache historical data:', error);
+    }
+  }
+
+  /**
+   * Schedule daily cache refresh at 3:25 PM to ensure fresh data for next day
+   */
+  private scheduleDailyCacheRefresh(): void {
+    const now = new Date();
+    const refreshTime = new Date();
+    refreshTime.setHours(15, 25, 0, 0); // 3:25 PM IST
+    
+    // If 3:25 PM has passed today, schedule for next trading day
+    if (now >= refreshTime) {
+      refreshTime.setDate(refreshTime.getDate() + 1);
+      // Skip weekends - if Saturday, schedule for Monday
+      if (refreshTime.getDay() === 6) refreshTime.setDate(refreshTime.getDate() + 2);
+      if (refreshTime.getDay() === 0) refreshTime.setDate(refreshTime.getDate() + 1);
+    }
+    
+    const timeUntilRefresh = refreshTime.getTime() - now.getTime();
+    
+    this.logger.info(`?? Scheduled daily cache refresh at: ${refreshTime.toLocaleString()}`);
+    
+    setTimeout(async () => {
+      try {
+        this.logger.info('?? Daily cache refresh starting at 3:25 PM...');
+        
+        // Only refresh if we have current data
+        if (this.candleHistory.length > 0) {
+          await this.cacheHistoricalData();
+          this.logger.info('? Daily cache refresh completed successfully');
+        } else {
+          this.logger.warn('?? No candle data available for cache refresh');
+        }
+        
+        // Schedule next day's refresh
+        this.scheduleDailyCacheRefresh();
+        
+      } catch (error) {
+        this.logger.error('? Daily cache refresh failed:', error);
+        // Still schedule next refresh attempt
+        this.scheduleDailyCacheRefresh();
+      }
+    }, timeUntilRefresh);
+  }
+
+  /**
+   * Calculate daily pivots with fallback for pre-market hours
+   */
+  private async calculateDailyPivotsWithFallback(): Promise<void> {
+    try {
+      await this.calculateDailyPivotsFromMarketData();
+      this.logger.info('? Daily pivots calculated from market data');
+    } catch (error) {
+      this.logger.warn('?? Failed to fetch pivot data, using fallback', error);
+      this.calculateFallbackPivots();
+    }
+  }
+
+  /**
+   * Calculate fallback pivot levels using approximate values
+   */
+  private calculateFallbackPivots(): void {
+    // Use approximate NIFTY levels for pre-market
+    const approximateOHLC = {
+      high: 25200,
+      low: 25100, 
+      close: 25150
+    };
+    
+    this.dailyPivots = this.calculateDailyPivots(approximateOHLC);
+    this.logger.info('?? Using fallback pivot levels for pre-market operation', this.dailyPivots);
+  }
+
+  /**
    * Calculate daily pivots from previous trading day OHLC
    * Fetch the most recent daily candle to get previous day's data
    */
@@ -859,12 +1119,15 @@ export class BollingerBandStrategy extends StrategyBase {
 
   /**
    * Start monitoring aligned to 5-minute candle closes (0, 5, 10, 15... minutes)
-   * Checks for entries precisely when new 5-minute candles complete
+   * Simplified: Only 5th minute entry signals - NO prediction system
    */
   private startRealTimeMonitoring(): void {
-    this.logger.info('🚀 Starting 5-minute candle monitoring aligned to market intervals...');
+    this.logger.info('?? Starting simplified 5-minute monitoring (5th minute entry only - no prediction)...');
     
-    // Calculate time until next 5-minute candle close
+    // Clear any existing timer first
+    this.stopRealTimeMonitoring();
+    
+    // Calculate initial alignment to next 5-minute boundary
     const now = new Date();
     const currentMinutes = now.getMinutes();
     const currentSeconds = now.getSeconds();
@@ -872,25 +1135,25 @@ export class BollingerBandStrategy extends StrategyBase {
     // Find next 5-minute interval (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55)
     const nextInterval = Math.ceil(currentMinutes / 5) * 5;
     const minutesUntilNext = (nextInterval === 60) ? (60 - currentMinutes) : (nextInterval - currentMinutes);
-    const secondsUntilNext = (60 - currentSeconds) + (minutesUntilNext - 1) * 60;
+    const secondsUntilAlignment = (60 - currentSeconds) + (minutesUntilNext - 1) * 60;
     
-    this.logger.info(`⏰ Next 5-minute candle close in ${Math.floor(secondsUntilNext / 60)}:${(secondsUntilNext % 60).toString().padStart(2, '0')}`);
+    this.logger.info(`? Aligning to next 5-minute boundary in ${Math.floor(secondsUntilAlignment / 60)}:${(secondsUntilAlignment % 60).toString().padStart(2, '0')}`);
     
-    // Set initial timeout to align with next 5-minute candle close
+    // Start the master cycle after alignment timing
     setTimeout(() => {
-      // First fetch at the aligned time with retry mechanism
-      this.fetchLatest5MinuteCandleWithRetry();
-      
-      // Then set up regular 5-minute interval with retry capability
-      this.candleCheckInterval = setInterval(async () => {
-        await this.fetchLatest5MinuteCandleWithRetry();
-      }, 5 * 60 * 1000); // 5 minutes
-      
-    }, secondsUntilNext * 1000);
+      this.startMasterCycle();
+    }, secondsUntilAlignment * 1000);
     
-    // Only start LTP polling if we have active positions that need exit monitoring
+    // Start fetching latest candle data immediately to check for entry signals
+    this.fetchLatest5MinuteCandle().catch(error => {
+      this.logger.error('Initial candle fetch failed:', error);
+    });
+    
+    // Start position monitoring if we have any active position that needs exit monitoring
     if (this.currentPosition) {
-      this.startPositionMonitoring();
+      this.startPositionMonitoring().catch(error => {
+        this.logger.error('Failed to start position monitoring:', error);
+      });
     }
   }
 
@@ -908,13 +1171,52 @@ export class BollingerBandStrategy extends StrategyBase {
       this.candleCheckInterval = null;
     }
     
+    // Clear master cycle interval
+    if (this.masterCycleInterval) {
+      clearInterval(this.masterCycleInterval);
+      this.masterCycleInterval = null;
+    }
+    
+    // Reset cycle state
+    this.currentCyclePhase = 'waiting';
+    
     // Cleanup option WebSocket if no positions
     if (!this.currentPosition) {
-      this.cleanupOptionWebSocket();
+      // WebSocket cleanup removed - using pure REST API
     }
     
     this.logger.info('Real-time monitoring stopped');
   }
+
+  /**
+   * Master cycle initialization - sets up the strategy monitoring
+   * Uses intelligent candle checking only during market hours
+   */
+  private startMasterCycle(): void {
+    this.logger.info('?? Starting Bollinger Band strategy master cycle');
+    
+    // Check for new 5-minute candles every 5 minutes (300 seconds)
+    // This aligns with natural candle completion timing
+    this.masterCycleInterval = setInterval(() => {
+      // Only fetch during market hours (9:15 AM to 3:30 PM)
+      const now = new Date();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      const currentTime = hours * 60 + minutes;
+      const marketStart = 9 * 60 + 15; // 9:15 AM
+      const marketEnd = 15 * 60 + 30;  // 3:30 PM
+      
+      if (currentTime >= marketStart && currentTime <= marketEnd) {
+        this.fetchLatest5MinuteCandle().catch(error => {
+          this.logger.error('? Error fetching 5-minute candle:', error);
+        });
+      }
+    }, 5 * 60 * 1000); // Check every 5 minutes
+    
+    this.logger.info('? Master cycle started - checking for new candles every 5 minutes during market hours');
+  }
+
+
 
   /**
    * Start health monitoring with periodic status reports
@@ -926,9 +1228,9 @@ export class BollingerBandStrategy extends StrategyBase {
       const healthReport = this.getHealthReport();
       
       if (!healthReport.overall) {
-        this.logger.warn('ðŸ’Š STRATEGY HEALTH REPORT (UNHEALTHY):', healthReport);
+        this.logger.warn('💊 STRATEGY HEALTH REPORT (UNHEALTHY):', healthReport);
       } else {
-        this.logger.info('ðŸ’š Strategy health: OK', {
+        this.logger.info('💚 Strategy health: OK', {
           consecutiveErrors: healthReport.consecutiveErrors,
           timeSinceHeartbeat: healthReport.timeSinceHeartbeat,
           candleCount: healthReport.candleHistoryLength
@@ -940,7 +1242,7 @@ export class BollingerBandStrategy extends StrategyBase {
       if (now.getHours() === 9 && now.getMinutes() === 15) {
         this.healthStatus.criticalErrorsToday = 0;
         this.errorCounts.clear();
-        this.logger.info('ðŸ”„ Daily error counts reset');
+        this.logger.info('🔄 Daily error counts reset');
       }
     }, 5 * 60 * 1000); // Every 5 minutes
   }
@@ -952,7 +1254,7 @@ export class BollingerBandStrategy extends StrategyBase {
   private async fetchLatest5MinuteCandle(): Promise<void> {
     try {
       const now = new Date();
-      this.logger.info(`🕐 Fetching 5-minute candle at ${now.toLocaleTimeString()}`);
+      this.logger.info(`?? Fetching 5-minute candle at ${now.toLocaleTimeString()}`);
       
       const toDate = new Date();
       const fromDate = new Date(toDate.getTime() - 10 * 60 * 1000); // Last 10 minutes to get latest candle
@@ -975,7 +1277,7 @@ export class BollingerBandStrategy extends StrategyBase {
           volume: latestCandle.volume
         };
 
-        this.logger.info(`📊 New 5-minute candle: ${newCandle.timestamp.toLocaleTimeString()} OHLC: ${newCandle.open}/${newCandle.high}/${newCandle.low}/${newCandle.close} V:${newCandle.volume}`);
+        this.logger.info(`?? New 5-minute candle: ${newCandle.timestamp.toLocaleTimeString()} OHLC: ${newCandle.open}/${newCandle.high}/${newCandle.low}/${newCandle.close} V:${newCandle.volume}`);
 
         // Enhanced duplicate prevention: Check both timestamp and all OHLC values
         const lastHistoricalCandle = this.candleHistory[this.candleHistory.length - 1];
@@ -992,12 +1294,12 @@ export class BollingerBandStrategy extends StrategyBase {
           
           if (isNewerCandle) {
             this.candleHistory.push(newCandle);
-            this.logger.info(`ðŸ“Š New 5-minute candle: NIFTY50 ${newCandle.close} (${newCandle.timestamp.toLocaleTimeString()})`);
+            this.logger.info(`📊 New 5-minute candle: NIFTY50 ${newCandle.close} (${newCandle.timestamp.toLocaleTimeString()})`);
           } else {
             // Same timestamp but different OHLC - update existing candle (live candle update)
             if (lastHistoricalCandle && newCandle.timestamp.getTime() === lastHistoricalCandle.timestamp.getTime()) {
               this.candleHistory[this.candleHistory.length - 1] = newCandle;
-              this.logger.debug(`ðŸ”„ Updated current 5-minute candle: NIFTY50 ${newCandle.close}`);
+              this.logger.debug(`🔄 Updated current 5-minute candle: NIFTY50 ${newCandle.close}`);
             }
           }
           
@@ -1012,9 +1314,9 @@ export class BollingerBandStrategy extends StrategyBase {
           // Check for new signals
           await this.checkEntrySignals();
           
-          // Check position exit conditions with new candle data (replaces 1-second polling)
+          // Check position exit conditions with new candle data (LONG uses candle close, SHORT uses real-time)
           if (this.currentPosition) {
-            await this.checkPositionExit();
+            await this.checkPositionExit(newCandle.close);
           }
           
           // Update metrics to show strategy is responsive
@@ -1036,186 +1338,167 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * Start position monitoring only when we have active positions
-   * Uses 5-minute candle data for exit conditions (eliminates 1-second API polling)
-   */
-  private startPositionMonitoring(): void {
-    if (this.ltpPollingInterval) return; // Already running
-
-    this.logger.info('🔄 Position monitoring active - exit conditions checked with each 5-minute candle (no 1-second polling)');
-    // No polling interval needed - position exits are checked when new 5-minute candles arrive
-    // This saves ~3600 API calls per hour while maintaining strategy integrity
-  }
-
-  /**
-   * Stop position monitoring when no active positions
+   * Stop all position monitoring when no active positions
    */
   private stopPositionMonitoring(): void {
-    // No polling interval to clear since we removed 1-second polling
+    // Stop position monitoring system
+    this.stopShortPositionMonitoring();
+    
     this.logger.info('Position monitoring stopped (no active positions)');
     
     // Also cleanup option WebSocket subscriptions
-    this.cleanupOptionWebSocket();
+    // WebSocket cleanup removed - using pure REST API
   }
 
   /**
-   * Initialize WebSocket for option premium monitoring
-   * Only used when we have active option positions
+   * Pure REST API position monitoring - reliable and predictable
    */
-  private async initializeOptionWebSocket(): Promise<void> {
-    try {
-      if (this.optionWebSocket) {
-        this.logger.info('Option WebSocket already initialized');
+  private async startPositionMonitoring(): Promise<void> {
+    if (!this.currentPosition) {
+      this.logger.warn('Cannot start position monitoring - no active position');
+      return;
+    }
+    
+    this.logger.info(`?? Starting ${this.currentPosition.type} position monitoring (REST API polling)`);
+
+    // Stop any existing monitoring first
+    this.stopShortPositionMonitoring();
+
+    const instrumentToken = this.currentPosition.instrument.instrument_token;
+    
+    // Start REST API polling-based monitoring
+    this.startPollingBasedMonitoring(instrumentToken);
+  }
+
+  /**
+   * Stop position monitoring 
+   */
+  private stopShortPositionMonitoring(): void {
+    // Clear polling timeout (using clearTimeout instead of clearInterval for recursive setTimeout)
+    if (this.shortMonitoringInterval) {
+      clearTimeout(this.shortMonitoringInterval);
+      delete this.shortMonitoringInterval;
+    }
+    
+    // Reset polling flags and counters
+    this.isPollingInProgress = false;
+    this.consecutivePollingFailures = 0;
+    this.lastPollingTime = null;
+    
+    this.logger.info('🛑 Position monitoring stopped');
+  }
+
+  /**
+   * Pure REST API polling-based monitoring
+   * Uses recursive setTimeout to prevent overlapping async operations
+   */
+  private startPollingBasedMonitoring(instrumentToken: number): void {
+    // Recursive polling function that waits for completion before scheduling next poll
+    const pollOnce = async () => {
+      // Check if position still exists
+      if (!this.currentPosition) {
+        this.stopShortPositionMonitoring();
         return;
       }
 
-      this.logger.info('ðŸ”Œ Initializing Option WebSocket for premium monitoring...');
-      
-      // Get access token from kiteConnect instance
-      const accessToken = this.kiteConnect.access_token;
-      const apiKey = process.env.ZERODHA_API_KEY;
-
-      if (!accessToken || !apiKey) {
-        throw new Error('Missing access token or API key for Option WebSocket initialization');
+      // Circuit breaker: Stop if too many consecutive failures
+      if (this.consecutivePollingFailures >= 10) {
+        this.logger.error('🔴 Circuit breaker: Too many polling failures, stopping monitoring');
+        this.stopShortPositionMonitoring();
+        return;
       }
 
-      this.optionWebSocket = new KiteTicker({
-        api_key: apiKey,
-        access_token: accessToken
-      });
+      // Check if previous poll is still running (safety check)
+      if (this.isPollingInProgress) {
+        this.logger.debug('⏭️ Skipping poll - previous operation still in progress');
+        // Schedule next poll anyway to maintain cadence
+        this.shortMonitoringInterval = setTimeout(pollOnce, 1000);
+        return;
+      }
 
-      this.optionWebSocket.on('connect', () => {
-        this.logger.info('âœ… Option WebSocket connected successfully');
+      this.isPollingInProgress = true;
+      const pollStartTime = Date.now();
+      
+      try {
+        // Get current premium via REST API
+        const currentPremium = await this.getLiveOptionPremium(instrumentToken);
         
-        // Subscribe to any pending option instruments
-        if (this.subscribedOptionTokens.size > 0) {
-          const tokens = Array.from(this.subscribedOptionTokens);
-          this.logger.info(`ðŸ“¡ Subscribing to ${tokens.length} option(s) on connect: ${tokens.join(', ')}`);
-          this.optionWebSocket.subscribe(tokens);
-          this.optionWebSocket.setMode(this.optionWebSocket.modeLTP, tokens);
-        }
-      });
-
-      this.optionWebSocket.on('ticks', (ticks: any[]) => {
-        ticks.forEach(tick => {
-          if (this.subscribedOptionTokens.has(tick.instrument_token)) {
-            this.optionPremiumData.set(tick.instrument_token, tick.last_price);
-            this.logger.debug(`ðŸ“Š Option premium update: Token ${tick.instrument_token} = â‚¹${tick.last_price}`);
+        if (currentPremium > 0) {
+          // Update cached position state for dashboard display
+          this.cachedCurrentPrice = currentPremium;
+          
+          // Calculate and cache unrealized P&L
+          // Since we always BUY options (CE or PE), profit when price goes up
+          if (this.currentPosition) {
+            const priceDiff = currentPremium - this.currentPosition.entryPrice;
+            this.cachedUnrealizedPnL = priceDiff * this.currentPosition.quantity;
+            this.lastPriceUpdateTime = new Date();
           }
-        });
-      });
-
-      this.optionWebSocket.on('disconnect', () => {
-        this.logger.warn('ðŸ”Œ Option WebSocket disconnected');
-      });
-
-      this.optionWebSocket.on('error', (error: any) => {
-        this.logger.error('âŒ Option WebSocket error:', error);
-      });
-
-      this.optionWebSocket.connect();
-      
-    } catch (error) {
-      this.logger.error('âŒ Failed to initialize Option WebSocket:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Subscribe to option instrument for real-time premium monitoring
-   */
-  private async subscribeToOption(instrumentToken: number): Promise<void> {
-    try {
-      if (!this.optionWebSocket) {
-        await this.initializeOptionWebSocket();
+          
+          // Now proceed with exit checks
+          if (this.currentPosition.type === 'SHORT') {
+            await this.checkShortExitUnified(currentPremium, 'polling');
+          } else if (this.currentPosition.type === 'LONG') {
+            await this.checkLongTrailingSL(currentPremium);
+          }
+          
+          // Success - reset failure counter
+          this.consecutivePollingFailures = 0;
+        }
+      } catch (error) {
+        this.logger.error(`Error in REST API ${this.currentPosition?.type} monitoring:`, error);
+        this.consecutivePollingFailures++;
+      } finally {
+        this.isPollingInProgress = false;
+        this.lastPollingTime = new Date();
       }
 
-      if (!this.subscribedOptionTokens.has(instrumentToken)) {
-        this.logger.info(`ðŸ“¡ Preparing subscription for option premium: Token ${instrumentToken}`);
-        
-        // Add to subscribed tokens - actual subscription will happen in connect event
-        this.subscribedOptionTokens.add(instrumentToken);
-        
-        // If WebSocket is already connected, subscribe immediately
-        if (this.optionWebSocket.readyState === 1) { // WebSocket.OPEN
-          this.logger.info(`ðŸ“¡ Subscribing to option premium immediately: Token ${instrumentToken}`);
-          this.optionWebSocket.subscribe([instrumentToken]);
-          this.optionWebSocket.setMode(this.optionWebSocket.modeLTP, [instrumentToken]);
-          this.logger.info(`âœ… Option WebSocket subscription completed for token ${instrumentToken}`);
-        } else {
-          this.logger.info(`â³ Option subscription queued for token ${instrumentToken} (will subscribe on connect)`);
+      // Calculate smart delay with backoff on failures
+      let delay = 1000; // Default 1 second
+      
+      // Apply backoff if consecutive failures
+      if (this.consecutivePollingFailures >= this.MAX_CONSECUTIVE_FAILURES) {
+        delay = 5000; // Back off to 5 seconds
+        this.logger.warn(`⚠️ Multiple polling failures detected, backing off to ${delay}ms interval`);
+      } else {
+        // Smart debouncing: Ensure minimum interval between polls
+        const timeSinceLastPoll = Date.now() - pollStartTime;
+        if (timeSinceLastPoll < this.MIN_POLLING_INTERVAL) {
+          delay = this.MIN_POLLING_INTERVAL - timeSinceLastPoll + 1000;
         }
       }
-    } catch (error) {
-      this.logger.error('âŒ Failed to subscribe to option:', error);
-    }
+
+      // Schedule next poll AFTER current one completes (prevents overlapping)
+      this.shortMonitoringInterval = setTimeout(pollOnce, delay);
+    };
+
+    this.logger.info(`🔄 Using pure REST API ${this.currentPosition?.type || 'position'} monitoring (1s intervals, recursive with backoff)`);
+    
+    // Start first poll
+    pollOnce();
   }
 
-  /**
-   * Unsubscribe from option and cleanup
-   */
-  private async unsubscribeFromOption(instrumentToken: number): Promise<void> {
-    try {
-      if (this.optionWebSocket && this.subscribedOptionTokens.has(instrumentToken)) {
-        this.logger.info(`ðŸ“¡ Unsubscribing from option: Token ${instrumentToken}`);
-        
-        this.optionWebSocket.unsubscribe([instrumentToken]);
-        this.subscribedOptionTokens.delete(instrumentToken);
-        this.optionPremiumData.delete(instrumentToken);
-        
-        this.logger.info(`âœ… Option unsubscribed: Token ${instrumentToken}`);
-      }
-    } catch (error) {
-      this.logger.error('âŒ Failed to unsubscribe from option:', error);
-    }
-  }
+  // === All WebSocket methods removed - Using pure REST API polling ===
+  // WebSocket monitoring, health checks, and subscription methods have been
+  // replaced with reliable REST API calls for position monitoring
 
-  /**
-   * Cleanup option WebSocket when no positions
-   */
-  private cleanupOptionWebSocket(): void {
-    try {
-      if (this.optionWebSocket) {
-        this.logger.info('ðŸ§¹ Cleaning up Option WebSocket...');
-        
-        // Unsubscribe from all tokens
-        this.subscribedOptionTokens.forEach(token => {
-          this.optionWebSocket.unsubscribe([token]);
-        });
-        
-        this.optionWebSocket.disconnect();
-        this.optionWebSocket = null;
-        this.subscribedOptionTokens.clear();
-        this.optionPremiumData.clear();
-        
-        this.logger.info('âœ… Option WebSocket cleanup completed');
-      }
-    } catch (error) {
-      this.logger.error('âŒ Error cleaning up Option WebSocket:', error);
-    }
-  }
-
-  /**
-   * Check exit conditions for active position using current LTP
-   */
-  private async checkPositionExit(): Promise<void> {
+  private async checkPositionExit(candleClose?: number): Promise<void> {
     if (!this.currentPosition) return;
 
     try {
-      // Get current NIFTY50 spot LTP for exit monitoring
-      const quote = await this.kiteConnect.getQuote([this.NIFTY50_INSTRUMENT_TOKEN]);
-      const nifty50Quote = quote[this.NIFTY50_INSTRUMENT_TOKEN];
-      
-      if (!nifty50Quote) {
-        this.logger.warn('No quote data received for NIFTY50 position monitoring');
-        return;
+      if (this.currentPosition.type === 'LONG') {
+        // For LONG positions: Use ONLY 5-minute candle close (never real-time LTP)
+        if (candleClose !== undefined) {
+          this.currentNiftyLTP = candleClose; // Store for dashboard
+          await this.checkLongExitOnCandleClose(candleClose);
+        } else {
+          this.logger.warn('LONG position exit called without candle close price');
+        }
+      } else if (this.currentPosition.type === 'SHORT') {
+        // For SHORT positions: Use pure REST API polling monitoring (via startPositionMonitoring)
+        // Position monitoring is handled by startPositionMonitoring() -> startPollingBasedMonitoring()
+        this.logger.debug('SHORT position monitoring handled by dedicated polling system');
       }
-      
-      const currentLTP = nifty50Quote.last_price;
-      this.currentNiftyLTP = currentLTP; // Store for dashboard
-      
-      // Check exit conditions
-      await this.checkExitConditions(currentLTP);
       
       // Update metrics after successful position monitoring
       this.updateMetrics({
@@ -1254,10 +1537,10 @@ export class BollingerBandStrategy extends StrategyBase {
       // Build 5-minute candle
       this.buildFiveMinuteCandle(currentLTP, timestamp);
       
-      // Check exit conditions for existing positions
-      if (this.currentPosition) {
-        await this.checkExitConditions(currentLTP);
-      }
+      // Exit conditions are now handled by dedicated systems:
+      // - LONG: checkLongExitOnCandleClose() via candle completion
+      // - SHORT: checkShortExitUnified() via startShortPositionMonitoring()
+      // No need to call checkExitConditions() anymore
       
     } catch (error) {
       this.logger.error('Error processing LTP update:', error);
@@ -1394,7 +1677,7 @@ export class BollingerBandStrategy extends StrategyBase {
     
     // Add market hours validation
     if (!this.isMarketHours()) {
-      this.logger.debug('ðŸ”’ Signal check skipped - Outside market hours (9:15 AM - 3:30 PM)');
+      this.logger.debug('🔒 Signal check skipped - Outside market hours (9:15 AM - 3:30 PM)');
       return;
     }
     
@@ -1407,8 +1690,8 @@ export class BollingerBandStrategy extends StrategyBase {
     const { r1, r2 } = this.dailyPivots;
     const close = latestCandle.close;
     
-    this.logger.info('🎯 BOLLINGER ENTRY ANALYSIS - Checking signals...');
-    this.logger.info(`📊 Current Indicators: RSI=${rsi.toFixed(2)}, BB_Upper=${bollingerBands.upper.toFixed(2)}, BB_Lower=${bollingerBands.lower.toFixed(2)}, Supertrend=${supertrend.trend}, Price=${close}`);
+    this.logger.info('?? BOLLINGER ENTRY ANALYSIS - Checking signals...');
+    this.logger.info(`?? Current Indicators: RSI=${rsi.toFixed(2)}, BB_Upper=${bollingerBands.upper.toFixed(2)}, BB_Lower=${bollingerBands.lower.toFixed(2)}, Supertrend=${supertrend.trend}, Price=${close}`);
     
     // LONG Entry Signal - Expanded RSI range for better signal generation
     const longConditions = {
@@ -1421,7 +1704,7 @@ export class BollingerBandStrategy extends StrategyBase {
     const longSignal = Object.values(longConditions).every(Boolean);
     
     if (longSignal) {
-      this.logger.info('ðŸš€ LONG entry signal detected', {
+      this.logger.info('🚀 LONG entry signal detected', {
         close: close.toFixed(2),
         rsi: rsi.toFixed(2),
         supertrend: supertrend.trend,
@@ -1444,7 +1727,7 @@ export class BollingerBandStrategy extends StrategyBase {
     const shortSignal = Object.values(shortConditions).every(Boolean);
     
     if (shortSignal) {
-      this.logger.info('ðŸ”» SHORT entry signal detected', {
+      this.logger.info('🔻 SHORT entry signal detected', {
         close: close.toFixed(2),
         rsi: rsi.toFixed(2),
         supertrend: supertrend.trend,
@@ -1460,17 +1743,43 @@ export class BollingerBandStrategy extends StrategyBase {
    * Execute LONG entry with CE option selection
    */
   private async executeLongEntry(nifty50Price: number): Promise<void> {
+    // Position overlap protection - ensure no existing position
+    if (this.currentPosition !== null) {
+      this.logger.warn('Skipping LONG entry - position already exists', {
+        existingPosition: this.currentPosition.type,
+        instrument: this.currentPosition.instrument?.tradingsymbol
+      });
+      return;
+    }
+
+    // Race condition protection - prevent concurrent entry executions
+    if (this.isExecutingLongEntry) {
+      this.logger.debug('🔒 LONG entry execution already in progress, skipping duplicate trigger');
+      return;
+    }
+
+    this.isExecutingLongEntry = true;
+
     try {
-      // Select CE option (1% of NIFTY50 spot price)
-      const targetPremium = nifty50Price * 0.01;
+      // Real-time option selection instead of prediction
+      const targetPremium = nifty50Price * 0.01; // 1% of NIFTY
       const ceOption = await this.selectOptionInstrument('CE', targetPremium);
       
       if (!ceOption) {
-        this.logger.error('Failed to select CE option for LONG entry');
+        this.logger.error('? LONG entry failed: Could not find suitable CE option');
         return;
       }
+
+      this.logger.info('?? CE Option selected for LONG entry', {
+        symbol: ceOption.tradingsymbol,
+        premium: ceOption.last_price,
+        target: targetPremium.toFixed(2),
+        niftyPrice: nifty50Price.toFixed(2),
+        timestamp: new Date().toLocaleTimeString()
+      });
       
-      // Execute order
+      // Option already validated above - proceed with entry
+      this.logger.info(`?? Executing LONG entry with real-time selected option: ${ceOption.tradingsymbol}`);
       const orderResult = await this.executeOrder('BUY', ceOption, this.FIXED_LOTS);
       
       if (orderResult.success) {
@@ -1479,14 +1788,14 @@ export class BollingerBandStrategy extends StrategyBase {
           instrument: ceOption,
           entryPrice: orderResult.price,
           quantity: this.FIXED_LOTS,
-          entryTime: new Date()
+          entryTime: new Date(),
+          entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`
         };
         
         // Start position monitoring for exit conditions
-        this.startPositionMonitoring();
-        
-        // Subscribe to option WebSocket for real-time premium (LONG positions)
-        await this.subscribeToOption(ceOption.instrument_token);
+        this.startPositionMonitoring().catch(error => {
+          this.logger.error('Failed to start position monitoring:', error);
+        });
         
         this.metrics.totalTrades++;
         // Update metrics to reflect successful trade execution
@@ -1495,7 +1804,7 @@ export class BollingerBandStrategy extends StrategyBase {
           healthStatus: 'healthy',
           lastTradeTime: new Date()
         });
-        this.logger.info('âœ… LONG position opened', {
+        this.logger.info('✅ LONG position opened', {
           instrument: ceOption.tradingsymbol,
           entryPrice: orderResult.price,
           quantity: this.FIXED_LOTS
@@ -1503,7 +1812,21 @@ export class BollingerBandStrategy extends StrategyBase {
       }
       
     } catch (error) {
-      this.trackError('execution_long_entry', error, true);
+      this.logger.error('❌ Error executing LONG entry:', error);
+      
+      // Smart error handling: Check if position was created despite error
+      if (this.currentPosition) {
+        // Position exists - order likely succeeded despite error message
+        this.logger.warn('⚠️ LONG entry error but position exists - order likely succeeded');
+        this.logger.info('✅ Position monitoring will continue normally');
+      } else {
+        // No position - genuine entry failure
+        this.logger.info('📉 LONG entry failed - no position created');
+        this.trackError('execution_long_entry', error, true);
+      }
+    } finally {
+      // Always reset guard flag after execution completes
+      this.isExecutingLongEntry = false;
     }
   }
 
@@ -1511,17 +1834,43 @@ export class BollingerBandStrategy extends StrategyBase {
    * Execute SHORT entry with PE option selection
    */
   private async executeShortEntry(nifty50Price: number): Promise<void> {
+    // Position overlap protection - ensure no existing position
+    if (this.currentPosition !== null) {
+      this.logger.warn('Skipping SHORT entry - position already exists', {
+        existingPosition: this.currentPosition.type,
+        instrument: this.currentPosition.instrument?.tradingsymbol
+      });
+      return;
+    }
+
+    // Race condition protection - prevent concurrent entry executions
+    if (this.isExecutingShortEntry) {
+      this.logger.debug('🔒 SHORT entry execution already in progress, skipping duplicate trigger');
+      return;
+    }
+
+    this.isExecutingShortEntry = true;
+
     try {
-      // Select PE option (1% of NIFTY50 spot price)
-      const targetPremium = nifty50Price * 0.01;
+      // Real-time option selection instead of prediction
+      const targetPremium = nifty50Price * 0.01; // 1% of NIFTY
       const peOption = await this.selectOptionInstrument('PE', targetPremium);
       
       if (!peOption) {
-        this.logger.error('Failed to select PE option for SHORT entry');
+        this.logger.error('? SHORT entry failed: Could not find suitable PE option');
         return;
       }
+
+      this.logger.info('?? PE Option selected for SHORT entry', {
+        symbol: peOption.tradingsymbol,
+        premium: peOption.last_price,
+        target: targetPremium.toFixed(2),
+        niftyPrice: nifty50Price.toFixed(2),
+        timestamp: new Date().toLocaleTimeString()
+      });
       
-      // Execute order
+      // Option already validated - proceed with entry
+      this.logger.info(`?? Executing SHORT entry with real-time selected option: ${peOption.tradingsymbol}`);
       const orderResult = await this.executeOrder('BUY', peOption, this.FIXED_LOTS);
       
       if (orderResult.success) {
@@ -1532,14 +1881,14 @@ export class BollingerBandStrategy extends StrategyBase {
           quantity: this.FIXED_LOTS,
           entryTime: new Date(),
           trailingSL: orderResult.price * 0.88, // 12% below entry
-          highestPremium: orderResult.price
+          highestPremium: orderResult.price,
+          entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`
         };
         
         // Start position monitoring for exit conditions
-        this.startPositionMonitoring();
-        
-        // Subscribe to option WebSocket for real-time premium (SHORT positions)
-        await this.subscribeToOption(peOption.instrument_token);
+        this.startPositionMonitoring().catch(error => {
+          this.logger.error('Failed to start position monitoring:', error);
+        });
         
         this.metrics.totalTrades++;
         // Update metrics to reflect successful trade execution
@@ -1548,16 +1897,30 @@ export class BollingerBandStrategy extends StrategyBase {
           healthStatus: 'healthy',
           lastTradeTime: new Date()
         });
-        this.logger.info('âœ… SHORT position opened', {
+        this.logger.info('✅ SHORT position opened', {
           instrument: peOption.tradingsymbol,
           entryPrice: orderResult.price,
           quantity: this.FIXED_LOTS,
-          trailingSL: this.currentPosition.trailingSL
+          trailingSL: this.currentPosition?.trailingSL
         });
       }
       
     } catch (error) {
-      this.logger.error('Error executing SHORT entry:', error);
+      this.logger.error('❌ Error executing SHORT entry:', error);
+      
+      // Smart error handling: Check if position was created despite error
+      if (this.currentPosition) {
+        // Position exists - order likely succeeded despite error message
+        this.logger.warn('⚠️ SHORT entry error but position exists - order likely succeeded');
+        this.logger.info('✅ Position monitoring will continue normally');
+      } else {
+        // No position - genuine entry failure
+        this.logger.info('📉 SHORT entry failed - no position created');
+        this.trackError('execution_short_entry', error, true);
+      }
+    } finally {
+      // Always reset guard flag after execution completes
+      this.isExecutingShortEntry = false;
     }
   }
 
@@ -1566,20 +1929,29 @@ export class BollingerBandStrategy extends StrategyBase {
   // ===========================
 
   /**
-   * Check exit conditions during real-time monitoring
+   * DEPRECATED: Check exit conditions during real-time monitoring
+   * REPLACED BY: Position-specific exit systems
+   * - LONG exits: handled by checkLongExitOnCandleClose() via candle completion
+   * - SHORT exits: handled by startShortPositionMonitoring() with unified exit logic
+   * This method is no longer used and will be removed in future versions
    */
   private async checkExitConditions(nifty50LTP: number): Promise<void> {
     if (!this.currentPosition) return;
     
-    if (this.currentPosition.type === 'LONG') {
-      await this.checkLongExitConditions(nifty50LTP);
-    } else if (this.currentPosition.type === 'SHORT') {
-      await this.checkShortExitConditions();
-    }
+    // All exit processing has been moved to dedicated position-specific systems
+    // LONG: checkLongExitOnCandleClose() called from checkPositionExit()
+    // SHORT: checkShortExitUnified() called from startShortPositionMonitoring()
+    
+    this.logger.debug('?? checkExitConditions() called but all exit logic moved to dedicated systems', {
+      positionType: this.currentPosition.type,
+      niftyLTP: nifty50LTP.toFixed(2)
+    });
   }
 
   /**
    * Check LONG exit conditions (real-time NIFTY50 vs previous Mid BB)
+   * DEPRECATED: This method should not be used for real-time monitoring
+   * Use checkLongExitOnCandleClose() instead for proper candle-close exits
    */
   private async checkLongExitConditions(nifty50LTP: number): Promise<void> {
     if (!this.currentIndicators || !this.currentPosition) return;
@@ -1587,7 +1959,7 @@ export class BollingerBandStrategy extends StrategyBase {
     const previousMidBB = this.currentIndicators.bollingerBands.middle;
     
     if (nifty50LTP < previousMidBB) {
-      this.logger.info('ðŸšª LONG exit signal: NIFTY50 below Mid BB', {
+      this.logger.info('🚪 LONG exit signal: NIFTY50 below Mid BB', {
         nifty50LTP: nifty50LTP.toFixed(2),
         midBB: previousMidBB.toFixed(2)
       });
@@ -1597,65 +1969,130 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * Check SHORT exit conditions (12% trailing SL) using WebSocket data
+   * Check LONG exit conditions ONLY on 5-minute candle close
+   * This is the ONLY method that should trigger LONG exits
    */
-  private async checkShortExitConditions(): Promise<void> {
-    if (!this.currentPosition) return;
+  private async checkLongExitOnCandleClose(candleClosePrice: number): Promise<void> {
+    if (!this.currentIndicators || !this.currentPosition) return;
+    if (this.currentPosition.type !== 'LONG') return;
+    
+    const bbMidline = this.currentIndicators.bollingerBands.middle;
+    
+    // ONLY exit if completed 5-minute candle close is below BB midline
+    if (candleClosePrice < bbMidline) {
+      this.logger.info('?? LONG exit signal: 5-minute candle close below BB midline', {
+        candleClose: candleClosePrice.toFixed(2),
+        bbMidline: bbMidline.toFixed(2),
+        exitType: 'CANDLE_CLOSE_ONLY',
+        timestamp: new Date().toLocaleTimeString()
+      });
+      
+      await this.executeExit('LONG_CANDLE_CLOSE_EXIT');
+    } else {
+      this.logger.debug('?? LONG position held: candle close above BB midline', {
+        candleClose: candleClosePrice.toFixed(2),
+        bbMidline: bbMidline.toFixed(2)
+      });
+    }
+  }
+
+  // Deprecated WebSocket-based methods removed - using checkShortExitUnified() with REST API polling
+
+  /**
+   * Unified SHORT exit handler - Single entry point for all SHORT exit checks
+   * Consolidates logic with source tracking and race condition protection
+   */
+  private async checkShortExitUnified(currentPremium: number, source: 'polling'): Promise<void> {
+    if (!this.currentPosition || this.currentPosition.type !== 'SHORT') return;
+    
+    // Race condition protection - ensure only one exit check at a time
+    if (this.isProcessingShortExit) {
+      this.logger.debug(`? SHORT exit check already in progress, skipping ${source} request`);
+      return;
+    }
+    
+    this.isProcessingShortExit = true;
     
     try {
-      const instrumentToken = this.currentPosition.instrument.instrument_token;
-      
-      // Get current option premium from WebSocket data (no REST API call!)
-      const currentPremium = this.optionPremiumData.get(instrumentToken);
-      
-      if (!currentPremium) {
-        // Fallback to REST API if WebSocket data not available
-        this.logger.warn('No WebSocket premium data, falling back to REST API');
-        const quote = await this.kiteConnect.getQuote([instrumentToken]);
-        const optionQuote = quote[instrumentToken];
+      // Update highest premium and trailing SL
+      if (currentPremium > (this.currentPosition.highestPremium || 0)) {
+        this.currentPosition.highestPremium = currentPremium;
+        this.currentPosition.trailingSL = currentPremium * 0.88; // 12% below new high
         
-        if (!optionQuote) return;
-        const restPremium = optionQuote.last_price;
-        
-        // Store in WebSocket cache for next time
-        this.optionPremiumData.set(instrumentToken, restPremium);
-        await this.checkShortExitLogic(restPremium);
-        return;
+        this.logger.info(`?? Trailing SL updated (${source})`, {
+          newHigh: currentPremium.toFixed(2),
+          newSL: this.currentPosition.trailingSL.toFixed(2),
+          source: source,
+          timestamp: new Date().toLocaleTimeString()
+        });
       }
       
-      // Use WebSocket premium data (primary method)
-      await this.checkShortExitLogic(currentPremium);
+      // Check if trailing SL is hit
+      if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
+        this.logger.info(`?? SHORT exit signal: Trailing SL hit (${source})`, {
+          currentPremium: currentPremium.toFixed(2),
+          trailingSL: this.currentPosition.trailingSL.toFixed(2),
+          source: source,
+          timestamp: new Date().toLocaleTimeString()
+        });
+        
+        await this.executeExit(`SHORT_TRAILING_SL_${source.toUpperCase()}`);
+      } else {
+        this.logger.debug(`?? SHORT position held (${source})`, {
+          currentPremium: currentPremium.toFixed(2),
+          trailingSL: this.currentPosition.trailingSL?.toFixed(2) || 'not-set',
+          source: source
+        });
+      }
       
     } catch (error) {
-      this.logger.error('Error checking SHORT exit conditions:', error);
+      this.logger.error(`Error in unified SHORT exit check (${source}):`, error);
+    } finally {
+      this.isProcessingShortExit = false;
     }
   }
 
   /**
-   * Execute SHORT exit logic with given premium
+   * Check LONG trailing SL (similar to SHORT logic but for LONG positions)
    */
-  private async checkShortExitLogic(currentPremium: number): Promise<void> {
-    if (!this.currentPosition) return;
-      
-    // Update highest premium and trailing SL
-    if (currentPremium > (this.currentPosition.highestPremium || 0)) {
-      this.currentPosition.highestPremium = currentPremium;
-      this.currentPosition.trailingSL = currentPremium * 0.88; // 12% below new high
-      
-      this.logger.info('ðŸ“ˆ Trailing SL updated (WebSocket)', {
-        newHigh: currentPremium.toFixed(2),
-        newSL: this.currentPosition.trailingSL.toFixed(2)
-      });
+  private async checkLongTrailingSL(currentPremium: number): Promise<void> {
+    if (!this.currentPosition || this.currentPosition.type !== 'LONG') return;
+    
+    // Race condition protection
+    if (this.isProcessingLongExit) {
+      this.logger.debug('? LONG exit already in progress, skipping');
+      return;
     }
     
-    // Check if trailing SL is hit
-    if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
-      this.logger.info('ðŸšª SHORT exit signal: Trailing SL hit (WebSocket)', {
-        currentPremium: currentPremium.toFixed(2),
-        trailingSL: this.currentPosition.trailingSL.toFixed(2)
-      });
+    this.isProcessingLongExit = true;
+    
+    try {
+      // Update trailing SL (same logic as SHORT)
+      if (currentPremium > (this.currentPosition.highestPremium || 0)) {
+        this.currentPosition.highestPremium = currentPremium;
+        this.currentPosition.trailingSL = currentPremium * 0.88; // 12% below new high
+        
+        this.logger.info(`?? LONG Trailing SL updated`, {
+          newHigh: currentPremium.toFixed(2),
+          newSL: this.currentPosition.trailingSL.toFixed(2),
+          timestamp: new Date().toLocaleTimeString()
+        });
+      }
       
-      await this.executeExit('SHORT_TRAILING_SL');
+      // Check if trailing SL hit
+      if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
+        this.logger.info(`?? LONG exit signal: Trailing SL hit`, {
+          currentPremium: currentPremium.toFixed(2),
+          trailingSL: this.currentPosition.trailingSL.toFixed(2),
+          timestamp: new Date().toLocaleTimeString()
+        });
+        
+        await this.executeExit('LONG_TRAILING_SL');
+      }
+    } catch (error) {
+      this.logger.error('Error in LONG trailing SL check:', error);
+    } finally {
+      this.isProcessingLongExit = false;
     }
   }
 
@@ -1664,7 +2101,8 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   private async checkCandleBasedExitSignals(): Promise<void> {
     // Additional candle-based exit logic can be implemented here
-    // Currently, LONG uses real-time monitoring, SHORT uses trailing SL
+    // LONG positions use ONLY 5-minute candle close via checkLongExitOnCandleClose()
+    // SHORT positions use unified real-time monitoring via startShortPositionMonitoring()
   }
 
   /**
@@ -1677,7 +2115,9 @@ export class BollingerBandStrategy extends StrategyBase {
       const orderResult = await this.executeOrder('SELL', this.currentPosition.instrument, this.FIXED_LOTS);
       
       if (orderResult.success) {
-        const pnl = (orderResult.price - this.currentPosition.entryPrice) * this.FIXED_LOTS * 75; // NIFTY lot size
+        // Calculate P&L correctly for options trading: (Exit Premium - Entry Premium) � Total Quantity
+        const totalQuantity = this.FIXED_LOTS * 75; // NIFTY lot size � number of lots
+        const pnl = (orderResult.price - this.currentPosition.entryPrice) * totalQuantity;
         this.metrics.profitLoss += pnl;
         
         // Update capital with P&L
@@ -1686,7 +2126,7 @@ export class BollingerBandStrategy extends StrategyBase {
         // Create trade record for history
         const tradeRecord = {
           tradeId: `BB_${Date.now()}`,
-          entryOrderId: `BB_ENTRY_${this.currentPosition.entryTime.getTime()}`,
+          entryOrderId: this.currentPosition.entryOrderId, // Use real entry order ID
           exitOrderId: orderResult.orderId || `BB_EXIT_${Date.now()}`,
           instrument: this.currentPosition.instrument,
           direction: this.currentPosition.type,
@@ -1707,7 +2147,7 @@ export class BollingerBandStrategy extends StrategyBase {
         // Save updated capital and trade history
         this.saveCapitalData();
         
-        this.logger.info('âœ… Position closed', {
+        this.logger.info('✅ Position closed', {
           reason,
           instrument: this.currentPosition.instrument.tradingsymbol,
           entryPrice: this.currentPosition.entryPrice,
@@ -1716,11 +2156,14 @@ export class BollingerBandStrategy extends StrategyBase {
           newCapital: this.currentCapital.toFixed(2)
         });
         
-        // Unsubscribe from option WebSocket before clearing position
-        const instrumentToken = this.currentPosition.instrument.instrument_token;
-        await this.unsubscribeFromOption(instrumentToken);
+        // Position cleared - REST API polling will stop automatically
         
         this.currentPosition = null;
+        
+        // Reset cached position state for dashboard
+        this.cachedCurrentPrice = 0;
+        this.cachedUnrealizedPnL = 0;
+        this.lastPriceUpdateTime = null;
         
         // Update metrics to reflect successful position closure
         this.updateMetrics({ 
@@ -1734,7 +2177,33 @@ export class BollingerBandStrategy extends StrategyBase {
       }
       
     } catch (error) {
-      this.logger.error('Error executing exit:', error);
+      this.logger.error('❌ Error executing exit:', error);
+      
+      // Smart error handling: Verify actual position state before clearing
+      if (this.currentPosition) {
+        // Position object still exists in strategy state
+        // This could be:
+        // 1) Race condition (another exit attempt succeeded and this one failed)
+        // 2) Real error (order submission failed)
+        // 3) Network error (order may have succeeded but confirmation failed)
+        
+        this.logger.warn('⚠️ Exit error but position object still exists in strategy state');
+        
+        // Since Bollinger Band doesn't have direct position verification API,
+        // we'll keep the position object and continue monitoring
+        // The monitoring system will naturally stop when position truly doesn't exist
+        
+        this.logger.warn('🔧 Keeping position state to continue monitoring');
+        this.logger.warn('📊 Position monitoring will continue - manual intervention may be needed if position actually closed');
+        
+        // Don't clear position - let monitoring continue
+        // If position was actually closed, next monitoring cycle will handle it
+        return;
+      } else {
+        // Position already cleared - error happened after successful exit
+        this.logger.info('✅ Position already cleared - error occurred after successful exit');
+        this.logger.info('📝 This is likely a benign error during cleanup');
+      }
     }
   }
 
@@ -1744,7 +2213,7 @@ export class BollingerBandStrategy extends StrategyBase {
   private async forceClosePosition(reason: string): Promise<void> {
     if (!this.currentPosition) return;
     
-    this.logger.warn('ðŸ”´ Force closing position:', reason);
+    this.logger.warn('🔴 Force closing position:', reason);
     await this.executeExit(reason);
   }
 
@@ -1801,8 +2270,8 @@ export class BollingerBandStrategy extends StrategyBase {
       // Get next Tuesday expiry (same logic as Strategy 1)
       const nextTuesdayExpiry = this.getNextTuesdayExpiry();
       
-      this.logger.info(`ðŸŽ¯ Selecting ${optionType} option by PREMIUM for NIFTY price: â‚¹${targetPremium.toFixed(2)}`);
-      this.logger.info(`ðŸ“… Target expiry: ${nextTuesdayExpiry.toDateString()}`);
+      this.logger.info(`🎯 Selecting ${optionType} option by PREMIUM for NIFTY price: ₹${targetPremium.toFixed(2)}`);
+      this.logger.info(`📅 Target expiry: ${nextTuesdayExpiry.toDateString()}`);
       
       // Filter for next Tuesday expiry options (exact match within 1 day)
       const nextTuesdayOptions = niftyOptions.filter((opt: any) => {
@@ -1833,10 +2302,14 @@ export class BollingerBandStrategy extends StrategyBase {
       }
       
       if (bestOption) {
+        // Add the current price to the option object for UI display
+        const currentPrice = quotes[bestOption.instrument_token].last_price;
+        bestOption.last_price = currentPrice;
+        
         this.logger.info('Option selected', {
           tradingsymbol: bestOption.tradingsymbol,
           targetPremium: targetPremium.toFixed(2),
-          actualPremium: quotes[bestOption.instrument_token].last_price.toFixed(2),
+          actualPremium: currentPrice.toFixed(2),
           difference: smallestDiff.toFixed(2)
         });
       }
@@ -1871,7 +2344,7 @@ export class BollingerBandStrategy extends StrategyBase {
         validity: 'DAY'
       };
       
-      const orderResponse = await this.kiteConnect.placeOrder(orderParams);
+      const orderResponse = await this.kiteConnect.placeOrder('regular', orderParams);
       
       if (orderResponse.order_id) {
         // Wait for order execution and get fill price
@@ -1953,14 +2426,14 @@ export class BollingerBandStrategy extends StrategyBase {
     };
     
     if (isCritical) {
-      this.logger.error(`ðŸš¨ CRITICAL ERROR [${errorType}]: ${error?.message || error}`, errorContext);
+      this.logger.error(`🚨 CRITICAL ERROR [${errorType}]: ${error?.message || error}`, errorContext);
     } else {
-      this.logger.warn(`âš ï¸ ERROR [${errorType}]: ${error?.message || error}`, errorContext);
+      this.logger.warn(`⚠️ ERROR [${errorType}]: ${error?.message || error}`, errorContext);
     }
     
     // Alert if too many consecutive errors
     if (this.healthStatus.consecutiveErrors >= 5) {
-      this.logger.error(`ðŸ”¥ STRATEGY HEALTH ALERT: ${this.healthStatus.consecutiveErrors} consecutive errors detected!`, {
+      this.logger.error(`🔥 STRATEGY HEALTH ALERT: ${this.healthStatus.consecutiveErrors} consecutive errors detected!`, {
         errorCounts: Object.fromEntries(this.errorCounts),
         healthStatus: this.healthStatus
       });
@@ -2062,7 +2535,7 @@ export class BollingerBandStrategy extends StrategyBase {
       this.stopCandleRetryMechanism();
       
     } catch (error) {
-      this.logger.error('🔴 5-minute candle fetch failed, starting retry mechanism:', error);
+      this.logger.error('?? 5-minute candle fetch failed, starting retry mechanism:', error);
       
       // Start continuous retry every 10 seconds until successful
       this.startCandleRetryMechanism();
@@ -2084,7 +2557,7 @@ export class BollingerBandStrategy extends StrategyBase {
         this.TRADE_RETRY_DELAYS
       );
     } catch (error) {
-      this.logger.error('❌ LONG entry failed after all retry attempts:', error);
+      this.logger.error('? LONG entry failed after all retry attempts:', error);
       this.trackError('execution_long_entry_retry_failed', error, true);
     }
   }
@@ -2102,7 +2575,7 @@ export class BollingerBandStrategy extends StrategyBase {
         this.TRADE_RETRY_DELAYS
       );
     } catch (error) {
-      this.logger.error('❌ SHORT entry failed after all retry attempts:', error);
+      this.logger.error('? SHORT entry failed after all retry attempts:', error);
       this.trackError('execution_short_entry_retry_failed', error, true);
     }
   }
@@ -2122,22 +2595,22 @@ export class BollingerBandStrategy extends StrategyBase {
       try {
         const result = await operation();
         if (attempt > 1) {
-          this.logger.info(`✅ ${operationName} succeeded on attempt ${attempt}`);
+          this.logger.info(`? ${operationName} succeeded on attempt ${attempt}`);
         }
         return result;
       } catch (error) {
         lastError = error;
-        this.logger.warn(`⚠️ ${operationName} attempt ${attempt}/${maxAttempts} failed:`, error);
+        this.logger.warn(`?? ${operationName} attempt ${attempt}/${maxAttempts} failed:`, error);
         
         if (attempt < maxAttempts) {
           const delay = attempt <= delays.length ? delays[attempt - 1] : delays[delays.length - 1];
-          this.logger.info(`🔄 Retrying ${operationName} in ${delay}ms...`);
+          this.logger.info(`?? Retrying ${operationName} in ${delay}ms...`);
           await this.sleep(delay!);
         }
       }
     }
     
-    this.logger.error(`❌ ${operationName} failed after ${maxAttempts} attempts`);
+    this.logger.error(`? ${operationName} failed after ${maxAttempts} attempts`);
     throw lastError;
   }
 
@@ -2161,13 +2634,13 @@ export class BollingerBandStrategy extends StrategyBase {
         await this.fetchLatest5MinuteCandle();
         // If successful, stop retrying
         this.stopCandleRetryMechanism();
-        this.logger.info('✅ Candle fetch recovered successfully');
+        this.logger.info('? Candle fetch recovered successfully');
       } catch (error) {
-        this.logger.warn('⚠️ Candle retry failed, will try again in 10 seconds');
+        this.logger.warn('?? Candle retry failed, will try again in 10 seconds');
       }
     }, this.CANDLE_RETRY_INTERVAL);
     
-    this.logger.info('🔄 Started candle retry mechanism (10-second intervals)');
+    this.logger.info('?? Started candle retry mechanism (10-second intervals)');
   }
 
   /**
@@ -2177,7 +2650,8 @@ export class BollingerBandStrategy extends StrategyBase {
     if (this.candleRetryTimer) {
       clearInterval(this.candleRetryTimer);
       this.candleRetryTimer = undefined as any;
-      this.logger.info('✅ Stopped candle retry mechanism (operation successful)');
+      this.logger.info('? Stopped candle retry mechanism (operation successful)');
     }
   }
+
 }

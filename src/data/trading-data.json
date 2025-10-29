@@ -8,18 +8,5 @@
     "niftyLotSize": 75
   },
   "tradeHistory": [],
-  "lastUpdated": "2025-10-17T10:01:58.135Z",
-  "activeInstrument": {
-    "instrument_token": "10925314",
-    "tradingsymbol": "NIFTY25O1425050CE",
-    "name": "NIFTY",
-    "exchange": "NFO",
-    "strike": 25050,
-    "expiry": "2025-10-14T00:00:00.000Z",
-    "instrument_type": "CE",
-    "lot_size": 75,
-    "selectedAt": "2025-10-07T08:23:00.000Z",
-    "direction": "LONG",
-    "underlyingPrice": 25298.2
-  }
+  "lastUpdated": "2025-10-29T09:42:19.280Z"
 }

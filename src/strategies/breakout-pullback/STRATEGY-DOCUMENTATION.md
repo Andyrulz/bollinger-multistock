@@ -1,4 +1,4 @@
-# NIFTY Breakout Retracement Strategy - Technical Documentation
+# NIFTY Breakout Pullback Strategy - Technical Documentation
 
 > **🎉 PRODUCTION READY**: Strategy fully validated with comprehensive QC completion. All critical systems operational and tested.
 > https://98.70.40.23/auth/callback
@@ -32,7 +32,7 @@
 
 ### **Core Concept**
 
-The NIFTY Breakout Retracement Strategy is a professional swing trading system designed specifically for Indian NIFTY futures. It identifies key pivot levels using a 15,15 lookback algorithm and triggers breakout signals with volume confirmation.
+The NIFTY Breakout Pullback Strategy is a professional swing trading system designed specifically for Indian NIFTY futures. It identifies key pivot levels using a 15,15 lookback algorithm and triggers breakout signals with volume confirmation.
 
 ### **Strategy Characteristics**
 
@@ -59,29 +59,31 @@ The NIFTY Breakout Retracement Strategy is a professional swing trading system d
 
 ```mermaid
 graph TB
-    A[KiteConnect API] --> B[Manual Polling System]
-    B --> C[Price Tick Processing]
-    C --> D[1-Minute Candle Builder]
-    C --> E[5-Minute Candle Storage]
-    D --> F[Volume SMA50 Calculator]
-    E --> G[Pivot Detection Engine]
-    F --> H[Breakout Detection Logic]
-    G --> H
-    H --> I[Signal Generation]
-    I --> J[Marking Candle System]
-    J --> K[Entry & SL Calculation]
-    K --> L[Dashboard Updates]
-    I --> M[Logging System]
-    L --> N[Real-time Monitoring]
-    M --> N
+    A[KiteConnect API] --> B[WebSocket Streaming]
+    A --> C[REST API Fallback]
+    B --> D[Price Tick Processing]
+    C --> D
+    D --> E[1-Minute Candle Builder]
+    D --> F[5-Minute Candle Storage]
+    E --> G[Volume SMA50 Calculator]
+    F --> H[Pivot Detection Engine]
+    G --> I[Breakout Detection Logic]
+    H --> I
+    I --> J[Signal Generation]
+    J --> K[Marking Candle System]
+    K --> L[Entry & SL Calculation]
+    L --> M[Dashboard Updates]
+    J --> N[Logging System]
+    M --> O[Real-time Monitoring]
+    N --> O
 ```
 
 ### **Core Classes & Methods**
 
-#### **NiftyBreakoutRetracementStrategy Class**
+#### **BreakoutPullbackStrategy Class**
 
 ```typescript
-export class NiftyBreakoutRetracementStrategy {
+export class BreakoutPullbackStrategy {
   // Core Methods:
   startStrategy(); // Initialize and start complete strategy
   stopStrategy(); // Stop all operations
@@ -97,6 +99,11 @@ export class NiftyBreakoutRetracementStrategy {
 
   // Memory Management:
   getCandleMemoryInfo(); // Monitor memory optimization status
+
+  // WebSocket & Trade Monitoring:
+  initializeWebSocket(); // Setup WebSocket streaming
+  monitorTradeLevels(); // Monitor entry/exit levels
+  processWebSocketTicks(); // Process real-time WebSocket data
 }
 ```
 
@@ -157,7 +164,7 @@ sequenceDiagram
     S->>D: Store latest 50 in oneMinuteCandles[]
     S->>S: updateVolumeSMA50()
     S->>S: detectPivotPoints()
-    S->>S: startManualPriceStreaming()
+    S->>S: initializeWebSocket()
     S->>U: Strategy started successfully
 ```
 
@@ -165,16 +172,16 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant T as Timer (1s)
+    participant WS as WebSocket
     participant S as Strategy
-    participant K as KiteConnect
     participant P as Processing
     participant L as Logging
+    participant FB as Fallback Timer
 
-    T->>S: Every 1000ms
-    S->>K: getQuote([symbol])
-    K->>S: Live price data
-    S->>P: processTickForOneMinuteCandle()
+    WS->>S: Real-time tick data
+    S->>P: processWebSocketTicks()
+    P->>P: monitorTradeLevels()
+    P->>P: processTickForOneMinuteCandle()
     P->>P: Update/Complete 1-min candle
     alt New minute completed
         P->>P: Add to oneMinuteCandles[]
@@ -184,6 +191,10 @@ sequenceDiagram
         alt Breakout detected
             P->>L: Log breakout signal
         end
+    end
+    alt WebSocket failure
+        FB->>S: Fallback every 1500ms
+        S->>S: fetchAndProcessLivePrice()
     end
     P->>L: Log price update
 ```
@@ -700,7 +711,7 @@ private transitionToState(newState: TradeState, reason?: string): void {
 
 ### **Real-time Price Monitoring**
 
-Every price tick (1-second polling) triggers level monitoring based on current trade state:
+Every price tick (WebSocket streaming or fallback polling) triggers level monitoring based on current trade state:
 
 ```typescript
 // Called on every price update
@@ -772,31 +783,65 @@ if (direction === "SHORT" && currentPrice <= target) {
 #### **Trade Entry Execution**
 
 ```typescript
-private executeTradeEntry(): void {
-  // 1. Log entry trigger
-  this.logger.info(`📞 Calling TradeExecutionService to PLACE MARKET ORDER`);
+private async executeTradeEntry(): Promise<void> {
+  return await globalStateLock.executeAtomic('trade-entry', async () => {
+    try {
+      // 1. Log entry trigger
+      this.logger.info(`📞 Calling TradeExecutionService to PLACE MARKET ORDER`);
 
-  // 2. Update state immediately
-  this.transitionToState(TradeState.IN_TRADE, 'Entry level crossed');
+      // 2. Verify no active position exists
+      const activePosition = this.tradeExecutionService.getActivePosition();
+      if (activePosition) {
+        throw new Error(`Cannot place order: Active position exists ${activePosition.tradeId}`);
+      }
 
-  // 3. Call external service (when implemented)
-  // const tradeId = await this.tradeExecutionService.placeMarketOrder(tradeSetupRequest);
-  // this.strategyState.currentTradeId = tradeId;
+      // 3. Call TradeExecutionService to place market order
+      const tradeId = await this.tradeExecutionService.placeMarketOrder(this.strategyState.tradeSetupRequest);
+      this.strategyState.currentTradeId = tradeId;
+
+      // 4. Transition to IN_TRADE state after successful order placement
+      this.transitionToState(TradeState.IN_TRADE, 'Entry level crossed - Order placed');
+
+      this.logger.info(`✅ Trade entry executed - Trade ID: ${tradeId} - Now monitoring SL/Target levels`);
+    } catch (error) {
+      this.logger.error('❌ Error executing trade entry:', error);
+      // On error, reset back to waiting for breakout
+      this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, 'Entry execution failed');
+    }
+  });
 }
 ```
 
 #### **Trade Exit Execution**
 
 ```typescript
-private executeTradeExit(reason: string): void {
-  // 1. Log exit trigger
-  this.logger.info(`📞 Calling TradeExecutionService to CLOSE POSITION - Reason: ${reason}`);
+private async executeTradeExit(reason: string): Promise<void> {
+  return await globalStateLock.executeAtomic('trade-exit', async () => {
+    try {
+      // 1. Log exit trigger
+      this.logger.info(`📞 Calling TradeExecutionService to CLOSE POSITION - Reason: ${reason}`);
 
-  // 2. Call external service (when implemented)
-  // await this.tradeExecutionService.closePosition(this.strategyState.currentTradeId);
+      if (!this.strategyState.currentTradeId) {
+        throw new Error('No active trade ID available for exit execution');
+      }
 
-  // 3. Reset state
-  this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade closed: ${reason}`);
+      // 2. Call TradeExecutionService to close position
+      const exitReason = reason.includes('TARGET') ? 'TARGET' :
+                        reason.includes('STOP_LOSS') ? 'STOP_LOSS' : 'MANUAL';
+      await this.tradeExecutionService.closePosition(this.strategyState.currentTradeId, exitReason);
+
+      // 3. Clear trade data and transition back to WAITING_FOR_BREAKOUT
+      delete this.strategyState.currentTradeId;
+      this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade closed: ${reason}`);
+
+      this.logger.info(`✅ Trade exit executed - Returning to breakout monitoring`);
+    } catch (error) {
+      this.logger.error('❌ Error executing trade exit:', error);
+      // Even on error, try to reset state to avoid being stuck
+      delete this.strategyState.currentTradeId;
+      this.transitionToState(TradeState.WAITING_FOR_BREAKOUT, `Trade exit error: ${reason}`);
+    }
+  });
 }
 ```
 
@@ -858,29 +903,33 @@ flowchart TD
 #### **Phase 3: Entry Trigger**
 
 ```bash
-💹 MANUAL POLL: LTP: ₹25,111.00
+� WebSocket tick: Price=₹25,111.00, Volume=156750, Source=WebSocket
 🚀 LONG ENTRY TRIGGERED! Price 25111 >= Entry 25111
 📞 Calling TradeExecutionService to PLACE MARKET ORDER
+✅ Trade entry executed - Trade ID: TRADE_20251024_001 - Now monitoring SL/Target levels
 🔄 Trade State Transition: waiting_for_entry → in_trade
 ```
 
 #### **Phase 4: Trade Monitoring**
 
 ```bash
-💹 MANUAL POLL: LTP: ₹25,135.00
-💹 MANUAL POLL: LTP: ₹25,136.00
+� WebSocket tick: Price=₹25,135.00, Volume=162340, Source=WebSocket
+� WebSocket tick: Price=₹25,136.00, Volume=164150, Source=WebSocket
 🎯 LONG TARGET HIT! Price 25136 >= Target 25136
 📞 Calling TradeExecutionService to CLOSE POSITION - Reason: TARGET
+✅ Trade exit executed - Returning to breakout monitoring
 🔄 Trade State Transition: in_trade → waiting_for_breakout
 ```
 
 ### **Key Behavioral Features**
 
-1. **Single Service Calls**: TradeExecutionService called only when action needed
+1. **Atomic Trade Execution**: Protected by StateLock to prevent race conditions
 2. **No Duplicate Signals**: Breakout detection disabled during trade phases
-3. **Real-time Monitoring**: Every price tick monitored for triggers
+3. **Real-time Monitoring**: WebSocket streaming with sub-second price updates
 4. **Clean State Management**: Automatic transitions with comprehensive logging
-5. **Error Recovery**: All paths lead back to monitoring state
+5. **Error Recovery**: All paths lead back to monitoring state with proper cleanup
+6. **Dual Data Sources**: WebSocket primary with REST API fallback for reliability
+7. **Position Validation**: Pre-trade checks prevent conflicting positions
 
 ---
 
@@ -978,24 +1027,45 @@ if (this.currentOneMinuteCandle) {
 
 ## ⚡ Real-time Processing
 
-### **Manual Polling System**
+### **WebSocket-First Architecture**
 
-Instead of WebSocket complexity, the system uses reliable REST API polling:
+The system uses a sophisticated WebSocket-first approach with REST API fallback for maximum reliability:
 
 ```typescript
-// Price polling every 1000ms
-this.pricePollingInterval = setInterval(async () => {
-  await this.fetchAndProcessLivePrice();
-}, 1000);
+// Primary: WebSocket streaming for real-time data
+private initializeWebSocket(): void {
+  this.kiteTicker = new KiteTicker({
+    api_key: this.kiteConnect.api_key,
+    access_token: this.kiteConnect.access_token
+  });
 
-private async fetchAndProcessLivePrice(): Promise<void> {
-  const symbol = `NFO:${this.strategyState.currentContract.tradingsymbol}`;
-  const quotes = await this.kiteConnect.getQuote([symbol]);
-  const quote = quotes[symbol];
+  this.kiteTicker.on('ticks', (ticks) => {
+    this.processWebSocketTicks(ticks);
+  });
 
-  // Convert to internal format and process
-  const tickData = this.convertQuoteToTick(quote);
-  this.processTickForOneMinuteCandle(tickData);
+  this.kiteTicker.connect();
+}
+
+// WebSocket tick processing with trade level monitoring
+private processWebSocketTicks(ticks: any[]): void {
+  for (const tick of ticks) {
+    const tickData = this.convertWebSocketTick(tick);
+
+    // CRITICAL: Monitor trade levels for entry/exit triggers
+    this.monitorTradeLevels(tickData.last_price);
+
+    // Process tick for candle building
+    this.processTickForOneMinuteCandle(tickData);
+  }
+}
+
+// Fallback: REST API polling when WebSocket fails
+private startRestApiFallback(): void {
+  this.pricePollingInterval = setInterval(async () => {
+    if (!this.isWebSocketActive) {
+      await this.fetchAndProcessLivePrice();
+    }
+  }, 1500);
 }
 ```
 
@@ -1036,11 +1106,12 @@ private processTickForOneMinuteCandle(tick: TickData): void {
 
 ### **Performance Characteristics**
 
-- **Polling Frequency**: 1000ms (1-second intervals)
-- **API Efficiency**: Single quote fetch per cycle
-- **Processing Time**: < 10ms per tick on average
+- **WebSocket Frequency**: Real-time (sub-second tick processing)
+- **Fallback Frequency**: 1500ms (1.5-second intervals when WebSocket fails)
+- **Processing Time**: < 5ms per WebSocket tick, < 10ms per REST tick
 - **Memory Usage**: Constant (50 candles + current candle)
-- **Network Overhead**: Minimal (REST API vs WebSocket complexity)
+- **Network Overhead**: Optimized (WebSocket streaming + circuit breaker protection)
+- **Reliability**: Automatic fallback with health monitoring and reconnection logic
 
 ---
 
@@ -1604,9 +1675,9 @@ tail -f logs/error.log
 
 **Current Mitigation:**
 
-- 1-second polling interval (conservative)
-- Single quote fetch per cycle
-- Error handling with backoff
+- WebSocket streaming primary with 1.5s REST fallback (conservative)
+- Single quote fetch per cycle when using REST fallback
+- Error handling with circuit breaker and backoff
 
 **Future Enhancement:** Implement exponential backoff for rate limit errors
 
@@ -1637,7 +1708,7 @@ tail -f logs/error.log
 // Current configuration
 private readonly LOOKBACK_PERIOD = 15;           // 15,15 pivot detection
 private readonly VOLUME_SMA_PERIOD = 50;         // 50-period volume SMA
-private readonly POLLING_INTERVAL = 1000;        // 1-second price polling
+private readonly POLLING_INTERVAL = 1500;        // 1.5-second REST fallback polling
 private readonly PIVOT_UPDATE_INTERVAL = 300000; // 5-minute pivot analysis
 private readonly MAX_MEMORY_CANDLES = 50;        // Memory optimization limit
 ```
@@ -1802,7 +1873,7 @@ watch -n 5 'curl -s http://localhost:3000/breakout-strategy/memory-info | grep c
 - ✅ **15,15 Pivot Detection**: Mathematical algorithm verified with proper lookback validation
 - ✅ **Volume Bug FIXED**: Incremental per-minute volume calculation (Critical Bug 1 resolved)
 - ✅ **Breakout Validation**: Price + volume confirmation with accurate SMA50 calculations
-- ✅ **Real-time Processing**: 1-second manual polling with circuit breaker protection
+- ✅ **Real-time Processing**: WebSocket streaming primary with 1.5s REST fallback and circuit breaker protection
 - ✅ **Memory Optimization**: Automatic 50-candle rolling window prevents memory leaks
 
 #### **Enterprise State Management** ✅

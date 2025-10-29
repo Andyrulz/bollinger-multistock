@@ -164,6 +164,38 @@ export class TradeExecutionService {
     }
   }
 
+  /**
+   * Clear orphaned position state (when user manually exited on broker platform)
+   * This only clears the persisted data without attempting to place orders
+   */
+  public clearOrphanedPosition(): void {
+    try {
+      if (!this.persistedData.activePosition) {
+        this.logger.info('📋 No orphaned position to clear');
+        return;
+      }
+
+      const tradeId = this.persistedData.activePosition.tradeId;
+      this.logger.warn(`🧹 Clearing orphaned position: ${tradeId}`);
+      
+      // Clear active position without placing any orders
+      delete this.persistedData.activePosition;
+      
+      // Also clear active instrument as it's no longer relevant
+      if (this.persistedData.activeInstrument) {
+        delete this.persistedData.activeInstrument;
+      }
+      
+      // Save the cleaned data
+      this.savePersistedData();
+      
+      this.logger.info(`✅ Orphaned position cleared successfully`);
+    } catch (error) {
+      this.logger.error('❌ Error clearing orphaned position:', error);
+      throw error;
+    }
+  }
+
   // ===========================
   // PERSISTENCE MANAGEMENT
   // ===========================
