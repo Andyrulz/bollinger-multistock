@@ -4,7 +4,7 @@
 
 **Trading Style**: Intraday options trading on 5-minute NIFTY50 spot candles  
 **Capital**: ₹200,000 (independent from Breakout-Pullback strategy)  
-**Position Size**: Fixed 10 lots per trade  
+**Position Size**: Dynamic - 1 lot per ₹40,000 of current capital (minimum 1 lot)  
 **Maximum Positions**: 1 active position at a time  
 **Trading Hours**: 9:15 AM - 3:30 PM  
 **Position Type**: Always BUY options (CE for LONG signals, PE for SHORT signals)
@@ -20,8 +20,9 @@
 ALL conditions must be met simultaneously at 5-minute candle close:
 
 - ✅ **Trend Filter**: Close > Supertrend(10,2) line (bullish)
-- ✅ **Momentum Filter**: 65 ≤ RSI(10) ≤ 85
+- ✅ **Momentum Filter**: 68 ≤ RSI(10) ≤ 85
 - ✅ **Range Filter**: Close ≥ Upper Bollinger Band **AND** (Close > R1 **OR** Close > R2)
+- ✅ **Candle Direction**: Entry candle must be bullish (Close > Open)
 - ✅ **Position Check**: No active position
 
 #### **SHORT Entry** (Buy Put Option)
@@ -29,21 +30,40 @@ ALL conditions must be met simultaneously at 5-minute candle close:
 ALL conditions must be met simultaneously at 5-minute candle close:
 
 - ✅ **Trend Filter**: Close < Supertrend(10,2) line (bearish)
-- ✅ **Momentum Filter**: 15 ≤ RSI(10) ≤ 35
+- ✅ **Momentum Filter**: 10 ≤ RSI(10) ≤ 30
 - ✅ **Range Filter**: Close ≤ Lower Bollinger Band **AND** Close ≤ R1
+- ✅ **Candle Direction**: Entry candle must be bearish (Close < Open)
+- ✅ **Time Restriction**: Before 2:55 PM on non-Friday days (Fridays allowed until 3:25 PM)
 - ✅ **Position Check**: No active position
 
 ### **Exit Conditions**
 
 #### **LONG Exit**
 
-- **Single Path**: Exit ONLY on 5-minute candle close below Bollinger Band midline
+- **Exit Threshold**: MAX(Entry Candle Low, BB Midline) - whichever is hit first as price falls
+- **Trigger**: Exit ONLY when 5-minute candle close < exit threshold
 - **No Real-time Monitoring**: Wait for full 5-minute candle completion
 - **Order Type**: Market order for immediate fill
+- **Logic**: If BB midline is higher, exit there. If entry candle low is higher, exit there.
 
 #### **SHORT Exit**
 
-- **Trailing Stop Loss**: 12% below highest premium seen
+SHORT positions have TWO independent exit conditions (either triggers exit):
+
+**1. Entry Candle High Breach (5-minute check)**
+
+- **Exit Threshold**: Entry candle high (NIFTY spot price)
+- **Trigger**: Exit when 5-minute candle close > entry candle high
+- **Timing**: Checked only at 5-minute candle completion
+- **Rationale**: Technical invalidation - if NIFTY closes above entry candle high, bearish thesis is invalidated
+- **Example**:
+  - Entry at NIFTY 24,850 (entry candle high = 24,850)
+  - 5-minute candle closes at 24,860 → Exit triggered
+  - Exit reason: `SHORT_ENTRY_CANDLE_HIGH_BREACH`
+
+**2. Trailing Stop Loss (real-time check)**
+
+- **Trailing Stop Loss**: 12% below highest option premium seen
 - **Real-time Monitoring**: 1-second REST API polling
 - **Dynamic Adjustment**: SL updates as premium makes new highs
 - **Example**:
@@ -51,7 +71,16 @@ ALL conditions must be met simultaneously at 5-minute candle close:
   - Premium rises to ₹400 → SL = ₹352 (12% below new high)
   - Premium drops to ₹360 → SL stays ₹352 (never decreases)
   - If premium ≤ ₹352 → Immediate market order exit
-- **Order Type**: Market order for immediate fill
+  - Exit reason: `SHORT_TRAILING_SL_BREACH`
+
+**Both Exit Conditions Are Independent:**
+
+- Whichever condition is met first triggers the exit
+- No conflict between the two mechanisms (race condition protected)
+- Entry candle high provides technical stop based on NIFTY spot movement
+- Trailing SL provides profit protection based on option premium movement
+
+**Order Type**: Market order for immediate fill
 
 #### **End-of-Day Safety**
 
@@ -206,11 +235,26 @@ const selectedOption = candidates.reduce((closest, current) => {
 
 ### **Position Sizing**
 
-- **Fixed Lot Size**: 10 lots per trade
+**Dynamic Lot Calculation**:
+
+```typescript
+Lots = Math.floor(Current Capital / 40,000)
+Final Lots = Math.max(1, Calculated Lots)  // Minimum 1 lot
+```
+
+**Examples**:
+
+- Capital ₹189,590 → 4 lots (189,590 / 40,000 = 4.73, floored to 4)
+- Capital ₹210,000 → 5 lots (210,000 / 40,000 = 5.25, floored to 5)
+- Capital ₹35,000 → 1 lot (35,000 / 40,000 = 0.87, but minimum is 1)
+- Capital ₹500,000 → 12 lots (500,000 / 40,000 = 12.5, floored to 12)
+
+**Position Details**:
+
 - **NIFTY Lot Size**: 75 shares per lot
-- **Total Quantity**: 750 shares per trade (10 × 75)
+- **Total Quantity**: Calculated Lots × 75 shares
 - **Capital Check**: Ensure sufficient capital before entry
-- **Manual Adjustment**: Can be modified based on market conditions
+- **Automatic Adjustment**: Lot size recalculated on every trade entry
 
 ### **Trade Execution**
 
@@ -236,15 +280,15 @@ Realized P&L = (Exit Premium - Entry Premium) × Quantity
 
 **LONG Position:**
 
-- Entry: BUY 750 CE @ ₹246.50
-- Exit: SELL 750 CE @ ₹247.00
-- P&L = (247.00 - 246.50) × 750 = **+₹375 profit**
+- Entry: BUY 300 CE @ ₹246.50 (4 lots × 75 = 300 shares)
+- Exit: SELL 300 CE @ ₹247.00
+- P&L = (247.00 - 246.50) × 300 = **+₹150 profit**
 
 **SHORT Position:**
 
-- Entry: BUY 750 PE @ ₹246.50
-- Exit: SELL 750 PE @ ₹228.00
-- P&L = (228.00 - 246.50) × 750 = **-₹13,875 loss**
+- Entry: BUY 375 PE @ ₹246.50 (5 lots × 75 = 375 shares)
+- Exit: SELL 375 PE @ ₹228.00
+- P&L = (228.00 - 246.50) × 375 = **-₹6,937.50 loss**
 
 **Capital Update:**
 
@@ -402,17 +446,20 @@ Strategy state saved to disk for recovery:
 
 ```typescript
 {
-  FIXED_LOTS: 10,              // Position size
+  CAPITAL_ALLOCATION: 200000,  // Initial capital
+  CAPITAL_PER_LOT: 40000,      // Capital required per lot (dynamic sizing)
+  MIN_LOTS: 1,                 // Minimum lot size
   RSI_PERIOD: 10,              // RSI calculation period
-  RSI_LONG_MIN: 65,            // RSI minimum for LONG entry
+  RSI_LONG_MIN: 68,            // RSI minimum for LONG entry
   RSI_LONG_MAX: 85,            // RSI maximum for LONG entry
-  RSI_SHORT_MIN: 15,           // RSI minimum for SHORT entry
-  RSI_SHORT_MAX: 35,           // RSI maximum for SHORT entry
+  RSI_SHORT_MIN: 10,           // RSI minimum for SHORT entry
+  RSI_SHORT_MAX: 30,           // RSI maximum for SHORT entry
   BB_PERIOD: 20,               // Bollinger Bands period
   BB_STD_DEV: 2.0,             // Bollinger Bands std deviation
   ST_PERIOD: 10,               // Supertrend ATR period
   ST_MULTIPLIER: 2,            // Supertrend multiplier
   SHORT_TRAILING_SL_PCT: 0.12, // 12% trailing SL for SHORT
+  SHORT_CUTOFF_TIME: '14:55',  // 2:55 PM SHORT entry cutoff (non-Fridays)
   EOD_EXIT_TIME: '15:28:00'    // End-of-day exit time
 }
 ```
@@ -447,12 +494,15 @@ Strategy state saved to disk for recovery:
 
 ### **Risk Management**
 
-1. Fixed position size (10 lots = ₹XX,XXX capital per trade)
-2. SHORT positions have built-in 12% trailing SL
+1. Dynamic position sizing (1 lot per ₹40,000) adjusts exposure to current capital
+2. SHORT positions have built-in dual protection:
+   - 12% trailing SL (protects profits)
+   - Entry candle high breach (technical invalidation)
 3. LONG positions exit on BB midline (technical signal)
 4. No overnight positions (zero carry-forward risk)
 5. Circuit breakers prevent system failures from cascading
 6. Emergency manual exit always available
+7. Position size automatically reduces after losses, increases after profits
 
 ---
 
@@ -502,30 +552,35 @@ Before executing exit:
 **Scenario 1: LONG Entry & Exit**
 
 ```
-10:15 - Candle closes above upper BB and R2, RSI=70, Supertrend bullish
-      → BUY 750 CE @ ₹246.50
+10:15 - Candle closes above upper BB and R2, RSI=70, Supertrend bullish, candle bullish
+      → BUY 300 CE @ ₹246.50 (4 lots, capital ₹189,590)
 10:20 - Candle closes above BB mid (no exit)
 10:25 - Candle closes below BB mid
-      → SELL 750 CE @ ₹247.00 (P&L: +₹375)
+      → SELL 300 CE @ ₹247.00 (P&L: +₹150)
+      → New capital: ₹189,740
 ```
 
 **Scenario 2: SHORT Entry with Trailing SL**
 
 ```
-11:20 - Candle closes below lower BB and R1, RSI=25, Supertrend bearish
-      → BUY 750 PE @ ₹246.50 (SL: ₹216.92)
+11:20 - Candle closes below lower BB and R1, RSI=25, Supertrend bearish, candle bearish
+      → BUY 300 PE @ ₹246.50 (4 lots, SL: ₹216.92)
 11:21 - Premium rises to ₹400 (new high, SL: ₹352)
 11:22 - Premium rises to ₹450 (new high, SL: ₹396)
 11:23 - Premium drops to ₹390 (below SL ₹396)
-      → SELL 750 PE @ ₹390 (P&L: +₹107,625)
+      → SELL 300 PE @ ₹390 (P&L: +₹43,050)
+      → New capital: ₹232,640
+      → Next trade will use 5 lots (232,640 / 40,000 = 5.8 → 5 lots)
 ```
 
-**Scenario 3: End-of-Day Force Exit**
+**Scenario 3: SHORT Entry Candle High Breach**
 
 ```
-15:20 - LONG position still active, candle above BB mid (no exit signal)
-15:28 - EOD safety check triggers
-      → SELL 750 CE @ market price (force close)
+14:30 - Candle closes below lower BB, RSI=20, bearish candle
+      → BUY 375 PE @ ₹246.50 (5 lots, entry candle high = 24,850)
+14:35 - NIFTY 5-min candle closes at 24,860 (above entry candle high)
+      → SELL 375 PE @ ₹228.00 (P&L: -₹6,937.50)
+      → Exit reason: Technical invalidation (SHORT_ENTRY_CANDLE_HIGH_BREACH)
 ```
 
 ---

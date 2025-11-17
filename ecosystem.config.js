@@ -1,0 +1,46 @@
+module.exports = {
+  apps: [
+    {
+      name: 'trading-bot-multi-strategy',
+      script: 'dist/index.js',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '1G',
+      env: {
+        NODE_ENV: 'production',
+        PORT: 3000,
+        TZ: 'Asia/Kolkata'
+      },
+      error_file: 'logs/error.log',
+      out_file: 'logs/output.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      merge_logs: true,
+      time: true,
+      
+      // Auto-restart on crashes
+      exp_backoff_restart_delay: 100,
+      max_restarts: 10,
+      min_uptime: '10s',
+      
+      // Graceful shutdown
+      kill_timeout: 5000,
+      listen_timeout: 5000,
+      shutdown_with_message: true,
+      
+      // Environment file
+      env_file: '.env'
+    }
+  ],
+
+  deploy: {
+    production: {
+      user: 'azureuser',
+      host: '98.70.40.23',
+      ref: 'origin/main',
+      repo: 'git@github.com:Andyrulz/tradebot-kite.git',
+      path: '~/tradebot-kite',
+      'post-deploy': 'npm install --production && pm2 reload ecosystem.config.js --env production && pm2 save'
+    }
+  }
+};

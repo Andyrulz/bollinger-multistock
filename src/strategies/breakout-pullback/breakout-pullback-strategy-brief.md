@@ -4,7 +4,7 @@
 
 **Trading Style**: Swing trading on 1-minute NIFTY futures with 5-minute pivot analysis  
 **Capital**: ₹200,000 (independent from Bollinger Band strategy)  
-**Position Sizing**: Risk-based (1% account risk per trade)  
+**Position Sizing**: Risk-based (5% account risk per trade)  
 **Maximum Positions**: 1 active position at a time  
 **Trading Hours**: 9:15 AM - 3:30 PM  
 **Position Type**: Always BUY options (CE for LONG signals, PE for SHORT signals)
@@ -41,10 +41,10 @@ This is a **pivot breakout-retracement system** that:
 
 #### **Phase 3: Marking Candle & Entry** (1-minute candles)
 
-- Wait for **opposite-direction marking candle** within 5 bars of breakout
+- Wait for **opposite-direction marking candle** within 10 bars of breakout
 - Marking candle provides entry level and stop-loss
-- Entry and SL can update up to 2 times if stop-loss extends ≥1 point
-- Maximum 18 minutes from breakout to entry
+- Entry and SL can update up to 1 time if stop-loss extends ≥1 point
+- Maximum 20 minutes from breakout to entry
 - State: `WAITING_FOR_ENTRY` → `IN_TRADE` (when entry level hit)
 
 ---
@@ -64,16 +64,16 @@ This is a **pivot breakout-retracement system** that:
 
 **Marking Candle** (opposite direction - retracement):
 
-- Must appear within 5 bars after breakout
+- Must appear within 10 bars after breakout
 - Must be **bearish/RED** (Close < Open) - opposite of bullish breakout
 - Represents pullback/retracement after the breakout
 - Provides: Entry = High, Stop Loss = Low
-- Updates allowed: Maximum 2 updates if SL extends ≥1 point
+- Updates allowed: Maximum 1 update if SL extends ≥1 point
 
 **Entry Trigger**:
 
 - NIFTY futures LTP ≥ Entry Level (marking candle high)
-- Must occur within 18 minutes of breakout
+- Must occur within 20 minutes of breakout
 - Places market BUY order for Call Option
 
 ### **SHORT Breakout Setup**
@@ -89,16 +89,16 @@ This is a **pivot breakout-retracement system** that:
 
 **Marking Candle** (opposite direction - retracement):
 
-- Must appear within 5 bars after breakout
+- Must appear within 10 bars after breakout
 - Must be **bullish/GREEN** (Close > Open) - opposite of bearish breakout
 - Represents pullback/retracement after the breakout
 - Provides: Entry = Low, Stop Loss = High
-- Updates allowed: Maximum 2 updates if SL extends ≥1 point
+- Updates allowed: Maximum 1 update if SL extends ≥1 point
 
 **Entry Trigger**:
 
 - NIFTY futures LTP ≤ Entry Level (marking candle low)
-- Must occur within 18 minutes of breakout
+- Must occur within 20 minutes of breakout
 - Places market BUY order for Put Option
 
 ---
@@ -142,9 +142,9 @@ Example:
 ### **Risk-Based Position Sizing**
 
 ```typescript
-// Calculate position size based on 1% account risk
+// Calculate position size based on 5% account risk
 const stopLossPoints = Math.abs(entryLevel - stopLossLevel);
-const riskAmount = currentCapital * 0.01; // 1% of capital
+const riskAmount = currentCapital * 0.05; // 5% of capital
 const maxQuantityFromRisk = Math.floor(riskAmount / stopLossPoints);
 
 // Calculate maximum affordable based on capital
@@ -168,15 +168,15 @@ const finalQuantity = lots * lotSize;
 
 - Capital: ₹200,000
 - Entry: 24,520, Stop Loss: 24,515 → Risk = 5 points
-- Risk Amount: ₹200,000 × 1% = ₹2,000
-- Max Quantity (Risk): ₹2,000 / 5 = 400 shares
+- Risk Amount: ₹200,000 × 5% = ₹10,000
+- Max Quantity (Risk): ₹10,000 / 5 = 2,000 shares
 - Option Price: ₹245 (1% of 24,500)
 - Max Quantity (Capital): ₹200,000 / ₹245 = 816 shares
-- Final: Use 400 shares → 5 lots (5 × 75 = 375 shares)
+- Final: Use 816 shares → 10 lots (10 × 75 = 750 shares)
 
 **Safety Checks**:
 
-- Never risk more than 1% of capital per trade
+- Never risk more than 5% of capital per trade
 - Never use more capital than available
 - Minimum 1 lot, maximum based on smaller of risk/capital constraints
 - Real-time capital tracking with P&L updates
@@ -244,26 +244,26 @@ Realized P&L = (Exit Option Premium - Entry Premium) × Quantity
 **LONG Trade (Profitable)**:
 
 ```
-Entry: BUY 375 shares 24500CE @ ₹245.00
+Entry: BUY 750 shares 24500CE @ ₹245.00
 Target Hit: NIFTY reaches 24,545
-Exit: SELL 375 shares 24500CE @ ₹270.00
-P&L = (270.00 - 245.00) × 375 = ₹9,375 profit
+Exit: SELL 750 shares 24500CE @ ₹270.00
+P&L = (270.00 - 245.00) × 750 = ₹18,750 profit
 ```
 
 **SHORT Trade (Loss)**:
 
 ```
-Entry: BUY 375 shares 24500PE @ ₹245.00
+Entry: BUY 750 shares 24500PE @ ₹245.00
 Stop Loss Hit: NIFTY breaks above SL
-Exit: SELL 375 shares 24500PE @ ₹220.00
-P&L = (220.00 - 245.00) × 375 = -₹9,375 loss
+Exit: SELL 750 shares 24500PE @ ₹220.00
+P&L = (220.00 - 245.00) × 750 = -₹18,750 loss
 ```
 
 **Capital Update**:
 
 ```
 New Capital = Previous Capital + Realized P&L
-₹200,000 + ₹9,375 = ₹209,375
+₹200,000 + ₹18,750 = ₹218,750
 ```
 
 ---
@@ -302,7 +302,7 @@ Continue monitoring for breakout...
   Bullish candle (24,518 > 24,512) ✅
 
 Action: Transition to WAITING_FOR_ENTRY
-Start marking candle search (5-bar window, 18-min limit)
+Start marking candle search (10-bar window, 20-min limit)
 ```
 
 **10:48 AM - Marking Candle Found**
@@ -325,9 +325,9 @@ Select Option:
   Current Premium: ₹248
 
 Position Sizing:
-  Risk: 8 points, Risk Amount: ₹2,000 (1%)
-  Max Qty: 250 shares
-  Lots: 3 lots = 225 shares
+  Risk: 8 points, Risk Amount: ₹10,000 (5%)
+  Max Qty: 1,250 shares
+  Lots: 16 lots = 1,200 shares
   Trade Cost: ₹248 × 225 = ₹55,800
 
 Monitor entry level: Waiting for NIFTY ≥ 24,524
@@ -339,7 +339,7 @@ Monitor entry level: Waiting for NIFTY ≥ 24,524
 NIFTY LTP: 24,525 ≥ Entry 24,524 ✅
 
 Action: Execute Entry
-1. Place MARKET BUY order for 225 shares NIFTY 24500CE
+1. Place MARKET BUY order for 1,200 shares NIFTY 24500CE
 2. Order filled @ ₹250 (actual fill price)
 3. State: IN_TRADE
 4. Start monitoring: SL = 24,516, Target = 24,549
@@ -347,7 +347,7 @@ Action: Execute Entry
 Active Position:
   Direction: LONG
   Option: NIFTY 24500CE
-  Quantity: 225 shares
+  Quantity: 1,200 shares
   Entry Price: ₹250
   Entry Time: 10:51:23 AM
   Stop Loss: 24,516 NIFTY (₹8 risk)
@@ -360,10 +360,10 @@ Active Position:
 NIFTY LTP: 24,550 ≥ Target 24,549 ✅
 
 Action: Execute Exit (Target)
-1. Place MARKET SELL order for 225 shares NIFTY 24500CE
+1. Place MARKET SELL order for 1,200 shares NIFTY 24500CE
 2. Order filled @ ₹275 (actual fill price)
-3. Calculate P&L: (275 - 250) × 225 = ₹5,625 profit
-4. Update Capital: ₹200,000 + ₹5,625 = ₹205,625
+3. Calculate P&L: (275 - 250) × 1,200 = ₹30,000 profit
+4. Update Capital: ₹200,000 + ₹30,000 = ₹230,000
 5. Record Trade History
 6. State: WAITING_FOR_BREAKOUT
 7. Resume pivot detection and breakout monitoring
@@ -372,7 +372,7 @@ Trade Record:
   Entry: 10:51 AM @ ₹250
   Exit: 11:15 AM @ ₹275
   Duration: 24 minutes
-  P&L: +₹5,625 (2.8% return on ₹200K capital)
+  P&L: +₹30,000 (15% return on ₹200K capital)
   Exit Reason: TARGET_HIT
 ```
 
@@ -812,7 +812,7 @@ interface PersistedStrategyState {
   MARKING_SL_EXTENSION: 1,         // Minimum SL extension (points)
 
   // Position Sizing
-  RISK_PER_TRADE: 0.01,            // 1% account risk
+  RISK_PER_TRADE: 0.05,            // 5% account risk
   TARGET_PREMIUM_PCT: 0.01,        // 1% of futures for option
   NIFTY_LOT_SIZE: 75,              // Shares per lot
 
@@ -1041,14 +1041,14 @@ Before placing exit order:
 
 ### **Capital Efficiency**
 
-- 1% risk per trade limits drawdowns
+- 5% risk per trade balances growth with safety
 - Risk-based sizing prevents over-leveraging
 - Option premium targeting ensures liquidity
 - Capital updated after each trade
 
 ### **Drawdown Characteristics**
 
-- Expected maximum drawdown: 5-10% (5-10 losing trades)
+- Expected maximum drawdown: 25-50% (5-10 losing trades at 5% risk each)
 - Recovery typically quick in trending markets
 - Reduced exposure in choppy markets (fewer signals)
 

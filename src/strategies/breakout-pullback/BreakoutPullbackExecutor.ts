@@ -50,7 +50,7 @@ export interface TradeRecord {
 
 export interface TradingConfig {
   capital: number;              // Current capital (updated after each trade)
-  riskPerTrade: number;        // 5% = 0.05
+  riskPerTrade: number;        // 3% = 0.03
   maxRetries: number;          // 3
   orderTimeout: number;        // 5000ms
   paperTradingMode: boolean;   // true for testing
@@ -241,7 +241,7 @@ export class TradeExecutionService {
     const defaultData: PersistedData = {
       config: {
         capital: 200000,           // ₹2,00,000
-        riskPerTrade: 0.05,       // 5%
+        riskPerTrade: 0.03,       // 3%
         maxRetries: 3,
         orderTimeout: 5000,
         paperTradingMode: true,   // Start in paper trading mode for safety
@@ -415,7 +415,7 @@ export class TradeExecutionService {
     const { capital, riskPerTrade, niftyLotSize } = this.persistedData.config;
     
     // Constraint 1: Risk-based sizing (existing logic)
-    const maxRiskAmount = capital * riskPerTrade; // ₹10,000 for 5% of ₹2,00,000
+    const maxRiskAmount = capital * riskPerTrade; // ₹6,000 for 3% of ₹2,00,000
     const riskPerLot = stopLossPoints * niftyLotSize;
     const maxLotsByRisk = Math.floor(maxRiskAmount / riskPerLot);
     

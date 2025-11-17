@@ -46,7 +46,7 @@ The NIFTY Breakout Pullback Strategy is a professional swing trading system desi
 
 1. **Pivot Detection**: Identifies significant highs and lows using 15,15 lookback
 2. **Breakout Validation**: Price + volume confirmation system
-3. **Marking Candle System**: Two-phase post-breakout analysis (5-bar initial + 18-minute updates)
+3. **Marking Candle System**: Two-phase post-breakout analysis (10-bar initial + 20-minute updates)
 4. **Volume Analysis**: 50-period SMA of 1-minute candle volumes
 5. **Memory Management**: Optimized storage for long-running operations
 6. **Real-time Dashboard**: Integrated monitoring and control interface
@@ -358,15 +358,15 @@ The Marking Candle System is a sophisticated post-breakout analysis module desig
 
 A "marking candle" is the **first candle after breakout** that meets specific criteria for opposite-direction movement and intra-range closes. The system operates in **two distinct phases** with different timing constraints:
 
-**Phase 1 - Initial Detection (First 5 Bars):**
+**Phase 1 - Initial Detection (First 10 Bars):**
 
-- Must find the first marking candle within **5 bars (25 minutes)** after breakout
-- If no marking candle found within 5 bars, the trade opportunity is abandoned
+- Must find the first marking candle within **10 bars (10 minutes)** after breakout
+- If no marking candle found within 10 bars, the trade opportunity is abandoned
 
-**Phase 2 - Dynamic Updates (18-minute Window):**
+**Phase 2 - Dynamic Updates (20-minute Window):**
 
-- Once initial marking candle is found, system can make up to **2 updates**
-- All updates must occur within **18 minutes total** from the original breakout
+- Once initial marking candle is found, system can make up to **1 update**
+- All updates must occur within **20 minutes total** from the original breakout
 
 This candle provides critical reference levels for:
 
@@ -389,9 +389,9 @@ markingCandle.close >= breakoutCandle.low &&
 markingCandle.close <= breakoutCandle.high
 
 // Condition 3: Initial timing constraint (CRITICAL)
-withinFirstFiveBars(5 bars = 25 minutes from breakout)
+withinFirstTenBars(10 bars = 10 minutes from breakout)
 
-// Note: If no marking candle found within 5 bars, trade is abandoned
+// Note: If no marking candle found within 10 bars, trade is abandoned
 ```
 
 #### **SHORT Breakout Marking Candle**
@@ -407,9 +407,9 @@ markingCandle.close >= breakoutCandle.low &&
 markingCandle.close <= breakoutCandle.high
 
 // Condition 3: Initial timing constraint (CRITICAL)
-withinFirstFiveBars(5 bars = 25 minutes from breakout)
+withinFirstTenBars(10 bars = 10 minutes from breakout)
 
-// Note: If no marking candle found within 5 bars, trade is abandoned
+// Note: If no marking candle found within 10 bars, trade is abandoned
 ```
 
 ### **Entry & Stop Loss Calculation**
@@ -440,34 +440,34 @@ stopLossLevel = markingCandle.high + 1;
 
 ### **Dynamic Stop Loss Updates**
 
-After the **initial marking candle is found within 5 bars**, the system allows up to **2 updates** within **18 minutes total** from the original breakout:
+After the **initial marking candle is found within 10 bars**, the system allows up to **1 update** within **20 minutes total** from the original breakout:
 
 #### **Two-Phase System Summary**
 
 **Phase 1 - Initial Detection:**
 
-- **Timeframe**: First 5 bars (25 minutes) after breakout
+- **Timeframe**: First 10 bars (10 minutes) after breakout
 - **Requirement**: Must find at least one valid marking candle
-- **Failure**: If no marking candle found in 5 bars → Trade abandoned
+- **Failure**: If no marking candle found in 10 bars → Trade abandoned
 
 **Phase 2 - Update Optimization:**
 
-- **Timeframe**: 18 minutes total from original breakout
-- **Limit**: Maximum **2 updates** allowed
+- **Timeframe**: 20 minutes total from original breakout
+- **Limit**: Maximum **1 update** allowed
 - **Criteria**: Any candle that extends stop-loss by ≥1 point
 
 #### **Update Conditions**
 
-1. **Time Constraint**: Within 18 minutes of original breakout signal
-2. **Update Limit**: Maximum **2 updates** allowed after initial marking candle
+1. **Time Constraint**: Within 20 minutes of original breakout signal
+2. **Update Limit**: Maximum **1 update** allowed after initial marking candle
 3. **Improvement Requirement**: New SL must extend by at least 1 point (adverse direction)
 
 ### **Complete Timing Flow**
 
 ```mermaid
 flowchart TD
-    A[Breakout Detected] --> B[Start 5-Bar Search]
-    B --> C{Marking Candle Found\\nWithin 5 Bars?}
+    A[Breakout Detected] --> B[Start 10-Bar Search]
+    B --> C{Marking Candle Found\\nWithin 10 Bars?}
     C -->|No| D[❌ Trade Abandoned]
     C -->|Yes| E[✅ Initial Marking Candle Set]
     E --> F[Enter Update Phase]

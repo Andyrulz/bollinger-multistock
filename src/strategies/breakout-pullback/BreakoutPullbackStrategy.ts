@@ -77,19 +77,19 @@ export interface MarkingCandle {
   candle: Candle; // The actual candle data
   entryPrice: number; // high for long, low for short
   stopLoss: number; // low for long, high for short
-  updateCount: number; // 0 for first marking candle, 1-2 for updates
+  updateCount: number; // 0 for first marking candle, 1 for update
   detectedAt: Date; // when this marking candle was detected
 }
 
 export interface MarkingCandleState {
   isActive: boolean; // whether we're currently tracking marking candles
   breakoutReference: BreakoutSignal | null; // reference to the original breakout
-  startTime: Date | null; // when breakout occurred (18-min timer starts here)
+  startTime: Date | null; // when breakout occurred (20-min timer starts here)
   currentMarkingCandle: MarkingCandle | null; // current active marking candle
   searchPhase: 'initial' | 'updates' | 'expired' | 'completed'; // current phase
-  barsProcessedSinceBreakout: number; // count bars since breakout for 5-bar initial search
-  maxUpdatesReached: boolean; // whether 2 updates have been reached
-  timeExpired: boolean; // whether 18-minute limit has been exceeded
+  barsProcessedSinceBreakout: number; // count bars since breakout for 10-bar initial search
+  maxUpdatesReached: boolean; // whether 1 update has been reached
+  timeExpired: boolean; // whether 20-minute limit has been exceeded
   tradeSkipped: boolean; // whether this setup has been skipped
 }
 
@@ -97,6 +97,16 @@ export enum TradeState {
   WAITING_FOR_BREAKOUT = 'waiting_for_breakout',
   WAITING_FOR_ENTRY = 'waiting_for_entry', 
   IN_TRADE = 'in_trade'
+}
+
+export interface DailyPivotLevels {
+  pp: number;
+  r1: number;
+  r2: number;
+  r3: number;
+  s1: number;
+  s2: number;
+  s3: number;
 }
 
 export interface TradeSetupRequest {
@@ -167,6 +177,9 @@ export class BreakoutPullbackStrategy {
   // Throttling and resource management (legacy - kept for fallback)
   private lastApiCallTime: Date | null = null;
   private minTimeBetweenCalls = 300;
+
+  // Daily pivot levels for directional bias filtering
+  private dailyPivots: DailyPivotLevels | null = null;
 
   /**
    * RACE CONDITION PROTECTION STATUS
@@ -404,6 +417,10 @@ export class BreakoutPullbackStrategy {
       
       if (restoredState && await this.validateAndRestoreState(restoredState)) {
         this.logger.info('🔄 Strategy state restored successfully from previous session');
+        
+        // Always recalculate daily pivots on startup (even with restored state)
+        // Pivots are date-specific and must use latest previous day's data
+        await this.initializeDailyPivots();
       } else {
         this.logger.info('📝 Starting fresh strategy initialization...');
         
@@ -416,6 +433,9 @@ export class BreakoutPullbackStrategy {
 
         // Load historical 5-minute candles for pivot detection
         await this.loadHistoricalCandles();
+
+        // Calculate daily pivots for directional bias filtering
+        await this.initializeDailyPivots();
 
         // Load historical 1-minute candles for volume SMA50 initialization
         await this.fetchHistorical1MinuteCandles();
@@ -545,6 +565,112 @@ export class BreakoutPullbackStrategy {
     } catch (error) {
       this.trackError('historical_candles_load', error, true);
       throw error;
+    }
+  }
+
+  /**
+   * Calculate Daily Pivot Levels from previous trading day OHLC
+   * PP = (High + Low + Close) / 3
+   * R1 = (2 * PP) - Low, S1 = (2 * PP) - High
+   * R2 = PP + (High - Low), S2 = PP - (High - Low)
+   * R3 = High + 2 * (PP - Low), S3 = Low - 2 * (High - PP)
+   */
+  private calculateDailyPivots(previousDayOHLC: { high: number; low: number; close: number }): DailyPivotLevels {
+    const { high, low, close } = previousDayOHLC;
+    
+    const pp = (high + low + close) / 3;
+    
+    return {
+      pp,
+      r1: (2 * pp) - low,
+      s1: (2 * pp) - high,
+      r2: pp + (high - low),
+      s2: pp - (high - low),
+      r3: high + 2 * (pp - low),
+      s3: low - 2 * (high - pp)
+    };
+  }
+
+  /**
+   * Calculate daily pivots from previous trading day OHLC
+   * Uses NIFTY FUTURES contract (same as strategy streaming)
+   */
+  private async calculateDailyPivotsFromMarketData(): Promise<void> {
+    this.logger.info('📊 Calculating daily pivot levels from NIFTY futures...');
+    
+    try {
+      // Ensure contract is initialized
+      if (!this.strategyState.currentContract) {
+        throw new Error('Futures contract not initialized - cannot calculate pivots');
+      }
+      
+      const futuresToken = this.strategyState.currentContract.instrument_token;
+      
+      // Extend date range to ensure we get recent trading data
+      const toDate = new Date();
+      toDate.setDate(toDate.getDate() - 1); // Use yesterday to ensure complete data
+      
+      const fromDate = new Date();
+      fromDate.setDate(toDate.getDate() - 10); // Get last 10 days
+      
+      this.logger.info('📅 Fetching daily pivot data', {
+        contract: this.strategyState.currentContract.tradingsymbol,
+        token: futuresToken,
+        fromDate: fromDate.toISOString().split('T')[0],
+        toDate: toDate.toISOString().split('T')[0]
+      });
+      
+      const dailyData = await this.kiteConnect.getHistoricalData(
+        futuresToken,
+        'day',
+        fromDate,
+        toDate
+      );
+      
+      if (!dailyData || dailyData.length < 1) {
+        throw new Error('No daily data available for pivot calculation');
+      }
+      
+      // Get the most recent completed trading day
+      const previousDay = dailyData[dailyData.length - 1];
+      
+      this.dailyPivots = this.calculateDailyPivots({
+        high: previousDay.high,
+        low: previousDay.low,
+        close: previousDay.close
+      });
+      
+      this.logger.info('✅ Daily pivots calculated successfully', {
+        date: previousDay.date,
+        contract: this.strategyState.currentContract.tradingsymbol,
+        pivots: {
+          pp: this.dailyPivots.pp.toFixed(2),
+          r1: this.dailyPivots.r1.toFixed(2),
+          r2: this.dailyPivots.r2.toFixed(2),
+          s1: this.dailyPivots.s1.toFixed(2)
+        }
+      });
+      
+      this.markStateAsDirty(); // Trigger persistence
+      
+    } catch (error) {
+      this.logger.error('❌ Failed to calculate daily pivots:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize daily pivots with error handling
+   * If pivot calculation fails, strategy continues without daily bias filter
+   */
+  private async initializeDailyPivots(): Promise<void> {
+    try {
+      await this.calculateDailyPivotsFromMarketData();
+      this.logger.info('✅ Daily pivot filter enabled');
+    } catch (error) {
+      this.logger.warn('⚠️ Daily pivot calculation failed - continuing WITHOUT pivot filter', error);
+      this.logger.warn('   Strategy will trade both directions without daily bias filtering');
+      this.dailyPivots = null; // Ensure it's explicitly null
     }
   }
 
@@ -1411,6 +1537,13 @@ export class BreakoutPullbackStrategy {
       pivotHigh: this.strategyState.latestPivotHigh,
       pivotLow: this.strategyState.latestPivotLow
     };
+  }
+
+  /**
+   * Get daily pivot levels for dashboard display
+   */
+  public getDailyPivots(): DailyPivotLevels | null {
+    return this.dailyPivots ? { ...this.dailyPivots } : null;
   }
 
   /**
@@ -2325,6 +2458,18 @@ export class BreakoutPullbackStrategy {
             completedCandle.close > completedCandle.open && 
             completedCandle.volume > this.strategyState.currentVolumeSMA50) {
           
+          // Daily Pivot Filter: LONG trades only if price > R1
+          if (this.dailyPivots && completedCandle.close <= this.dailyPivots.r1) {
+            this.logger.info(`🚫 LONG BREAKOUT REJECTED - Daily pivot filter: Price ₹${completedCandle.close.toFixed(2)} ≤ R1 ₹${this.dailyPivots.r1.toFixed(2)}`);
+            return;
+          }
+          
+          if (this.dailyPivots) {
+            this.logger.info(`✅ LONG BREAKOUT APPROVED - Daily pivot filter: Price ₹${completedCandle.close.toFixed(2)} > R1 ₹${this.dailyPivots.r1.toFixed(2)}`);
+          } else {
+            this.logger.info(`⚠️ LONG BREAKOUT APPROVED - Daily pivots not available, filter bypassed`);
+          }
+          
           const breakoutSignal: BreakoutSignal = {
             type: 'long_breakout',
             price: completedCandle.close,
@@ -2381,6 +2526,18 @@ export class BreakoutPullbackStrategy {
             completedCandle.close < completedCandle.open && 
             completedCandle.volume > this.strategyState.currentVolumeSMA50) {
           
+          // Daily Pivot Filter: SHORT trades only if price < R1
+          if (this.dailyPivots && completedCandle.close >= this.dailyPivots.r1) {
+            this.logger.info(`🚫 SHORT BREAKOUT REJECTED - Daily pivot filter: Price ₹${completedCandle.close.toFixed(2)} ≥ R1 ₹${this.dailyPivots.r1.toFixed(2)}`);
+            return;
+          }
+          
+          if (this.dailyPivots) {
+            this.logger.info(`✅ SHORT BREAKOUT APPROVED - Daily pivot filter: Price ₹${completedCandle.close.toFixed(2)} < R1 ₹${this.dailyPivots.r1.toFixed(2)}`);
+          } else {
+            this.logger.info(`⚠️ SHORT BREAKOUT APPROVED - Daily pivots not available, filter bypassed`);
+          }
+          
           const breakoutSignal: BreakoutSignal = {
             type: 'short_breakout',
             price: completedCandle.close,
@@ -2427,10 +2584,10 @@ export class BreakoutPullbackStrategy {
   // which provides precise entry and stop-loss levels after a breakout is detected.
   //
   // Two-Phase System:
-  // Phase 1 (Initial): Detects opposite-direction marking candles within 5 bars after breakout
+  // Phase 1 (Initial): Detects opposite-direction marking candles within 10 bars after breakout
   // Phase 2 (Updates): Updates entry/SL levels dynamically when SL extends by ≥1 point  
-  //                   - Enforces 18-minute total time limit and maximum 2 updates per breakout
-  //                   - Trade abandoned if no marking candle found in first 5 bars
+  //                   - Enforces 20-minute total time limit and maximum 1 update per breakout
+  //                   - Trade abandoned if no marking candle found in first 10 bars
   // - Provides real-time entry and stop-loss levels for trade execution
   // ================================================================================
 
@@ -3004,12 +3161,12 @@ export class BreakoutPullbackStrategy {
 
     const markingState = this.strategyState.markingCandleState;
 
-    // Check 18-minute time limit
+    // Check 20-minute time limit
     if (markingState.startTime) {
       const minutesElapsed = (completedCandle.timestamp.getTime() - markingState.startTime.getTime()) / (1000 * 60);
-      this.logger.debug(`⏰ Time elapsed since breakout: ${minutesElapsed.toFixed(1)} minutes (limit: 18 minutes)`);
-      if (minutesElapsed > 18) {
-        this.logger.info(`⏰ 18-minute time limit exceeded for marking candle tracking`);
+      this.logger.debug(`⏰ Time elapsed since breakout: ${minutesElapsed.toFixed(1)} minutes (limit: 20 minutes)`);
+      if (minutesElapsed > 20) {
+        this.logger.info(`⏰ 20-minute time limit exceeded for marking candle tracking`);
         this.skipMarkingCandleTrade('time_limit_exceeded');
         return;
       }
@@ -3019,9 +3176,9 @@ export class BreakoutPullbackStrategy {
     this.logger.debug(`📊 Bars processed since breakout: ${markingState.barsProcessedSinceBreakout} (phase: ${markingState.searchPhase})`);
 
     if (markingState.searchPhase === 'initial') {
-      // Initial search phase - looking for first marking candle within 5 bars
-      if (markingState.barsProcessedSinceBreakout <= 5) {
-        this.logger.debug(`🔍 Looking for initial marking candle (bar ${markingState.barsProcessedSinceBreakout}/5)`);
+      // Initial search phase - looking for first marking candle within 10 bars
+      if (markingState.barsProcessedSinceBreakout <= 10) {
+        this.logger.debug(`🔍 Looking for initial marking candle (bar ${markingState.barsProcessedSinceBreakout}/10)`);
         const markingCandle = this.checkForInitialMarkingCandle(completedCandle);
         if (markingCandle) {
           markingState.currentMarkingCandle = markingCandle;
@@ -3035,8 +3192,8 @@ export class BreakoutPullbackStrategy {
           this.logger.debug(`❌ No marking candle found in bar ${markingState.barsProcessedSinceBreakout}`);
         }
       } else {
-        // 5 bars elapsed without finding marking candle
-        this.logger.info(`❌ No marking candle found within 5 bars after breakout`);
+        // 10 bars elapsed without finding marking candle
+        this.logger.info(`❌ No marking candle found within 10 bars after breakout`);
         this.skipMarkingCandleTrade('no_marking_candle');
         return;
       }
@@ -3052,9 +3209,9 @@ export class BreakoutPullbackStrategy {
           // Update trade setup request with new levels
           this.createAndStoreTradeSetup(updatedMarkingCandle);
 
-          if (updatedMarkingCandle.updateCount >= 2) {
+          if (updatedMarkingCandle.updateCount >= 1) {
             markingState.maxUpdatesReached = true;
-            this.logger.info(`🚫 Maximum 2 updates reached`);
+            this.logger.info(`🚫 Maximum 1 update reached`);
           }
         }
       } else {
@@ -3070,7 +3227,7 @@ export class BreakoutPullbackStrategy {
    * Requirements:
    * - Must be opposite direction to breakout (red for long, green for short)
    * - Must close within the breakout candle's high-low range (intra-range close)
-   * - Must occur within 5 bars after the breakout
+   * - Must occur within 10 bars after the breakout
    * 
    * @param candle - The candle to evaluate for marking candle qualification
    * @returns MarkingCandle object if qualified, null otherwise
@@ -3129,7 +3286,7 @@ export class BreakoutPullbackStrategy {
    * 
    * Update Criteria:
    * - New candle must extend stop-loss by at least 1 point (adverse direction)
-   * - Maximum 2 updates allowed per breakout sequence
+   * - Maximum 1 update allowed per breakout sequence
    * - Any direction candle can qualify (not restricted to opposite direction)
    * 
    * @param candle - The candle to evaluate for marking candle update

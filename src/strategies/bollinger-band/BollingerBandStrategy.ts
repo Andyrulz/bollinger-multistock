@@ -52,19 +52,45 @@ interface Position {
   type: 'LONG' | 'SHORT';
   instrument: any;
   entryPrice: number;
-  quantity: number; // Total shares (lots * lot_size), e.g., 10 lots * 75 = 750 shares
+  quantity: number; // Number of lots (e.g., 4 lots). Total shares = quantity × 75
   entryTime: Date;
+  entryCandleLow?: number;     // NEW: Store entry candle's low for LONG SL logic
+  entryCandleHigh?: number;    // NEW: Store entry candle's high (for future use)
   trailingSL?: number;
   highestPremium?: number;
   entryOrderId: string;        // Store real order ID from KiteConnect
   exitOrderId?: string;        // Store exit order ID when position closed
+  
+  // Time-decay trailing stop tracking (SHORT positions only)
+  timeDecayTrailing?: {
+    lastHighTime: Date;        // When did we last see a new high premium?
+  };
 }
 
 export class BollingerBandStrategy extends StrategyBase {
   
   // Configuration constants
-  private readonly FIXED_LOTS = 10;
   private readonly CAPITAL_ALLOCATION = 200000;
+  
+  /**
+   * Calculate dynamic lot size based on current capital
+   * Formula: 1 lot per 40,000 of capital (rounded down)
+   * Minimum: 1 lot (even if capital < 40,000)
+   * 
+   * @returns Number of lots to trade
+   */
+  private calculateLots(): number {
+    const lotsPerCapital = Math.floor(this.currentCapital / 40000);
+    const lots = Math.max(1, lotsPerCapital); // Minimum 1 lot
+    
+    this.logger.debug('[LOT CALCULATION]', {
+      currentCapital: this.currentCapital.toFixed(2),
+      calculatedLots: lotsPerCapital,
+      finalLots: lots
+    });
+    
+    return lots;
+  }
   
   // Historical data and indicators
   private candleHistory: Candle[] = [];
@@ -93,6 +119,9 @@ export class BollingerBandStrategy extends StrategyBase {
   private isProcessingShortExit: boolean = false;
   private isProcessingLongExit: boolean = false;
   
+  // Race condition protection for manual position clearing
+  private isClearingPosition: boolean = false;
+  
   // Race condition protection for position entry processing
   private isExecutingLongEntry: boolean = false;
   private isExecutingShortEntry: boolean = false;
@@ -104,6 +133,9 @@ export class BollingerBandStrategy extends StrategyBase {
   private readonly MIN_POLLING_INTERVAL = 900; // Minimum 900ms between polls
   private readonly MAX_CONSECUTIVE_FAILURES = 5; // Backoff threshold
   
+  // Race condition protection for master cycle
+  private isFetchingCandle: boolean = false;
+  
   // Cached position state for dashboard display
   private cachedCurrentPrice: number = 0;
   private cachedUnrealizedPnL: number = 0;
@@ -111,6 +143,12 @@ export class BollingerBandStrategy extends StrategyBase {
   
   // REST API position monitoring
   private shortMonitoringInterval?: NodeJS.Timeout;
+  
+  // EOD safety exit timer
+  private eodExitTimer?: NodeJS.Timeout;
+  
+  // Position reconciliation timer
+  private positionReconciliationInterval?: NodeJS.Timeout;
 
   // Error monitoring and health tracking
   private errorCounts: Map<string, number> = new Map();
@@ -140,13 +178,18 @@ export class BollingerBandStrategy extends StrategyBase {
   private readonly CANDLE_RETRY_INTERVAL = 10000; // 10 seconds for candle fetch
   private readonly TRADE_RETRY_DELAYS = [1000, 2000, 5000]; // 1s, 2s, 5s exponential backoff
 
-  // Simplified timer management - single clean 5-minute cycle
+  // Master cycle timing and state
   private masterCycleInterval: NodeJS.Timeout | null = null;
   private currentCyclePhase: 'waiting' | '4th-minute' | '5th-minute' | '6th-minute' = 'waiting';
+  private lastSuccessfulFetchTime: number | null = null; // Track last candle fetch for system sleep detection
+  private lastReconciliationTime: number | null = null; // Track last reconciliation for system sleep detection
+  
+  // 🔒 CRITICAL FIX: Add timeout for candle fetch operations
+  private readonly CANDLE_FETCH_TIMEOUT = 45000; // 45 seconds max for API calls
 
   constructor(kiteConnect: any, logger: Logger, config: StrategyConfig) {
     super(kiteConnect, logger, config);
-    this.loadCapitalData(); // Load persisted capital on startup
+    // 🔒 CRITICAL FIX: Moved loadCapitalData() to initialize() to avoid blocking sync I/O in constructor
   }
 
   /**
@@ -162,9 +205,16 @@ export class BollingerBandStrategy extends StrategyBase {
         this.currentCapital = data.capital || 200000;
         this.tradeHistory = data.tradeHistory || [];
         
-        this.logger.info('?? Bollinger Band capital loaded', {
+        // P0: Check for persisted active position and recover it
+        if (data.activePosition) {
+          this.logger.info('🔄 Found persisted active position, will recover after initialization');
+          // Will be recovered in initialize() after all services are ready
+        }
+        
+        this.logger.info('💰 Bollinger Band capital loaded', {
           capital: this.currentCapital,
-          totalTrades: this.tradeHistory.length
+          totalTrades: this.tradeHistory.length,
+          hasActivePosition: !!data.activePosition
         });
       } else {
         // Create initial data file
@@ -194,6 +244,7 @@ export class BollingerBandStrategy extends StrategyBase {
       const data = {
         capital: this.currentCapital,
         tradeHistory: this.tradeHistory,
+        activePosition: this.currentPosition, // P0: Persist active position
         lastUpdated: new Date().toISOString()
       };
       
@@ -203,11 +254,113 @@ export class BollingerBandStrategy extends StrategyBase {
     }
   }
 
+  /**
+   * P0: Recover active position from disk after restart
+   * Validates position data and restarts monitoring
+   */
+  private async recoverActivePosition(): Promise<void> {
+    try {
+      const fs = require('fs');
+      
+      if (!fs.existsSync(this.BOLLINGER_DATA_FILE)) {
+        this.logger.info('📭 No persisted state found');
+        return;
+      }
+      
+      const data = JSON.parse(fs.readFileSync(this.BOLLINGER_DATA_FILE, 'utf8'));
+      
+      if (!data.activePosition) {
+        this.logger.info('📭 No active position to recover');
+        return;
+      }
+      
+      const position = data.activePosition;
+      
+      // Validate position data
+      if (!position.instrument || !position.quantity || !position.type) {
+        this.logger.warn('⚠️ Invalid position data found, skipping recovery', position);
+        return;
+      }
+      
+      // Restore position state
+      this.currentPosition = position;
+      
+      // Fix date deserialization for ALL date fields (JSON.parse returns strings for dates)
+      if (this.currentPosition) {
+        // Critical: Convert entryTime from string to Date (affects all position types)
+        this.currentPosition.entryTime = new Date(this.currentPosition.entryTime);
+        
+        // Convert timeDecayTrailing.lastHighTime if exists (SHORT positions only)
+        if (this.currentPosition.timeDecayTrailing?.lastHighTime) {
+          this.currentPosition.timeDecayTrailing.lastHighTime = new Date(this.currentPosition.timeDecayTrailing.lastHighTime);
+        }
+      }
+      
+      this.logger.info('✅ Active position recovered from disk', {
+        symbol: position.instrument?.tradingsymbol,
+        type: position.type,
+        quantity: position.quantity,
+        entryPrice: position.entryPrice,
+        entryTime: position.entryTime,
+        entryCandleLow: position.entryCandleLow,
+        entryCandleHigh: position.entryCandleHigh,
+        trailingSL: position.trailingSL,
+        highestPremium: position.highestPremium,
+        timeDecayTrailing: position.timeDecayTrailing 
+          ? `Last high: ${new Date(position.timeDecayTrailing.lastHighTime).toLocaleTimeString()}`
+          : 'N/A (no time-decay tracking or LONG position)'
+      });
+      
+      // 🔒 CRITICAL FIX: Restart position monitoring with validation
+      try {
+        this.logger.info('🔄 Starting position monitoring after recovery...');
+        await this.startPositionMonitoring();
+        
+        // Validate that monitoring actually started for SHORT positions
+        if (this.currentPosition?.type === 'SHORT') {
+          // Give monitoring 1 second to initialize
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          if (!this.shortMonitoringInterval) {
+            throw new Error('SHORT position monitoring failed to start - no active interval');
+          }
+          this.logger.info('✅ SHORT position monitoring validated and active');
+        }
+        
+        this.logger.info('✅ Position monitoring restarted successfully after recovery');
+        
+      } catch (monitoringError) {
+        this.logger.error('❌ CRITICAL: Failed to restart position monitoring after recovery:', monitoringError);
+        this.logger.error('🚨 Position exists but has NO exit protection - this is a critical risk!');
+        
+        // Force close position as safety measure
+        try {
+          this.logger.warn('⚠️ Attempting emergency position closure due to monitoring failure...');
+          await this.forceClosePosition('MONITORING_RESTART_FAILED');
+          this.logger.info('✅ Emergency position closure successful');
+        } catch (closeError) {
+          this.logger.error('❌ Emergency position closure also failed:', closeError);
+          this.logger.error('� MANUAL INTERVENTION REQUIRED: Position exists without monitoring!');
+        }
+        
+        // Re-throw to signal recovery failure
+        throw new Error(`Position recovery failed: ${monitoringError instanceof Error ? monitoringError.message : String(monitoringError)}`);
+      }
+      
+    } catch (error) {
+      this.logger.error('❌ Error recovering active position:', error);
+      // Don't throw - let strategy continue without position
+    }
+  }
+
   public async initialize(): Promise<void> {
     this.logger.info('BollingerBandStrategy: Starting initialization...');
     
     try {
-      // Step 0: Get NIFTY50 instrument token dynamically
+      // Step 0: Load persisted capital data (moved from constructor to avoid blocking sync I/O)
+      this.loadCapitalData();
+      
+      // Step 1: Get NIFTY50 instrument token dynamically
       const nifty50Token = await this.getNifty50InstrumentToken();
       this.NIFTY50_INSTRUMENT_TOKEN = nifty50Token;
       
@@ -223,12 +376,16 @@ export class BollingerBandStrategy extends StrategyBase {
       // Step 4: Schedule daily cache refresh at 3:25 PM
       this.scheduleDailyCacheRefresh();
       
+      // Step 5: P0 - Recover active position if exists
+      await this.recoverActivePosition();
+      
       this.isInitialized = true;
       this.logger.info('BollingerBandStrategy: Initialization complete', {
         instrumentToken: nifty50Token,
         candleCount: this.candleHistory.length,
         hasPivots: !!this.dailyPivots,
-        hasIndicators: !!this.currentIndicators
+        hasIndicators: !!this.currentIndicators,
+        hasActivePosition: !!this.currentPosition
       });
       
     } catch (error) {
@@ -250,6 +407,12 @@ export class BollingerBandStrategy extends StrategyBase {
     // Start real-time monitoring
     this.startRealTimeMonitoring();
     
+    // P0: Schedule EOD safety exit at 3:28 PM
+    this.scheduleEODExit();
+    
+    // P0: Start position reconciliation system
+    this.startPositionReconciliation();
+    
     this.metrics.isActive = true;
     this.metrics.healthStatus = 'healthy';
     // Update metrics timestamp to show strategy is active
@@ -260,11 +423,20 @@ export class BollingerBandStrategy extends StrategyBase {
   public async stop(): Promise<void> {
     this.logger.info('BollingerBandStrategy: Stopping strategy...');
     
+    // 🔒 CRITICAL FIX: Stop position monitoring to prevent resource leak
+    this.stopPositionMonitoring();
+    
     // Stop all monitoring
     this.stopRealTimeMonitoring();
     
     // Stop retry mechanisms
     this.stopCandleRetryMechanism();
+    
+    // P0: Cancel EOD exit timer
+    this.cancelEODExit();
+    
+    // P0: Stop position reconciliation
+    this.stopPositionReconciliation();
     
     // Predictive WebSocket removed - using real-time selection
     
@@ -278,6 +450,171 @@ export class BollingerBandStrategy extends StrategyBase {
     // Update metrics timestamp to show strategy is stopped
     this.updateMetrics({ isActive: false, healthStatus: 'stopped' });
     this.logger.info('BollingerBandStrategy: Strategy stopped successfully');
+  }
+
+  /**
+   * P0: Manually clear active position from disk
+   * Enhanced to fetch exit order from broker and record P&L
+   * Used by dashboard button for orphaned positions (e.g., broker auto-squareoff)
+   */
+  public async clearActivePosition(): Promise<void> {
+    // Race condition protection - prevent multiple simultaneous clears
+    if (this.isClearingPosition) {
+      this.logger.warn('⚠️ Position clear already in progress, skipping');
+      return;
+    }
+    
+    this.isClearingPosition = true;
+    
+    try {
+      if (!this.currentPosition) {
+        this.logger.warn('⚠️ No active position to clear');
+        return;
+      }
+      
+      const positionSymbol = this.currentPosition.instrument?.tradingsymbol;
+      const entryPrice = this.currentPosition.entryPrice;
+      const entryTime = this.currentPosition.entryTime;
+      const quantity = this.currentPosition.quantity;
+      const entryOrderId = this.currentPosition.entryOrderId;
+      const positionType = this.currentPosition.type;
+      
+      this.logger.info('🧹 Manually clearing active position', {
+        symbol: positionSymbol,
+        type: positionType,
+        entryPrice: entryPrice,
+        quantity: quantity
+      });
+      
+      // P0: Try to fetch actual exit order from broker
+      let exitPrice = entryPrice; // Fallback to entry price if can't find exit
+      let exitOrderId = `MANUAL_CLEAR_${Date.now()}`;
+      let exitTime = new Date();
+      
+      try {
+        const exitOrder = await this.fetchExitOrderFromBroker(positionSymbol, entryOrderId, entryTime);
+        if (exitOrder) {
+          exitPrice = exitOrder.average_price || exitOrder.price || entryPrice;
+          exitOrderId = exitOrder.order_id;
+          exitTime = new Date(exitOrder.order_timestamp);
+          this.logger.info('✅ Found actual exit order from broker', {
+            exitOrderId: exitOrderId,
+            exitPrice: exitPrice,
+            exitTime: exitTime.toLocaleString()
+          });
+        } else {
+          this.logger.warn('⚠️ Could not find exit order from broker, using entry price for P&L');
+        }
+      } catch (error) {
+        this.logger.error('❌ Error fetching exit order from broker:', error);
+        this.logger.warn('⚠️ Will use entry price for P&L (P&L = 0)');
+      }
+      
+      // Calculate P&L
+      const totalQuantity = quantity * 75; // NIFTY lot size × number of lots
+      const pnl = (exitPrice - entryPrice) * totalQuantity;
+      
+      // Update capital with P&L
+      this.currentCapital += pnl;
+      this.metrics.profitLoss += pnl;
+      
+      // Create trade record for history
+      const tradeRecord = {
+        tradeId: `BB_MANUAL_CLEAR_${Date.now()}`,
+        entryOrderId: entryOrderId,
+        exitOrderId: exitOrderId,
+        instrument: this.currentPosition.instrument,
+        direction: positionType,
+        quantity: totalQuantity,
+        entryPrice: entryPrice,
+        exitPrice: exitPrice,
+        entryTime: entryTime,
+        exitTime: exitTime,
+        pnl: pnl,
+        exitReason: 'MANUAL_CLEAR_BROKER_AUTO_SQUAREOFF',
+        status: 'CLOSED',
+        strategy: 'BOLLINGER_BAND'
+      };
+      
+      // Add to trade history
+      this.tradeHistory.push(tradeRecord);
+      
+      this.logger.info('📊 Trade recorded via manual clear', {
+        exitPrice: exitPrice.toFixed(2),
+        pnl: pnl.toFixed(2),
+        newCapital: this.currentCapital.toFixed(2),
+        totalTrades: this.tradeHistory.length
+      });
+      
+      // Clear position from memory
+      this.currentPosition = null;
+      
+      // Stop monitoring
+      this.stopPositionMonitoring();
+      
+      // Clear from disk (saves updated capital and trade history)
+      this.saveCapitalData();
+      
+      // Reset cached position state for dashboard
+      this.cachedCurrentPrice = 0;
+      this.cachedUnrealizedPnL = 0;
+      this.lastPriceUpdateTime = null;
+      
+      // Update metrics
+      this.updateMetrics({ 
+        profitLoss: this.metrics.profitLoss,
+        healthStatus: 'healthy',
+        lastTradeTime: new Date()
+      });
+      
+      this.logger.info('✅ Active position cleared successfully with P&L recorded');
+    } catch (error) {
+      this.logger.error('❌ Error clearing active position:', error);
+      throw error;
+    } finally {
+      // Always reset flag even if error occurs
+      this.isClearingPosition = false;
+    }
+  }
+  
+  /**
+   * P0: Helper method to fetch exit order from broker's order history
+   * Looks for SELL order matching the position's symbol after entry time
+   */
+  private async fetchExitOrderFromBroker(symbol: string, entryOrderId: string, entryTime: Date): Promise<any> {
+    try {
+      // Fetch all orders for today
+      const orders = await this.kiteConnect.getOrders();
+      
+      // Filter for this symbol's SELL orders after entry time
+      const exitCandidates = orders.filter((order: any) => {
+        const orderTime = new Date(order.order_timestamp);
+        return order.tradingsymbol === symbol
+          && order.transaction_type === 'SELL'
+          && order.status === 'COMPLETE'
+          && orderTime > entryTime;
+      });
+      
+      if (exitCandidates.length === 0) {
+        this.logger.warn(`⚠️ No SELL orders found for ${symbol} after ${entryTime.toLocaleTimeString()}`);
+        return null;
+      }
+      
+      // Take the first SELL order after entry (most likely the exit)
+      const exitOrder = exitCandidates[0];
+      this.logger.debug('Found exit order candidate:', {
+        orderId: exitOrder.order_id,
+        symbol: exitOrder.tradingsymbol,
+        price: exitOrder.average_price,
+        quantity: exitOrder.quantity,
+        time: exitOrder.order_timestamp
+      });
+      
+      return exitOrder;
+    } catch (error) {
+      this.logger.error('Error fetching orders from broker:', error);
+      return null;
+    }
   }
 
   /**
@@ -297,6 +634,10 @@ export class BollingerBandStrategy extends StrategyBase {
       
       // Clear position data
       this.currentPosition = null;
+      
+      // P0: Save cleared position to disk after daily cleanup
+      this.saveCapitalData();
+      this.logger.info("💾 Position cleared from disk after daily cleanup");
       
       // Reset cached position state
       this.cachedCurrentPrice = 0;
@@ -337,7 +678,7 @@ export class BollingerBandStrategy extends StrategyBase {
       },
       recentTrades: this.tradeHistory.slice(-10), // Last 10 trades
       // Custom strategy status
-      fixedLots: this.FIXED_LOTS,
+      currentLots: this.calculateLots(), // Dynamic lot size based on current capital
       capitalAllocation: this.CAPITAL_ALLOCATION,
       currentCapital: this.currentCapital, // Current capital amount
       totalTrades: this.tradeHistory.length, // Total completed trades
@@ -358,7 +699,16 @@ export class BollingerBandStrategy extends StrategyBase {
         lastUpdated: this.lastPriceUpdateTime, // Timestamp of last price update
         tradingSymbol: this.currentPosition.instrument.tradingsymbol,
         trailingSL: this.currentPosition.trailingSL, // Trailing stop loss level
-        highestPremium: this.currentPosition.highestPremium // Highest premium achieved
+        highestPremium: this.currentPosition.highestPremium, // Highest premium achieved
+        // Time-based tracking metrics
+        minutesSinceEntry: (Date.now() - this.currentPosition.entryTime.getTime()) / 60000,
+        minutesSinceLastHigh: this.currentPosition.timeDecayTrailing 
+          ? (Date.now() - this.currentPosition.timeDecayTrailing.lastHighTime.getTime()) / 60000
+          : (Date.now() - this.currentPosition.entryTime.getTime()) / 60000,
+        currentTrailPercent: this.currentPosition.trailingSL && this.currentPosition.highestPremium
+          ? ((1 - this.currentPosition.trailingSL / this.currentPosition.highestPremium) * 100)
+          : 12, // Default 12%
+        lastHighTime: this.currentPosition.timeDecayTrailing?.lastHighTime
       } : null
     } as StrategyStatus;
   }
@@ -1104,7 +1454,7 @@ export class BollingerBandStrategy extends StrategyBase {
       bollingerBands: this.calculateBollingerBands(this.candleHistory, 20, 2)
     };
     
-    this.logger.info('Technical indicators updated', {
+    this.logger.info('[BOLLINGER] Technical indicators updated', {
       rsi: this.currentIndicators.rsi,
       supertrend: this.currentIndicators.supertrend.trend,
       bb_upper: this.currentIndicators.bollingerBands.upper,
@@ -1120,34 +1470,52 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Start monitoring aligned to 5-minute candle closes (0, 5, 10, 15... minutes)
    * Simplified: Only 5th minute entry signals - NO prediction system
+   * FIXED: Ensures immediate fetch at alignment + proper interval timing
    */
   private startRealTimeMonitoring(): void {
-    this.logger.info('?? Starting simplified 5-minute monitoring (5th minute entry only - no prediction)...');
+    this.logger.info('🔄 Starting simplified 5-minute monitoring (5th minute entry only - no prediction)...');
     
     // Clear any existing timer first
     this.stopRealTimeMonitoring();
     
-    // Calculate initial alignment to next 5-minute boundary
+    // Calculate initial alignment to next 5-minute boundary + 5 second buffer
     const now = new Date();
     const currentMinutes = now.getMinutes();
     const currentSeconds = now.getSeconds();
+    const currentMilliseconds = now.getMilliseconds();
     
     // Find next 5-minute interval (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55)
     const nextInterval = Math.ceil(currentMinutes / 5) * 5;
     const minutesUntilNext = (nextInterval === 60) ? (60 - currentMinutes) : (nextInterval - currentMinutes);
-    const secondsUntilAlignment = (60 - currentSeconds) + (minutesUntilNext - 1) * 60;
     
-    this.logger.info(`? Aligning to next 5-minute boundary in ${Math.floor(secondsUntilAlignment / 60)}:${(secondsUntilAlignment % 60).toString().padStart(2, '0')}`);
+    // Calculate milliseconds until X:X0:05 (5 seconds after candle close for API buffer)
+    const targetSecond = 5; // 5 seconds after candle close
+    let millisecondsUntilAlignment: number;
+    
+    if (minutesUntilNext === 0) {
+      // We're in the target minute (X:X0, X:X5, etc.)
+      if (currentSeconds < targetSecond) {
+        // Before X:X0:05, align to this minute's target
+        millisecondsUntilAlignment = (targetSecond - currentSeconds) * 1000 - currentMilliseconds;
+      } else {
+        // After X:X0:05, align to next 5-minute boundary
+        millisecondsUntilAlignment = (5 * 60 - currentSeconds + targetSecond) * 1000 - currentMilliseconds;
+      }
+    } else {
+      // Calculate to next 5-minute boundary + 5 seconds
+      millisecondsUntilAlignment = (minutesUntilNext * 60 - currentSeconds + targetSecond) * 1000 - currentMilliseconds;
+    }
+    
+    const alignmentTime = new Date(now.getTime() + millisecondsUntilAlignment);
+    this.logger.info(`⏰ Current time: ${now.toLocaleTimeString()}.${now.getMilliseconds()}`);
+    this.logger.info(`⏰ Aligning to: ${alignmentTime.toLocaleTimeString()}.${alignmentTime.getMilliseconds()} (${(millisecondsUntilAlignment / 1000).toFixed(1)}s)`);
     
     // Start the master cycle after alignment timing
     setTimeout(() => {
+      const triggerTime = new Date();
+      this.logger.info(`✅ Alignment triggered at ${triggerTime.toLocaleTimeString()}.${triggerTime.getMilliseconds()}`);
       this.startMasterCycle();
-    }, secondsUntilAlignment * 1000);
-    
-    // Start fetching latest candle data immediately to check for entry signals
-    this.fetchLatest5MinuteCandle().catch(error => {
-      this.logger.error('Initial candle fetch failed:', error);
-    });
+    }, millisecondsUntilAlignment);
     
     // Start position monitoring if we have any active position that needs exit monitoring
     if (this.currentPosition) {
@@ -1177,6 +1545,10 @@ export class BollingerBandStrategy extends StrategyBase {
       this.masterCycleInterval = null;
     }
     
+    // ✅ Reset tracking variables for system sleep detection
+    this.lastSuccessfulFetchTime = null;
+    this.lastReconciliationTime = null;
+    
     // Reset cycle state
     this.currentCyclePhase = 'waiting';
     
@@ -1190,15 +1562,23 @@ export class BollingerBandStrategy extends StrategyBase {
 
   /**
    * Master cycle initialization - sets up the strategy monitoring
-   * Uses intelligent candle checking only during market hours
+   * FIXED: Immediate fetch on alignment + proper setInterval timing
    */
   private startMasterCycle(): void {
-    this.logger.info('?? Starting Bollinger Band strategy master cycle');
+    // 🔒 CRITICAL FIX: Prevent duplicate master cycle starts
+    if (this.masterCycleInterval) {
+      this.logger.warn('⚠️ Master cycle already running, ignoring duplicate start request');
+      return;
+    }
+
+    const cycleStartTime = new Date();
+    this.logger.info(`🔄 Starting Bollinger Band strategy master cycle at ${cycleStartTime.toLocaleTimeString()}.${cycleStartTime.getMilliseconds()}`);
     
-    // Check for new 5-minute candles every 5 minutes (300 seconds)
-    // This aligns with natural candle completion timing
-    this.masterCycleInterval = setInterval(() => {
-      // Only fetch during market hours (9:15 AM to 3:30 PM)
+    // Define the candle fetch function
+    const fetchCandleIfMarketOpen = async () => {
+      // ✅ Detect system sleep disruption
+      const wasDisrupted = this.detectMasterCycleDisruption();
+      
       const now = new Date();
       const hours = now.getHours();
       const minutes = now.getMinutes();
@@ -1207,13 +1587,82 @@ export class BollingerBandStrategy extends StrategyBase {
       const marketEnd = 15 * 60 + 30;  // 3:30 PM
       
       if (currentTime >= marketStart && currentTime <= marketEnd) {
-        this.fetchLatest5MinuteCandle().catch(error => {
-          this.logger.error('? Error fetching 5-minute candle:', error);
-        });
+        // Race condition protection - prevent overlapping fetches
+        if (this.isFetchingCandle) {
+          this.logger.warn('[BOLLINGER] ⚠️ Previous candle fetch still in progress, skipping this cycle');
+          return;
+        }
+        
+        this.isFetchingCandle = true;
+        
+        // 🔒 CRITICAL FIX: Add timeout to prevent indefinite flag lock
+        const fetchTimeout = setTimeout(() => {
+          if (this.isFetchingCandle) {
+            this.logger.error(`[BOLLINGER] 🚨 TIMEOUT: Candle fetch exceeded ${this.CANDLE_FETCH_TIMEOUT}ms - forcing flag reset`);
+            this.isFetchingCandle = false;
+            this.healthStatus.dataStreamHealthy = false;
+            this.updateMetrics({ healthStatus: 'error' });
+          }
+        }, this.CANDLE_FETCH_TIMEOUT);
+        
+        try {
+          const fetchTime = new Date();
+          this.logger.info(`[BOLLINGER] ⏰ Fetching candle at ${fetchTime.toLocaleTimeString()}.${fetchTime.getMilliseconds()}`);
+          await this.fetchLatest5MinuteCandle();
+          
+          // ✅ Track successful fetch time for disruption detection
+          this.lastSuccessfulFetchTime = Date.now();
+          
+          // ✅ Realign timer if disruption was detected
+          if (wasDisrupted) {
+            this.logger.info('🔄 Realigning master cycle to 5-minute boundary...');
+            
+            // Clear existing interval
+            if (this.masterCycleInterval) {
+              clearInterval(this.masterCycleInterval);
+              this.masterCycleInterval = null;
+            }
+            
+            // Recalculate alignment to next 5-minute boundary
+            const alignedTime = new Date();
+            const currentMinute = alignedTime.getMinutes();
+            const currentSecond = alignedTime.getSeconds();
+            
+            // Calculate next 5-minute boundary (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55)
+            const minutesToNext5 = 5 - (currentMinute % 5);
+            const secondsToNext5 = minutesToNext5 * 60 - currentSecond + 5; // +5 for X:X5:05 alignment
+            
+            const msToNext5 = secondsToNext5 * 1000;
+            
+            this.logger.info(`⏰ Next fetch scheduled in ${secondsToNext5} seconds at ${new Date(Date.now() + msToNext5).toLocaleTimeString()}`);
+            
+            // Use setTimeout to align to next boundary, then restart interval
+            setTimeout(() => {
+              this.logger.info('✅ Realignment complete - restarting master cycle interval');
+              fetchCandleIfMarketOpen(); // Execute aligned fetch
+              this.masterCycleInterval = setInterval(fetchCandleIfMarketOpen, 5 * 60 * 1000);
+            }, msToNext5);
+          }
+          
+          clearTimeout(fetchTimeout); // Clear timeout on successful completion
+        } catch (error) {
+          clearTimeout(fetchTimeout); // Clear timeout on error too
+          this.logger.error('[BOLLINGER] 🔴 Error fetching 5-minute candle:', error);
+        } finally {
+          this.isFetchingCandle = false;
+        }
+      } else {
+        this.logger.debug(`[BOLLINGER] ⏸️ Market closed, skipping fetch at ${now.toLocaleTimeString()}`);
       }
-    }, 5 * 60 * 1000); // Check every 5 minutes
+    };
     
-    this.logger.info('? Master cycle started - checking for new candles every 5 minutes during market hours');
+    // ✅ CRITICAL FIX: Execute immediately to fetch the just-completed candle
+    fetchCandleIfMarketOpen();
+    
+    // ✅ Then set up interval for subsequent fetches (every 5 minutes)
+    this.masterCycleInterval = setInterval(fetchCandleIfMarketOpen, 5 * 60 * 1000);
+    
+    this.logger.info('✅ Master cycle started - fetched current candle and set 5-min interval');
   }
 
 
@@ -1250,11 +1699,12 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Fetch latest 5-minute candle from API and check for entry signals
    * Called precisely at 5-minute candle closes (13:35:00, 13:40:00, etc.)
+   * FIXED: Added candle age validation to ensure fresh data
    */
   private async fetchLatest5MinuteCandle(): Promise<void> {
     try {
-      const now = new Date();
-      this.logger.info(`?? Fetching 5-minute candle at ${now.toLocaleTimeString()}`);
+      const fetchStartTime = new Date();
+      this.logger.info(`📥 Fetching 5-minute candle at ${fetchStartTime.toLocaleTimeString()}.${fetchStartTime.getMilliseconds()}`);
       
       const toDate = new Date();
       const fromDate = new Date(toDate.getTime() - 10 * 60 * 1000); // Last 10 minutes to get latest candle
@@ -1277,7 +1727,24 @@ export class BollingerBandStrategy extends StrategyBase {
           volume: latestCandle.volume
         };
 
-        this.logger.info(`?? New 5-minute candle: ${newCandle.timestamp.toLocaleTimeString()} OHLC: ${newCandle.open}/${newCandle.high}/${newCandle.low}/${newCandle.close} V:${newCandle.volume}`);
+        // ✅ CRITICAL VALIDATION: Check candle age (freshness)
+        const candleAge = (fetchStartTime.getTime() - newCandle.timestamp.getTime()) / 1000; // Age in seconds
+        const candleAgeMinutes = Math.floor(candleAge / 60);
+        const candleAgeSeconds = Math.floor(candleAge % 60);
+        
+        this.logger.info(`📊 Received candle: ${newCandle.timestamp.toLocaleTimeString()} | Age: ${candleAgeMinutes}m ${candleAgeSeconds}s | OHLC: ${newCandle.open}/${newCandle.high}/${newCandle.low}/${newCandle.close} V:${newCandle.volume}`);
+        
+        // ⚠️ Alert if candle is too old (more than 6 minutes)
+        // Note: 5-minute candles normally have 5m age since we fetch the just-closed bar
+        if (candleAge > 6 * 60) {
+          this.logger.warn(`⚠️ STALE CANDLE WARNING: Candle is ${candleAgeMinutes}m ${candleAgeSeconds}s old! Expected ~5m for 5-minute bars. Candle: ${newCandle.timestamp.toLocaleTimeString()}`);
+        } else if (candleAge > 5.5 * 60) {
+          this.logger.info(`ℹ️ Candle age: ${candleAgeMinutes}m ${candleAgeSeconds}s (slightly delayed but acceptable)`);
+        } else if (candleAge >= 4 * 60) {
+          this.logger.info(`✅ Fresh 5-minute candle: ${candleAgeMinutes}m ${candleAgeSeconds}s age (expected ~5m)`);
+        } else {
+          this.logger.info(`✅ Very fresh candle: ${candleAgeMinutes}m ${candleAgeSeconds}s age`);
+        }
 
         // Enhanced duplicate prevention: Check both timestamp and all OHLC values
         const lastHistoricalCandle = this.candleHistory[this.candleHistory.length - 1];
@@ -1294,12 +1761,12 @@ export class BollingerBandStrategy extends StrategyBase {
           
           if (isNewerCandle) {
             this.candleHistory.push(newCandle);
-            this.logger.info(`📊 New 5-minute candle: NIFTY50 ${newCandle.close} (${newCandle.timestamp.toLocaleTimeString()})`);
+            this.logger.info(`[BOLLINGER] ✅ Added new 5-minute candle: NIFTY50 ${newCandle.close} (${newCandle.timestamp.toLocaleTimeString()})`);
           } else {
             // Same timestamp but different OHLC - update existing candle (live candle update)
             if (lastHistoricalCandle && newCandle.timestamp.getTime() === lastHistoricalCandle.timestamp.getTime()) {
               this.candleHistory[this.candleHistory.length - 1] = newCandle;
-              this.logger.debug(`🔄 Updated current 5-minute candle: NIFTY50 ${newCandle.close}`);
+              this.logger.debug(`[BOLLINGER] 🔄 Updated current 5-minute candle: NIFTY50 ${newCandle.close}`);
             }
           }
           
@@ -1311,12 +1778,20 @@ export class BollingerBandStrategy extends StrategyBase {
           // Update indicators with new/updated candle
           this.updateTechnicalIndicators();
           
-          // Check for new signals
-          await this.checkEntrySignals();
-          
-          // Check position exit conditions with new candle data (LONG uses candle close, SHORT uses real-time)
+          // CRITICAL ORDER: Check exits BEFORE entries (exit existing position before considering new entry)
+          const hadPositionBeforeExitCheck = this.currentPosition !== null;
           if (this.currentPosition) {
             await this.checkPositionExit(newCandle.close);
+          }
+          
+          // Check for new entry signals ONLY if we didn't have a position before
+          // This ensures we wait for the NEXT candle after exit before considering re-entry
+          // Prevents immediate re-entry on the same candle that triggered exit
+          if (!hadPositionBeforeExitCheck) {
+            await this.checkEntrySignals();
+          } else if (!this.currentPosition) {
+            // Position was just exited on this candle - skip entry check until next candle
+            this.logger.debug(`[CANDLE PROCESSING] Position exited on current candle - waiting for next candle before checking entry signals`);
           }
           
           // Update metrics to show strategy is responsive
@@ -1395,6 +1870,9 @@ export class BollingerBandStrategy extends StrategyBase {
   private startPollingBasedMonitoring(instrumentToken: number): void {
     // Recursive polling function that waits for completion before scheduling next poll
     const pollOnce = async () => {
+      // ✅ Detect system sleep disruption
+      const wasDisrupted = this.detectPositionMonitoringDisruption();
+      
       // Check if position still exists
       if (!this.currentPosition) {
         this.stopShortPositionMonitoring();
@@ -1433,14 +1911,31 @@ export class BollingerBandStrategy extends StrategyBase {
             const priceDiff = currentPremium - this.currentPosition.entryPrice;
             this.cachedUnrealizedPnL = priceDiff * this.currentPosition.quantity;
             this.lastPriceUpdateTime = new Date();
+            
+            // ✅ Log recovery details if disruption was detected
+            if (wasDisrupted) {
+              const pointsDiff = Math.abs(priceDiff);
+              const worstCaseExtraLoss = pointsDiff > 10 ? (pointsDiff - 10) * this.currentPosition.quantity : 0;
+              
+              this.logger.info('📊 Position Status After Sleep Recovery:');
+              this.logger.info(`   Entry Price: ₹${this.currentPosition.entryPrice.toFixed(2)}`);
+              this.logger.info(`   Current Price: ₹${currentPremium.toFixed(2)}`);
+              this.logger.info(`   Price Difference: ${priceDiff > 0 ? '+' : ''}${priceDiff.toFixed(2)} points`);
+              this.logger.info(`   Unrealized P&L: ₹${this.cachedUnrealizedPnL.toFixed(2)}`);
+              
+              if (worstCaseExtraLoss > 0) {
+                this.logger.warn(`   ⚠️ Potential Extra Loss: ₹${worstCaseExtraLoss.toFixed(2)} (beyond 10-point SL)`);
+              }
+            }
           }
           
           // Now proceed with exit checks
+          // IMPORTANT: Only SHORT positions are monitored via real-time polling
+          // LONG positions exit ONLY on 5-minute candle close (handled by master cycle)
           if (this.currentPosition.type === 'SHORT') {
             await this.checkShortExitUnified(currentPremium, 'polling');
-          } else if (this.currentPosition.type === 'LONG') {
-            await this.checkLongTrailingSL(currentPremium);
           }
+          // LONG position monitoring removed - exits handled by checkLongExitOnCandleClose()
           
           // Success - reset failure counter
           this.consecutivePollingFailures = 0;
@@ -1495,9 +1990,13 @@ export class BollingerBandStrategy extends StrategyBase {
           this.logger.warn('LONG position exit called without candle close price');
         }
       } else if (this.currentPosition.type === 'SHORT') {
-        // For SHORT positions: Use pure REST API polling monitoring (via startPositionMonitoring)
-        // Position monitoring is handled by startPositionMonitoring() -> startPollingBasedMonitoring()
-        this.logger.debug('SHORT position monitoring handled by dedicated polling system');
+        // For SHORT positions: Check entry candle high breach at 5-minute candle close
+        // (Independent of 12% trailing SL which is checked every 1 second via polling)
+        if (candleClose !== undefined) {
+          await this.checkShortExitOnCandleClose(candleClose);
+        } else {
+          this.logger.debug('SHORT position 5-minute exit check skipped (no candle close price provided)');
+        }
       }
       
       // Update metrics after successful position monitoring
@@ -1611,20 +2110,17 @@ export class BollingerBandStrategy extends StrategyBase {
 
   /**
    * Main strategy logic - processes completed 5-minute candle
+   * NOTE: Entry AND exit signal checking REMOVED - now handled by master cycle at 5-minute boundaries
+   * This method only handles legacy candle building for dashboard display
    */
   private async processCandleCompletion(): Promise<void> {
     if (!this.currentCandle || !this.currentCandle.isComplete) return;
     
-    // Step 1: Entry/Exit checks FIRST (before indicator updates)
-    if (this.currentPosition === null) {
-      // Check for entry signals
-      await this.checkEntrySignals();
-    } else {
-      // Check for exit signals (5-minute candle based)
-      await this.checkCandleBasedExitSignals();
-    }
+    // ⚠️ REMOVED: All entry/exit signal checking (now handled by fetchLatest5MinuteCandle at 5-min boundaries)
+    // LONG exits are checked at 5-minute candle close via master cycle
+    // SHORT exits use dedicated 1-second polling via startPositionMonitoring()
     
-    // Step 2: Update technical indicators AFTER trade decisions
+    // Update technical indicators with completed candle
     const newCandle: Candle = {
       timestamp: this.currentCandle.timestamp,
       open: this.currentCandle.open,
@@ -1681,6 +2177,18 @@ export class BollingerBandStrategy extends StrategyBase {
       return;
     }
     
+    // Log first candle readiness (9:20 AM check)
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    if (currentMinutes === 9 * 60 + 20) {  // Exactly 9:20 AM
+      this.logger.info('✅ First 5-minute candle ready for entry evaluation', {
+        candleTime: '9:15-9:20',
+        currentTime: now.toLocaleTimeString(),
+        candlesAvailable: this.candleHistory.length,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     // Use latest completed candle from history instead of currentCandle
     if (this.candleHistory.length === 0) return;
     const latestCandle = this.candleHistory[this.candleHistory.length - 1];
@@ -1689,22 +2197,29 @@ export class BollingerBandStrategy extends StrategyBase {
     const { rsi, supertrend, bollingerBands } = this.currentIndicators;
     const { r1, r2 } = this.dailyPivots;
     const close = latestCandle.close;
+    const open = latestCandle.open;
     
-    this.logger.info('?? BOLLINGER ENTRY ANALYSIS - Checking signals...');
-    this.logger.info(`?? Current Indicators: RSI=${rsi.toFixed(2)}, BB_Upper=${bollingerBands.upper.toFixed(2)}, BB_Lower=${bollingerBands.lower.toFixed(2)}, Supertrend=${supertrend.trend}, Price=${close}`);
+    // Candle direction validation - bullish for LONG, bearish for SHORT
+    const candleIsBullish = close > open;
+    const candleIsBearish = close < open;
     
-    // LONG Entry Signal - Expanded RSI range for better signal generation
+    this.logger.info('[BOLLINGER] 🔥 ENTRY ANALYSIS - Checking signals...');
+    this.logger.info(`[BOLLINGER] 📊 Current Indicators: RSI=${rsi.toFixed(2)}, BB_Upper=${bollingerBands.upper.toFixed(2)}, BB_Lower=${bollingerBands.lower.toFixed(2)}, Supertrend=${supertrend.trend}, Price=${close}`);
+    this.logger.info(`[BOLLINGER] 📊 Candle Direction: ${candleIsBullish ? 'Bullish (close>open)' : candleIsBearish ? 'Bearish (close<open)' : 'Neutral'} | Open=${open.toFixed(2)}, Close=${close.toFixed(2)}`);
+    
+    // LONG Entry Signal - RSI range optimized for overbought momentum
     const longConditions = {
       priceAboveUpperBB: close > bollingerBands.upper,
-      rsiInRange: rsi >= 65 && rsi <= 85, // Expanded from restrictive 70-80
+      rsiInRange: rsi >= 68 && rsi <= 85, // Overbought momentum confirmation
       supertrendBullish: supertrend.trend === 'UP',
-      aboveR1OrR2: close > r1 || close > r2
+      aboveR1OrR2: close > r1 || close > r2,
+      candleIsBullish: candleIsBullish // NEW: Entry candle must be bullish
     };
     
     const longSignal = Object.values(longConditions).every(Boolean);
     
     if (longSignal) {
-      this.logger.info('🚀 LONG entry signal detected', {
+      this.logger.info('[BOLLINGER] 🚀 LONG entry signal detected', {
         close: close.toFixed(2),
         rsi: rsi.toFixed(2),
         supertrend: supertrend.trend,
@@ -1714,20 +2229,30 @@ export class BollingerBandStrategy extends StrategyBase {
       });
       
       await this.executeLongEntryWithRetry(close);
+    } else {
+      // Show why LONG was blocked
+      this.logger.info('[BOLLINGER] ❌ LONG conditions not met:', {
+        priceAboveUpperBB: `${longConditions.priceAboveUpperBB} (${close.toFixed(2)} > ${bollingerBands.upper.toFixed(2)})`,
+        rsiInRange: `${longConditions.rsiInRange} (${rsi.toFixed(2)} in 68-85)`,
+        supertrendBullish: `${longConditions.supertrendBullish} (${supertrend.trend})`,
+        aboveR1OrR2: `${longConditions.aboveR1OrR2} (${close.toFixed(2)} > R1:${r1.toFixed(2)} or R2:${r2.toFixed(2)})`,
+        candleIsBullish: `${longConditions.candleIsBullish}`
+      });
     }
     
-    // SHORT Entry Signal - Expanded RSI range for better signal generation
+    // SHORT Entry Signal - RSI range optimized for oversold momentum
     const shortConditions = {
       priceBelowLowerBB: close < bollingerBands.lower,
-      rsiInRange: rsi >= 15 && rsi <= 35, // Expanded from restrictive 10-30
+      rsiInRange: rsi >= 10 && rsi <= 30, // Oversold momentum confirmation
       supertrendBearish: supertrend.trend === 'DOWN',
-      belowR1: close <= r1
+      belowR1: close <= r1,
+      candleIsBearish: candleIsBearish // NEW: Entry candle must be bearish
     };
     
     const shortSignal = Object.values(shortConditions).every(Boolean);
     
     if (shortSignal) {
-      this.logger.info('🔻 SHORT entry signal detected', {
+      this.logger.info('[BOLLINGER] 🔻 SHORT entry signal detected', {
         close: close.toFixed(2),
         rsi: rsi.toFixed(2),
         supertrend: supertrend.trend,
@@ -1735,7 +2260,30 @@ export class BollingerBandStrategy extends StrategyBase {
         r1: r1.toFixed(2)
       });
       
+      // Block SHORT entries after 2:55 PM (except Fridays)
+      const shortCutoffTime = 14 * 60 + 55;  // 2:55 PM in minutes
+      const isFriday = now.getDay() === 5;   // Friday = 5 (0=Sunday, 1=Monday, ..., 5=Friday)
+      
+      if (currentMinutes > shortCutoffTime && !isFriday) {
+        this.logger.warn('[BOLLINGER] 🚫 SHORT entry blocked - After 2:55 PM (non-Friday)', {
+          currentTime: now.toLocaleTimeString(),
+          dayOfWeek: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()],
+          cutoffTime: '2:55 PM',
+          reason: 'Late-day SHORT restriction active'
+        });
+        return;  // Skip SHORT entry
+      }
+      
       await this.executeShortEntryWithRetry(close);
+    } else {
+      // Show why SHORT was blocked
+      this.logger.info('[BOLLINGER] ❌ SHORT conditions not met:', {
+        priceBelowLowerBB: `${shortConditions.priceBelowLowerBB} (${close.toFixed(2)} < ${bollingerBands.lower.toFixed(2)})`,
+        rsiInRange: `${shortConditions.rsiInRange} (${rsi.toFixed(2)} in 10-30)`,
+        supertrendBearish: `${shortConditions.supertrendBearish} (${supertrend.trend})`,
+        belowR1: `${shortConditions.belowR1} (${close.toFixed(2)} <= ${r1.toFixed(2)})`,
+        candleIsBearish: `${shortConditions.candleIsBearish}`
+      });
     }
   }
 
@@ -1761,6 +2309,20 @@ export class BollingerBandStrategy extends StrategyBase {
     this.isExecutingLongEntry = true;
 
     try {
+      // 🔒 CRITICAL FIX: Capture entry candle BEFORE any async operations
+      // This prevents race condition where candleHistory updates during order execution
+      const entryCandle = this.candleHistory[this.candleHistory.length - 1];
+      const entryCandleLow = entryCandle?.low;
+      const entryCandleHigh = entryCandle?.high;
+      const entryCandleClose = entryCandle?.close;
+      
+      this.logger.info('📊 Entry candle data captured BEFORE order execution', {
+        entryCandleLow: entryCandleLow?.toFixed(2),
+        entryCandleHigh: entryCandleHigh?.toFixed(2),
+        entryCandleClose: entryCandleClose?.toFixed(2),
+        timestamp: entryCandle?.timestamp.toLocaleTimeString()
+      });
+      
       // Real-time option selection instead of prediction
       const targetPremium = nifty50Price * 0.01; // 1% of NIFTY
       const ceOption = await this.selectOptionInstrument('CE', targetPremium);
@@ -1778,19 +2340,34 @@ export class BollingerBandStrategy extends StrategyBase {
         timestamp: new Date().toLocaleTimeString()
       });
       
+      // Calculate dynamic lot size based on current capital
+      const lots = this.calculateLots();
+      
       // Option already validated above - proceed with entry
-      this.logger.info(`?? Executing LONG entry with real-time selected option: ${ceOption.tradingsymbol}`);
-      const orderResult = await this.executeOrder('BUY', ceOption, this.FIXED_LOTS);
+      this.logger.info(`🚀 Executing LONG entry with real-time selected option: ${ceOption.tradingsymbol}`);
+      const orderResult = await this.executeOrder('BUY', ceOption, lots);
       
       if (orderResult.success) {
+        // Use captured candle data (not current candleHistory which may have updated)
         this.currentPosition = {
           type: 'LONG',
           instrument: ceOption,
           entryPrice: orderResult.price,
-          quantity: this.FIXED_LOTS,
+          quantity: lots,
           entryTime: new Date(),
+          ...(entryCandleLow !== undefined && { entryCandleLow: entryCandleLow }),
+          ...(entryCandleHigh !== undefined && { entryCandleHigh: entryCandleHigh }),
           entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`
         };
+        
+        // P0: Save position to disk immediately after entry
+        this.saveCapitalData();
+        
+        this.logger.info('✅ LONG position created with pre-captured candle data', {
+          entryCandleLow: entryCandleLow?.toFixed(2),
+          entryCandleHigh: entryCandleHigh?.toFixed(2),
+          entryCandleClose: entryCandleClose?.toFixed(2)
+        });
         
         // Start position monitoring for exit conditions
         this.startPositionMonitoring().catch(error => {
@@ -1807,7 +2384,7 @@ export class BollingerBandStrategy extends StrategyBase {
         this.logger.info('✅ LONG position opened', {
           instrument: ceOption.tradingsymbol,
           entryPrice: orderResult.price,
-          quantity: this.FIXED_LOTS
+          quantity: lots
         });
       }
       
@@ -1852,6 +2429,18 @@ export class BollingerBandStrategy extends StrategyBase {
     this.isExecutingShortEntry = true;
 
     try {
+      // 🔒 CRITICAL FIX: Capture entry candle BEFORE any async operations
+      // This prevents race condition where candleHistory updates during order execution
+      const entryCandle = this.candleHistory[this.candleHistory.length - 1];
+      const entryCandleHigh = entryCandle?.high || nifty50Price;
+      const entryCandleLow = entryCandle?.low;
+      
+      this.logger.info('📊 Entry candle data captured BEFORE order execution', {
+        entryCandleHigh: entryCandleHigh.toFixed(2),
+        entryCandleLow: entryCandleLow?.toFixed(2),
+        timestamp: entryCandle?.timestamp.toLocaleTimeString()
+      });
+      
       // Real-time option selection instead of prediction
       const targetPremium = nifty50Price * 0.01; // 1% of NIFTY
       const peOption = await this.selectOptionInstrument('PE', targetPremium);
@@ -1871,19 +2460,28 @@ export class BollingerBandStrategy extends StrategyBase {
       
       // Option already validated - proceed with entry
       this.logger.info(`?? Executing SHORT entry with real-time selected option: ${peOption.tradingsymbol}`);
-      const orderResult = await this.executeOrder('BUY', peOption, this.FIXED_LOTS);
+      const lots = this.calculateLots();
+      const orderResult = await this.executeOrder('BUY', peOption, lots);
       
       if (orderResult.success) {
+        // Use captured candle data (not current candleHistory which may have updated)
+        this.logger.info(`[SHORT ENTRY] Using pre-captured entry candle high: ${entryCandleHigh.toFixed(2)}`);
+        
         this.currentPosition = {
           type: 'SHORT',
           instrument: peOption,
           entryPrice: orderResult.price,
-          quantity: this.FIXED_LOTS,
+          quantity: lots,
           entryTime: new Date(),
+          entryCandleHigh: entryCandleHigh, // Pre-captured value
           trailingSL: orderResult.price * 0.88, // 12% below entry
           highestPremium: orderResult.price,
-          entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`
+          entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`,
+          timeDecayTrailing: { lastHighTime: new Date() } // Initialize at entry for precise stagnation tracking
         };
+        
+        // P0: Save position to disk immediately after entry
+        this.saveCapitalData();
         
         // Start position monitoring for exit conditions
         this.startPositionMonitoring().catch(error => {
@@ -1900,7 +2498,7 @@ export class BollingerBandStrategy extends StrategyBase {
         this.logger.info('✅ SHORT position opened', {
           instrument: peOption.tradingsymbol,
           entryPrice: orderResult.price,
-          quantity: this.FIXED_LOTS,
+          quantity: lots,
           trailingSL: this.currentPosition?.trailingSL
         });
       }
@@ -1976,23 +2574,104 @@ export class BollingerBandStrategy extends StrategyBase {
     if (!this.currentIndicators || !this.currentPosition) return;
     if (this.currentPosition.type !== 'LONG') return;
     
+    // Race condition protection - ensure only one exit check at a time
+    if (this.isProcessingLongExit) {
+      this.logger.debug('[LONG EXIT CHECK] Exit already in progress, skipping');
+      return;
+    }
+    
     const bbMidline = this.currentIndicators.bollingerBands.middle;
     
-    // ONLY exit if completed 5-minute candle close is below BB midline
-    if (candleClosePrice < bbMidline) {
-      this.logger.info('?? LONG exit signal: 5-minute candle close below BB midline', {
-        candleClose: candleClosePrice.toFixed(2),
-        bbMidline: bbMidline.toFixed(2),
-        exitType: 'CANDLE_CLOSE_ONLY',
-        timestamp: new Date().toLocaleTimeString()
-      });
+    // Determine exit threshold: MAX(entry candle low, BB midline) - whichever is hit FIRST as price falls
+    const entryCandleLow = this.currentPosition.entryCandleLow || bbMidline;
+    const exitThreshold = Math.max(entryCandleLow, bbMidline);
+    const usedEntryCandleLow = exitThreshold === entryCandleLow && this.currentPosition.entryCandleLow !== undefined;
+    
+    // ONLY exit if completed 5-minute candle close is below exit threshold
+    if (candleClosePrice < exitThreshold) {
+      this.isProcessingLongExit = true; // Set flag BEFORE async executeExit call
       
-      await this.executeExit('LONG_CANDLE_CLOSE_EXIT');
+      try {
+        this.logger.info('🔴 LONG exit signal: 5-minute candle close below exit threshold', {
+          candleClose: candleClosePrice.toFixed(2),
+          exitThreshold: exitThreshold.toFixed(2),
+          entryCandleLow: entryCandleLow.toFixed(2),
+          bbMidline: bbMidline.toFixed(2),
+          usedThreshold: usedEntryCandleLow ? 'Entry Candle Low' : 'BB Midline',
+          exitType: 'CANDLE_CLOSE_ONLY',
+          timestamp: new Date().toLocaleTimeString()
+        });
+        
+        await this.executeExit('LONG_CANDLE_CLOSE_EXIT');
+      } finally {
+        this.isProcessingLongExit = false; // Reset flag in finally block
+      }
     } else {
-      this.logger.debug('?? LONG position held: candle close above BB midline', {
+      this.logger.debug('✅ LONG position held: candle close above exit threshold', {
         candleClose: candleClosePrice.toFixed(2),
-        bbMidline: bbMidline.toFixed(2)
+        exitThreshold: exitThreshold.toFixed(2)
       });
+    }
+  }
+
+  /**
+   * SHORT Exit Check - Entry Candle High Breach (5-minute candle close only)
+   * 
+   * CRITICAL FIX: Now checks candle HIGH (not close) against entry candle high.
+   * A breach of entry candle high by the candle's high invalidates the bearish thesis
+   * even if the candle closes back below it. This prevents holding SHORT positions
+   * when price action shows bullish strength.
+   * 
+   * This is independent of the 12% trailing stop loss on option premium.
+   * 
+   * @param candleClosePrice - The closing price of the just-completed 5-minute NIFTY candle (kept for compatibility)
+   */
+  private async checkShortExitOnCandleClose(candleClosePrice: number): Promise<void> {
+    if (!this.currentPosition) return;
+    if (this.currentPosition.type !== 'SHORT') return;
+    
+    // Race condition protection - ensure only one exit check at a time
+    if (this.isProcessingShortExit) {
+      this.logger.debug('[SHORT EXIT CHECK] Exit already in progress, skipping 5-minute check');
+      return;
+    }
+    
+    const entryCandleHigh = this.currentPosition.entryCandleHigh;
+    if (entryCandleHigh === undefined) {
+      this.logger.warn('[SHORT EXIT CHECK] Entry candle high not stored, skipping 5-minute exit check');
+      return;
+    }
+    
+    // Get the latest candle from history (just added before this check)
+    const latestCandle = this.candleHistory[this.candleHistory.length - 1];
+    if (!latestCandle) {
+      this.logger.warn('[SHORT EXIT CHECK] No candle in history, skipping exit check');
+      return;
+    }
+    
+    const currentCandleHigh = latestCandle.high;
+    const currentCandleClose = latestCandle.close;
+    
+    this.logger.debug(`[SHORT EXIT CHECK] Candle H:${currentCandleHigh.toFixed(2)} C:${currentCandleClose.toFixed(2)}, Entry candle high: ${entryCandleHigh.toFixed(2)}`);
+    
+    // CRITICAL: Exit if candle HIGH breaches entry candle high (not just close)
+    // This prevents holding SHORT positions when price action invalidates bearish thesis
+    if (currentCandleHigh > entryCandleHigh) {
+      this.isProcessingShortExit = true; // Set flag BEFORE async executeExit call
+      
+      try {
+        const breachAmount = currentCandleHigh - entryCandleHigh;
+        this.logger.info(`[SHORT EXIT SIGNAL] 🔴 Entry candle HIGH breached! Candle H:${currentCandleHigh.toFixed(2)} > Entry H:${entryCandleHigh.toFixed(2)} (breach: +${breachAmount.toFixed(2)})`);
+        this.logger.info(`[SHORT EXIT SIGNAL] 📊 Candle details: O:${latestCandle.open.toFixed(2)} H:${currentCandleHigh.toFixed(2)} L:${latestCandle.low.toFixed(2)} C:${currentCandleClose.toFixed(2)}`);
+        
+        await this.executeExit('SHORT_ENTRY_CANDLE_HIGH_BREACH');
+      } finally {
+        this.isProcessingShortExit = false; // Reset flag in finally block
+      }
+    } else {
+      const marginFromHigh = entryCandleHigh - currentCandleHigh;
+      const marginFromClose = entryCandleHigh - currentCandleClose;
+      this.logger.debug(`[SHORT EXIT CHECK] ✅ Still safe - Entry high: ${entryCandleHigh.toFixed(2)}, Current H:${currentCandleHigh.toFixed(2)} (margin: ${marginFromHigh.toFixed(2)}), C:${currentCandleClose.toFixed(2)} (margin: ${marginFromClose.toFixed(2)})`);
     }
   }
 
@@ -2014,24 +2693,149 @@ export class BollingerBandStrategy extends StrategyBase {
     this.isProcessingShortExit = true;
     
     try {
-      // Update highest premium and trailing SL
+      // Step 1: Update highest premium if new high reached
       if (currentPremium > (this.currentPosition.highestPremium || 0)) {
         this.currentPosition.highestPremium = currentPremium;
-        this.currentPosition.trailingSL = currentPremium * 0.88; // 12% below new high
         
-        this.logger.info(`?? Trailing SL updated (${source})`, {
+        // Update last high time (lazy initialization)
+        if (!this.currentPosition.timeDecayTrailing) {
+          this.currentPosition.timeDecayTrailing = { lastHighTime: new Date() };
+        } else {
+          this.currentPosition.timeDecayTrailing.lastHighTime = new Date();
+        }
+        
+        this.logger.info(`📈 New high premium reached`, {
           newHigh: currentPremium.toFixed(2),
-          newSL: this.currentPosition.trailingSL.toFixed(2),
-          source: source,
           timestamp: new Date().toLocaleTimeString()
         });
       }
       
-      // Check if trailing SL is hit
+      // Step 2: Calculate time-based trailing SL (runs EVERY poll, independent of new highs)
+      if (this.currentPosition.highestPremium) {
+        const minutesSinceEntry = (Date.now() - this.currentPosition.entryTime.getTime()) / 60000;
+        const minutesSinceLastHigh = this.currentPosition.timeDecayTrailing
+          ? (Date.now() - this.currentPosition.timeDecayTrailing.lastHighTime.getTime()) / 60000
+          : minutesSinceEntry; // First high after entry, use entry time
+        
+        // Time-based tightening schedule
+        let trailingPct = 12; // Default for 0-20 minutes
+        if (minutesSinceEntry >= 40) trailingPct = 5;       // 40-45 min
+        else if (minutesSinceEntry >= 35) trailingPct = 6;  // 35-40 min
+        else if (minutesSinceEntry >= 30) trailingPct = 7;  // 30-35 min
+        else if (minutesSinceEntry >= 20) trailingPct = 9;  // 20-30 min
+        
+        // Stagnation rule: Enforce ceiling (max looseness) at 9%
+        // Math.min ensures we don't use a % LOOSER than 9% when stagnant
+        // (Smaller % = tighter stop, so min() takes the tightest/most protective value)
+        // This prevents double-reduction when time thresholds align with stagnation
+        if (minutesSinceLastHigh >= 10) {
+          trailingPct = Math.min(trailingPct, 9);
+        }
+        
+        // Calculate what SL should be based on time-decay schedule
+        const timeBasedSL = this.currentPosition.highestPremium * (1 - trailingPct / 100);
+        
+        // Only update if tighter (higher SL = tighter protection for SHORT positions)
+        if (!this.currentPosition.trailingSL || timeBasedSL > this.currentPosition.trailingSL) {
+          const oldSL = this.currentPosition.trailingSL;
+          const oldPct = oldSL && this.currentPosition.highestPremium
+            ? ((1 - oldSL / this.currentPosition.highestPremium) * 100).toFixed(1)
+            : 'none';
+          
+          this.currentPosition.trailingSL = timeBasedSL;
+          
+          // P0: Save SHORT trailing SL updates to disk
+          this.saveCapitalData();
+          
+          this.logger.info(`� Trailing SL updated (${oldSL ? 'time-decay' : 'initial'})`, {
+            highestPremium: this.currentPosition.highestPremium.toFixed(2),
+            oldSL: oldSL?.toFixed(2) || 'none',
+            oldPct: oldPct + '%',
+            newSL: timeBasedSL.toFixed(2),
+            newPct: trailingPct + '%',
+            minutesSinceEntry: minutesSinceEntry.toFixed(1),
+            minutesSinceLastHigh: minutesSinceLastHigh.toFixed(1),
+            source: source,
+            timestamp: new Date().toLocaleTimeString()
+          });
+        }
+      }
+      
+      // Step 2.5: Check minimum movement requirements (performance filter)
+      // Exit if premium hasn't moved sufficiently at key time checkpoints
+      if (this.currentPosition.highestPremium) {
+        const minutesSinceEntry = (Date.now() - this.currentPosition.entryTime.getTime()) / 60000;
+        const movementFromEntry = this.currentPosition.highestPremium - this.currentPosition.entryPrice;
+        
+        // 10-minute checkpoint: Require at least ₹5 movement from entry
+        if (minutesSinceEntry >= 10 && minutesSinceEntry < 10.1) {
+          if (movementFromEntry < 5) {
+            this.logger.info('🔴 SHORT exit: Insufficient movement at 10-minute checkpoint', {
+              minutesSinceEntry: minutesSinceEntry.toFixed(2),
+              entryPrice: this.currentPosition.entryPrice.toFixed(2),
+              highestPremium: this.currentPosition.highestPremium.toFixed(2),
+              movementFromEntry: movementFromEntry.toFixed(2),
+              required: 5,
+              shortfall: (5 - movementFromEntry).toFixed(2),
+              timestamp: new Date().toLocaleTimeString()
+            });
+            await this.executeExit('SHORT_INSUFFICIENT_MOVEMENT_10MIN');
+            return; // Exit immediately, skip trailing SL check
+          } else {
+            // Log successful pass of 10-minute checkpoint
+            this.logger.info('✅ SHORT position passed 10-minute movement checkpoint', {
+              minutesSinceEntry: minutesSinceEntry.toFixed(2),
+              entryPrice: this.currentPosition.entryPrice.toFixed(2),
+              highestPremium: this.currentPosition.highestPremium.toFixed(2),
+              movementFromEntry: movementFromEntry.toFixed(2),
+              required: 5,
+              surplus: (movementFromEntry - 5).toFixed(2),
+              timestamp: new Date().toLocaleTimeString()
+            });
+          }
+        }
+        
+        // 20-minute checkpoint: Require at least ₹10 movement from entry
+        if (minutesSinceEntry >= 20 && minutesSinceEntry < 20.1) {
+          if (movementFromEntry < 10) {
+            this.logger.info('🔴 SHORT exit: Insufficient movement at 20-minute checkpoint', {
+              minutesSinceEntry: minutesSinceEntry.toFixed(2),
+              entryPrice: this.currentPosition.entryPrice.toFixed(2),
+              highestPremium: this.currentPosition.highestPremium.toFixed(2),
+              movementFromEntry: movementFromEntry.toFixed(2),
+              required: 10,
+              shortfall: (10 - movementFromEntry).toFixed(2),
+              timestamp: new Date().toLocaleTimeString()
+            });
+            await this.executeExit('SHORT_INSUFFICIENT_MOVEMENT_20MIN');
+            return; // Exit immediately, skip trailing SL check
+          } else {
+            // Log successful pass of 20-minute checkpoint
+            this.logger.info('✅ SHORT position passed 20-minute movement checkpoint', {
+              minutesSinceEntry: minutesSinceEntry.toFixed(2),
+              entryPrice: this.currentPosition.entryPrice.toFixed(2),
+              highestPremium: this.currentPosition.highestPremium.toFixed(2),
+              movementFromEntry: movementFromEntry.toFixed(2),
+              required: 10,
+              surplus: (movementFromEntry - 10).toFixed(2),
+              timestamp: new Date().toLocaleTimeString()
+            });
+          }
+        }
+      }
+      
+      // Step 3: Check if trailing SL is hit
       if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
+        // Calculate what % was used for exit log context
+        const exitTrailingPct = this.currentPosition.highestPremium 
+          ? ((1 - this.currentPosition.trailingSL / this.currentPosition.highestPremium) * 100).toFixed(1)
+          : '0';
+        
         this.logger.info(`?? SHORT exit signal: Trailing SL hit (${source})`, {
           currentPremium: currentPremium.toFixed(2),
           trailingSL: this.currentPosition.trailingSL.toFixed(2),
+          trailingPct: exitTrailingPct + '%',
+          highestPremium: this.currentPosition.highestPremium?.toFixed(2) || 'N/A',
           source: source,
           timestamp: new Date().toLocaleTimeString()
         });
@@ -2053,7 +2857,9 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * Check LONG trailing SL (similar to SHORT logic but for LONG positions)
+   * @deprecated LONG positions do NOT use real-time trailing SL
+   * LONG exits happen ONLY on 5-minute candle close via checkLongExitOnCandleClose()
+   * This method is kept for reference but should NEVER be called
    */
   private async checkLongTrailingSL(currentPremium: number): Promise<void> {
     if (!this.currentPosition || this.currentPosition.type !== 'LONG') return;
@@ -2112,11 +2918,11 @@ export class BollingerBandStrategy extends StrategyBase {
     if (!this.currentPosition) return;
     
     try {
-      const orderResult = await this.executeOrder('SELL', this.currentPosition.instrument, this.FIXED_LOTS);
+      const orderResult = await this.executeOrder('SELL', this.currentPosition.instrument, this.currentPosition.quantity);
       
       if (orderResult.success) {
-        // Calculate P&L correctly for options trading: (Exit Premium - Entry Premium) � Total Quantity
-        const totalQuantity = this.FIXED_LOTS * 75; // NIFTY lot size � number of lots
+        // Calculate P&L correctly for options trading: (Exit Premium - Entry Premium) × Total Quantity
+        const totalQuantity = this.currentPosition.quantity * 75; // NIFTY lot size × number of lots
         const pnl = (orderResult.price - this.currentPosition.entryPrice) * totalQuantity;
         this.metrics.profitLoss += pnl;
         
@@ -2130,7 +2936,7 @@ export class BollingerBandStrategy extends StrategyBase {
           exitOrderId: orderResult.orderId || `BB_EXIT_${Date.now()}`,
           instrument: this.currentPosition.instrument,
           direction: this.currentPosition.type,
-          quantity: this.FIXED_LOTS * 75, // Total shares
+          quantity: this.currentPosition.quantity * 75, // Total shares
           entryPrice: this.currentPosition.entryPrice,
           exitPrice: orderResult.price,
           entryTime: this.currentPosition.entryTime,
@@ -2143,9 +2949,6 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Add to trade history
         this.tradeHistory.push(tradeRecord);
-        
-        // Save updated capital and trade history
-        this.saveCapitalData();
         
         this.logger.info('✅ Position closed', {
           reason,
@@ -2174,6 +2977,23 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Stop position monitoring since no active position
         this.stopPositionMonitoring();
+        
+        // P0: Save cleared position to disk (CRITICAL for all exit paths)
+        // Retry once if save fails to prevent ghost positions
+        try {
+          this.saveCapitalData();
+          this.logger.info("💾 Position cleared from disk after exit");
+        } catch (saveError) {
+          this.logger.error("🚨 CRITICAL: Failed to save cleared position, retrying...", saveError);
+          // One retry attempt
+          try {
+            this.saveCapitalData();
+            this.logger.info("💾 Position cleared from disk after exit (retry successful)");
+          } catch (retryError) {
+            this.logger.error("🚨 CRITICAL: Failed to save cleared position after retry!", retryError);
+            throw new Error("Failed to persist position clear - manual intervention required");
+          }
+        }
       }
       
     } catch (error) {
@@ -2215,6 +3035,219 @@ export class BollingerBandStrategy extends StrategyBase {
     
     this.logger.warn('🔴 Force closing position:', reason);
     await this.executeExit(reason);
+  }
+
+  /**
+   * P0: Schedule EOD safety exit at 3:28 PM
+   * Critical fix to prevent relying on broker's MIS auto-squareoff
+   */
+  private scheduleEODExit(): void {
+    const now = new Date();
+    const eodTime = new Date();
+    eodTime.setHours(15, 28, 0, 0); // 3:28 PM
+    
+    // Clear any existing timer first
+    if (this.eodExitTimer) {
+      clearTimeout(this.eodExitTimer);
+      delete this.eodExitTimer;
+    }
+    
+    // Only schedule if we haven't passed 3:28 PM today
+    if (now < eodTime) {
+      const delay = eodTime.getTime() - now.getTime();
+      this.logger.info(`📅 EOD safety exit scheduled for 3:28 PM (in ${Math.round(delay / 60000)} minutes)`);
+      
+      this.eodExitTimer = setTimeout(async () => {
+        if (this.currentPosition) {
+          this.logger.warn('🕒 EOD safety exit triggered at 3:28 PM');
+          await this.forceClosePosition('EOD_SAFETY_EXIT_3:28PM');
+        } else {
+          this.logger.info('✅ No active position at 3:28 PM, no EOD exit needed');
+        }
+      }, delay);
+    } else {
+      this.logger.info('⏰ Already past 3:28 PM today, no EOD exit scheduled');
+    }
+  }
+
+  /**
+   * Cancel scheduled EOD exit timer
+   */
+  private cancelEODExit(): void {
+    if (this.eodExitTimer) {
+      clearTimeout(this.eodExitTimer);
+      delete this.eodExitTimer;
+      this.logger.info('🛑 EOD safety exit timer cancelled');
+    }
+  }
+
+  /**
+   * P0: Start position reconciliation system
+   * Periodically checks if bot's position matches broker's actual positions
+   * Auto-reconciles if mismatch detected (e.g., broker auto-squareoff)
+   */
+  private startPositionReconciliation(): void {
+    // Clear any existing interval first
+    this.stopPositionReconciliation();
+    
+    // Run reconciliation every 5 minutes
+    this.positionReconciliationInterval = setInterval(async () => {
+      if (this.currentPosition) {
+        await this.reconcilePositions();
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+    
+    this.logger.info('✅ Position reconciliation started (checks every 5 minutes)');
+  }
+
+  /**
+   * P0: Stop position reconciliation system
+   */
+  private stopPositionReconciliation(): void {
+    if (this.positionReconciliationInterval) {
+      clearInterval(this.positionReconciliationInterval);
+      delete this.positionReconciliationInterval;
+      this.logger.info('🛑 Position reconciliation stopped');
+    }
+  }
+
+  /**
+   * P0: Reconcile bot's position with broker's actual positions
+   * Detects and handles broker auto-squareoff scenarios
+   */
+  private async reconcilePositions(): Promise<void> {
+    // ✅ Detect and track reconciliation timing
+    const wasDisrupted = this.detectReconciliationDisruption();
+    
+    if (!this.currentPosition) {
+      this.lastReconciliationTime = Date.now(); // Track even when no position
+      return;
+    }
+    
+    const ourSymbol = this.currentPosition.instrument.tradingsymbol;
+    
+    try {
+      this.logger.debug(`🔄 Reconciling position: ${ourSymbol}`);
+      
+      // Fetch current positions from broker
+      const brokerPositions = await this.kiteConnect.getPositions();
+      
+      // Check if our position exists in broker's net positions
+      const brokerPosition = brokerPositions.net.find(
+        (p: any) => p.tradingsymbol === ourSymbol && p.quantity !== 0
+      );
+      
+      if (!brokerPosition || brokerPosition.quantity === 0) {
+        // Position doesn't exist at broker but exists in bot
+        this.logger.warn('⚠️ POSITION MISMATCH DETECTED!');
+        this.logger.warn(`📊 Bot has position ${ourSymbol} but broker does not`);
+        this.logger.warn('🔍 Likely causes: Broker auto-squareoff (MIS), manual exit on broker platform, or connection issue');
+        
+        this.logger.info('🔄 Auto-reconciling: Fetching exit details and recording P&L...');
+        
+        // Use enhanced clearActivePosition to fetch exit order and record P&L
+        await this.clearActivePosition();
+        
+        this.logger.info('✅ Position reconciliation completed successfully');
+      } else {
+        this.logger.debug(`✅ Position reconciliation OK: ${ourSymbol} exists at broker`);
+      }
+    } catch (error) {
+      this.logger.error('❌ Error during position reconciliation:', error);
+      // Don't throw - reconciliation errors shouldn't stop the strategy
+    } finally {
+      // ✅ Always update tracking time
+      this.lastReconciliationTime = Date.now();
+    }
+  }
+
+  /**
+   * Detect if master cycle (candle fetching) was disrupted by system sleep
+   * Expected interval: 5 minutes (300,000ms)
+   * Threshold: 6 minutes (360,000ms) with 20% tolerance
+   */
+  private detectMasterCycleDisruption(): boolean {
+    if (!this.lastSuccessfulFetchTime) {
+      return false; // First fetch, no baseline yet
+    }
+    
+    const now = Date.now();
+    const timeSinceLastFetch = now - this.lastSuccessfulFetchTime;
+    const EXPECTED_INTERVAL = 5 * 60 * 1000; // 5 minutes
+    const DISRUPTION_THRESHOLD = EXPECTED_INTERVAL * 1.2; // 6 minutes (20% tolerance)
+    
+    if (timeSinceLastFetch > DISRUPTION_THRESHOLD) {
+      const gapMinutes = Math.floor(timeSinceLastFetch / 60000);
+      this.logger.warn('⚠️ MASTER CYCLE DISRUPTION DETECTED!');
+      this.logger.warn(`⏱️ Gap: ${gapMinutes} minutes (${timeSinceLastFetch}ms), expected: 5 minutes (${EXPECTED_INTERVAL}ms)`);
+      this.logger.warn('💤 Likely cause: System sleep/hibernate disrupted setInterval alignment');
+      this.logger.info('🔄 Recovery: Will realign to next 5-minute boundary after this fetch');
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Detect if position monitoring was disrupted by system sleep
+   * Expected interval: 1 second (1,000ms) + processing time
+   * Threshold: 10 seconds (10,000ms) - much longer than normal
+   * 
+   * CRITICAL: This prevents runaway losses when stop loss breaches during sleep
+   */
+  private detectPositionMonitoringDisruption(): boolean {
+    if (!this.lastPollingTime) {
+      return false; // First poll, no baseline yet
+    }
+    
+    const now = Date.now();
+    const timeSinceLastPoll = now - this.lastPollingTime.getTime();
+    const EXPECTED_INTERVAL = 1000; // 1 second
+    const DISRUPTION_THRESHOLD = 10000; // 10 seconds (much longer than normal)
+    
+    if (timeSinceLastPoll > DISRUPTION_THRESHOLD) {
+      const gapSeconds = Math.floor(timeSinceLastPoll / 1000);
+      this.logger.error('🚨 POSITION MONITORING DISRUPTION DETECTED!');
+      this.logger.error(`⏱️ Gap: ${gapSeconds} seconds (${timeSinceLastPoll}ms), expected: <2 seconds`);
+      this.logger.error('💤 Likely cause: System sleep/hibernate disrupted position monitoring');
+      this.logger.error('⚠️ CRITICAL: Stop loss may have been breached during sleep gap');
+      this.logger.info('🔄 Recovery: Forcing immediate position check with current premium');
+      
+      // Update metrics for monitoring
+      this.healthStatus.dataStreamHealthy = false;
+      this.updateMetrics({ healthStatus: 'warning' });
+      
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Detect if position reconciliation was disrupted by system sleep
+   * Expected interval: 5 minutes (300,000ms)
+   * Threshold: 10 minutes (600,000ms) - indicates missed reconciliation cycles
+   */
+  private detectReconciliationDisruption(): boolean {
+    if (!this.lastReconciliationTime) {
+      return false; // First reconciliation, no baseline yet
+    }
+    
+    const now = Date.now();
+    const timeSinceLastReconciliation = now - this.lastReconciliationTime;
+    const EXPECTED_INTERVAL = 5 * 60 * 1000; // 5 minutes
+    const DISRUPTION_THRESHOLD = 10 * 60 * 1000; // 10 minutes
+    
+    if (timeSinceLastReconciliation > DISRUPTION_THRESHOLD) {
+      const gapMinutes = Math.floor(timeSinceLastReconciliation / 60000);
+      this.logger.warn('⚠️ RECONCILIATION DISRUPTION DETECTED!');
+      this.logger.warn(`⏱️ Gap: ${gapMinutes} minutes, expected: 5 minutes`);
+      this.logger.warn('💤 Likely cause: System sleep disrupted reconciliation cycle');
+      this.logger.info('🔄 Recovery: Executing reconciliation now to detect broker changes');
+      return true;
+    }
+    
+    return false;
   }
 
   // ===========================

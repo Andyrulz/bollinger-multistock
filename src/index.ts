@@ -519,9 +519,6 @@ class TradingBot {
             <button onclick="executeManualExit()" class="action-btn danger">
                 🚨 Manual Exit
             </button>
-            <button onclick="clearOrphanedState()" class="action-btn warning" title="Use this if you manually exited position on broker platform">
-                🧹 Clear Orphaned State
-            </button>
             ` : ''}
         </div>
 
@@ -659,41 +656,6 @@ class TradingBot {
                 
                 if (response.ok) {
                     alert('Manual exit executed successfully!');
-                    window.location.reload();
-                } else {
-                    alert('Error: ' + data.error + '\\n' + (data.details || ''));
-                }
-            } catch (error) {
-                alert('Network error: ' + error.message);
-            } finally {
-                button.textContent = originalText;
-                button.disabled = false;
-            }
-        }
-        
-        async function clearOrphanedState() {
-            if (!confirm('This will clear the strategy state if you already manually exited the position on your broker platform.\\n\\nDid you already close the position manually?')) {
-                return;
-            }
-            
-            const button = event.target;
-            const originalText = button.textContent;
-            
-            try {
-                button.textContent = 'Clearing...';
-                button.disabled = true;
-                
-                const response = await fetch('/execution/clear-orphaned-state', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    alert('✅ Orphaned state cleared!\\n\\nStrategy has been reset to WAITING_FOR_BREAKOUT.');
                     window.location.reload();
                 } else {
                     alert('Error: ' + data.error + '\\n' + (data.details || ''));
@@ -1308,6 +1270,7 @@ class TradingBot {
         // Safely get other data
         let strategyState;
         let latestPivots;
+        let dailyPivots;
         let livePrice;
         let isMarketHours = false;
         let priceStreamingActive = false;
@@ -1322,6 +1285,7 @@ class TradingBot {
         try {
           strategyState = this.breakoutStrategy.getStrategyState();
           latestPivots = this.breakoutStrategy.getLatestPivots();
+          dailyPivots = this.breakoutStrategy.getDailyPivots();
           livePrice = this.breakoutStrategy.getLivePrice();
           isMarketHours = this.breakoutStrategy.isMarketHours();
           priceStreamingActive = this.breakoutStrategy.isPriceStreamingActive();
@@ -1360,6 +1324,7 @@ class TradingBot {
           candle_count: candleCount,
           current_contract: strategyState?.currentContract || null,
           latest_pivots: latestPivots || { pivotHigh: null, pivotLow: null },
+          daily_pivots: dailyPivots || null,
           last_update: strategyState?.lastUpdateTime || new Date(),
           live_price: livePrice || null,
           price_streaming_active: priceStreamingActive,
@@ -2520,6 +2485,7 @@ class TradingBot {
       const strategyState = this.breakoutStrategy.getStrategyState();
       const currentContract = strategyState?.currentContract;
       const latestPivots = this.breakoutStrategy.getLatestPivots();
+      const dailyPivots = this.breakoutStrategy.getDailyPivots();
       
       // DEBUG: Log pivot data inconsistency
       this.logger.info(`🔍 DASHBOARD PIVOT DEBUG: High=${latestPivots.pivotHigh ? latestPivots.pivotHigh.price : 'null'}, Low=${latestPivots.pivotLow ? latestPivots.pivotLow.price : 'null'}`);
@@ -3106,7 +3072,7 @@ class TradingBot {
                                 ` : `
                                     <div style="color: #6b7280;">
                                         <div><strong>Status:</strong> Waiting for trade signal</div>
-                                        <div><strong>Position Size:</strong> Auto-calculated (${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}% risk)</div>
+                                        <div><strong>Position Size:</strong> Auto-calculated (${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '3.0'}% risk)</div>
                                         <div><strong>Order Type:</strong> Market order execution</div>
                                         <div><strong>Mode:</strong> ${tradingConfig?.paperTradingMode ? 'Paper Trading' : 'Live Trading'}</div>
                                     </div>
@@ -3124,7 +3090,7 @@ class TradingBot {
                         </div>
                         <div style="font-size: 14px;">
                             <strong>Capital:</strong> ₹${currentCapital ? currentCapital.toLocaleString() : 'Loading...'}<br>
-                            <strong>Risk per Trade:</strong> ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}%<br>
+                            <strong>Risk per Trade:</strong> ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '3.0'}%<br>
                             <strong>Active Position:</strong> ${activePosition ? 'YES' : 'NO'}<br>
                             <strong>Total Trades:</strong> ${executionStatus?.totalTrades || 0}
                         </div>
@@ -3168,6 +3134,54 @@ class TradingBot {
                     </div>
                 </div>
 
+                <div class="status-card ${dailyPivots ? 'success' : 'warning'}">
+                    <div class="card-title">📊 Daily Pivot Levels (Filter)</div>
+                    <div class="card-content">
+                        ${dailyPivots ? `
+                            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px;">
+                                <div style="text-align: center; padding: 8px; background: #fef3c7; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #92400e; font-weight: 600;">R3</div>
+                                    <div style="font-size: 14px; color: #78350f;">₹${dailyPivots.r3.toFixed(2)}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: #fef3c7; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #92400e; font-weight: 600;">R2</div>
+                                    <div style="font-size: 14px; color: #78350f;">₹${dailyPivots.r2.toFixed(2)}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: #fef3c7; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #92400e; font-weight: 600;">R1</div>
+                                    <div style="font-size: 15px; font-weight: 700; color: #78350f;">₹${dailyPivots.r1.toFixed(2)}</div>
+                                </div>
+                            </div>
+                            <div style="text-align: center; padding: 10px; background: #e0e7ff; border-radius: 6px; margin-bottom: 10px;">
+                                <div style="font-size: 11px; color: #3730a3; font-weight: 600;">PIVOT POINT</div>
+                                <div style="font-size: 16px; font-weight: 700; color: #312e81;">₹${dailyPivots.pp.toFixed(2)}</div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+                                <div style="text-align: center; padding: 8px; background: #fee2e2; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #991b1b; font-weight: 600;">S1</div>
+                                    <div style="font-size: 15px; font-weight: 700; color: #7f1d1d;">₹${dailyPivots.s1.toFixed(2)}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: #fee2e2; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #991b1b; font-weight: 600;">S2</div>
+                                    <div style="font-size: 14px; color: #7f1d1d;">₹${dailyPivots.s2.toFixed(2)}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: #fee2e2; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #991b1b; font-weight: 600;">S3</div>
+                                    <div style="font-size: 14px; color: #7f1d1d;">₹${dailyPivots.s3.toFixed(2)}</div>
+                                </div>
+                            </div>
+                            <div style="margin-top: 10px; padding: 8px; background: #f3f4f6; border-radius: 6px; font-size: 11px; color: #374151;">
+                                <strong>📍 Filter Logic:</strong> LONG if price > R1 (₹${dailyPivots.r1.toFixed(2)}) • SHORT if price < R1
+                                ${livePrice ? `
+                                    <div style="margin-top: 5px; font-weight: 600; color: ${livePrice.last_price > dailyPivots.r1 ? '#16a34a' : livePrice.last_price < dailyPivots.r1 ? '#dc2626' : '#f59e0b'};">
+                                        Current: ₹${livePrice.last_price.toFixed(2)} ${livePrice.last_price > dailyPivots.r1 ? '> R1 (LONG allowed ✅)' : livePrice.last_price < dailyPivots.r1 ? '< R1 (SHORT allowed ✅)' : '= R1 (Neutral ⚠️)'}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        ` : '<div style="color: #9ca3af;">⚠️ Daily pivots not available (filter bypassed)</div>'}
+                    </div>
+                </div>
+
                 <div class="status-card ${breakoutDetectionActive ? 'success' : 'warning'}">
                     <div class="card-title">🎯 Breakout Detection</div>
                     <div class="card-content">
@@ -3196,7 +3210,7 @@ class TradingBot {
                         <strong>Status:</strong> ${markingCandleState.isActive ? '🟡 TRACKING' : '⚪ INACTIVE'}<br>
                         ${markingCandleState.isActive ? `
                             <strong>Search Phase:</strong> ${markingCandleState.searchPhase.toUpperCase()}<br>
-                            <strong>Update Count:</strong> ${markingCandleState.currentMarkingCandle?.updateCount || 0}/2<br>
+                            <strong>Update Count:</strong> ${markingCandleState.currentMarkingCandle?.updateCount || 0}/1<br>
                             ${markingCandleState.currentMarkingCandle ? `
                                 <div class="marking-candle-details" style="margin-top: 8px; padding: 8px; background: #f8fafc; border-radius: 4px; font-size: 13px;">
                                     <div><strong>Entry Price:</strong> ₹${markingCandleState.currentMarkingCandle.entryPrice.toFixed(2)}</div>
@@ -3205,13 +3219,13 @@ class TradingBot {
                                     <div><strong>Time:</strong> ${new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleString()}</div>
                                 </div>
                             ` : markingCandleState.searchPhase === 'initial' ? `
-                                <div><strong>Bars Processed:</strong> ${markingCandleState.barsProcessedSinceBreakout}/5</div>
+                                <div><strong>Bars Processed:</strong> ${markingCandleState.barsProcessedSinceBreakout}/10</div>
                                 <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">Looking for opposite direction candle...</div>
                             ` : ''}
                             ${markingCandleState.breakoutReference ? `
                                 <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb; font-size: 12px;">
                                     <strong>Breakout Type:</strong> ${markingCandleState.breakoutReference.type === 'long_breakout' ? '📈 LONG' : '📉 SHORT'} | 
-                                    <strong>Time Limit:</strong> ${markingCandleState.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))}/18 min` : 'N/A'}
+                                    <strong>Time Limit:</strong> ${markingCandleState.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))}/20 min` : 'N/A'}
                                 </div>
                             ` : ''}
                         ` : markingCandleState.tradeSkipped ? 'Trade skipped - waiting for next breakout' : 'Waiting for breakout signal...'}
@@ -3440,7 +3454,7 @@ class TradingBot {
                         <div>
                             <strong>Risk per Trade:</strong><br>
                             <span style="font-size: 16px; font-weight: 600;">
-                                ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}%
+                                ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '3.0'}%
                             </span>
                         </div>
                         <div>
@@ -3499,6 +3513,7 @@ class TradingBot {
       const strategyState = this.breakoutStrategy.getStrategyState();
       const currentContract = strategyState?.currentContract;
       const latestPivots = this.breakoutStrategy.getLatestPivots();
+      const dailyPivots = this.breakoutStrategy.getDailyPivots();
       const livePrice = this.breakoutStrategy.getLivePrice();
       const priceStreamingActive = this.breakoutStrategy.isPriceStreamingActive();
       const isMarketHours = this.breakoutStrategy.isMarketHours();
@@ -3994,6 +4009,32 @@ class TradingBot {
             }, 3000);
         }
         
+        async function clearPosition() {
+            if (!confirm('This will clear the strategy state if you already manually exited the position on your broker platform.\\n\\nDid you already close the position manually?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/execution/clear-orphaned-state', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert('✅ Position cleared successfully!\\n\\nStrategy has been reset to WAITING_FOR_BREAKOUT.');
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + data.error + (data.details ? '\\n' + data.details : ''));
+                }
+            } catch (error) {
+                alert('Network error: ' + error.message);
+            }
+        }
+        
         // Load instrument information when breakout signal exists
         async function loadInstrumentInfo() {
             const instrumentInfo = document.getElementById('instrumentInfo');
@@ -4114,7 +4155,14 @@ class TradingBot {
             
             <div class="hero-card">
                 <div class="hero-label">📊 Trade State</div>
-                <div class="hero-value">${tradeStateInfo?.tradeState?.replace(/_/g, ' ').toUpperCase() || 'LOADING'}</div>
+                <div class="hero-value" style="color: ${(() => {
+                  const state = tradeStateInfo?.tradeState;
+                  if (state === 'in_trade') return '#22c55e'; // Green - Active trade
+                  if (state === 'waiting_for_entry') return '#f59e0b'; // Orange - Ready to enter
+                  if (state === 'waiting_for_breakout') return '#06b6d4'; // Cyan - Scanning
+                  if (state === 'marking_candle_tracking') return '#8b5cf6'; // Purple - Tracking
+                  return '#64748b'; // Gray - Other/Loading
+                })()}">${tradeStateInfo?.tradeState?.replace(/_/g, ' ').toUpperCase() || 'LOADING'}</div>
                 <div class="hero-subtitle">Position: ${activePosition ? 'OPEN' : 'NONE'} • P&L: ₹${activePosition?.pnl ? activePosition.pnl.toLocaleString() : '0'}</div>
             </div>
             
@@ -4138,7 +4186,7 @@ class TradingBot {
                 }
                 <button onclick="manualStopAll()" class="control-btn danger">🛑 Emergency Stop All</button>
                 <button onclick="toggleTradingMode()" class="control-btn ${tradingConfig?.paperTradingMode ? 'warning' : 'primary'}">${tradingConfig?.paperTradingMode ? '🚀 Go Live Trading' : '📝 Go Paper Mode'}</button>
-                <a href="/breakout-strategy/status" class="control-btn secondary">📊 API Status</a>
+                <button onclick="clearPosition()" class="control-btn danger">🧹 Clear Position</button>
                 <a href="/breakout-strategy" class="control-btn secondary">🔄 Classic Dashboard</a>
             </div>
         </div>
@@ -4160,6 +4208,64 @@ class TradingBot {
                         <div class="info-value">${latestPivots.pivotLow ? '₹' + latestPivots.pivotLow.price.toFixed(2) : 'Not Detected'}</div>
                         <div class="info-subtitle">${latestPivots.pivotLow ? new Date(latestPivots.pivotLow.timestamp).toLocaleString() : ''}</div>
                     </div>
+                </div>
+                
+                <!-- DAILY PIVOTS SECTION -->
+                ${dailyPivots ? `
+                <div style="margin-top: 20px; padding: 20px; background: linear-gradient(135deg, #f3f4f6, #e5e7eb); border-radius: 12px; border: 2px solid #d1d5db;">
+                    <h3 style="margin: 0 0 15px 0; color: #111827; font-size: 18px; display: flex; align-items: center; gap: 8px;">
+                        📊 Daily Pivot Levels (Directional Bias Filter)
+                    </h3>
+                    <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin-bottom: 15px;">
+                        <div style="text-align: center; padding: 12px; background: linear-gradient(135deg, #fef3c7, #fde68a); border-radius: 8px; border: 2px solid #f59e0b;">
+                            <div style="font-size: 12px; color: #92400e; font-weight: 700; margin-bottom: 4px;">R3</div>
+                            <div style="font-size: 16px; font-weight: 700; color: #78350f;">₹${dailyPivots.r3.toFixed(2)}</div>
+                        </div>
+                        <div style="text-align: center; padding: 12px; background: linear-gradient(135deg, #fef3c7, #fde68a); border-radius: 8px; border: 2px solid #f59e0b;">
+                            <div style="font-size: 12px; color: #92400e; font-weight: 700; margin-bottom: 4px;">R2</div>
+                            <div style="font-size: 16px; font-weight: 700; color: #78350f;">₹${dailyPivots.r2.toFixed(2)}</div>
+                        </div>
+                        <div style="text-align: center; padding: 12px; background: linear-gradient(135deg, #fef3c7, #fbbf24); border-radius: 8px; border: 3px solid #f59e0b; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                            <div style="font-size: 13px; color: #92400e; font-weight: 800; margin-bottom: 4px;">R1 ⭐</div>
+                            <div style="font-size: 18px; font-weight: 800; color: #78350f;">₹${dailyPivots.r1.toFixed(2)}</div>
+                        </div>
+                        <div style="text-align: center; padding: 12px; background: linear-gradient(135deg, #e0e7ff, #c7d2fe); border-radius: 8px; border: 2px solid #6366f1;">
+                            <div style="font-size: 12px; color: #3730a3; font-weight: 700; margin-bottom: 4px;">PP</div>
+                            <div style="font-size: 17px; font-weight: 700; color: #312e81;">₹${dailyPivots.pp.toFixed(2)}</div>
+                        </div>
+                        <div style="text-align: center; padding: 12px; background: linear-gradient(135deg, #fee2e2, #fca5a5); border-radius: 8px; border: 3px solid #dc2626; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                            <div style="font-size: 13px; color: #991b1b; font-weight: 800; margin-bottom: 4px;">S1 ⭐</div>
+                            <div style="font-size: 18px; font-weight: 800; color: #7f1d1d;">₹${dailyPivots.s1.toFixed(2)}</div>
+                        </div>
+                        <div style="text-align: center; padding: 12px; background: linear-gradient(135deg, #fee2e2, #fca5a5); border-radius: 8px; border: 2px solid #dc2626;">
+                            <div style="font-size: 12px; color: #991b1b; font-weight: 700; margin-bottom: 4px;">S2</div>
+                            <div style="font-size: 16px; font-weight: 700; color: #7f1d1d;">₹${dailyPivots.s2.toFixed(2)}</div>
+                        </div>
+                        <div style="text-align: center; padding: 12px; background: linear-gradient(135deg, #fee2e2, #fca5a5); border-radius: 8px; border: 2px solid #dc2626;">
+                            <div style="font-size: 12px; color: #991b1b; font-weight: 700; margin-bottom: 4px;">S3</div>
+                            <div style="font-size: 16px; font-weight: 700; color: #7f1d1d;">₹${dailyPivots.s3.toFixed(2)}</div>
+                        </div>
+                    </div>
+                    <div style="padding: 15px; background: white; border-radius: 8px; border-left: 4px solid #6366f1;">
+                        <div style="font-size: 13px; color: #374151; margin-bottom: 8px;">
+                            <strong>📍 Filter Logic:</strong> LONG breakouts allowed only if price > R1 (₹${dailyPivots.r1.toFixed(2)}) • SHORT breakouts allowed only if price < R1
+                        </div>
+                        ${livePrice ? `
+                            <div style="font-size: 14px; font-weight: 700; padding: 8px; background: ${livePrice.last_price > dailyPivots.r1 ? '#dcfce7' : livePrice.last_price < dailyPivots.r1 ? '#fee2e2' : '#fef3c7'}; border-radius: 6px; color: ${livePrice.last_price > dailyPivots.r1 ? '#166534' : livePrice.last_price < dailyPivots.r1 ? '#991b1b' : '#92400e'};">
+                                Current Price: ₹${livePrice.last_price.toFixed(2)} ${livePrice.last_price > dailyPivots.r1 ? '> R1 → LONG breakouts allowed ✅' : livePrice.last_price < dailyPivots.r1 ? '< R1 → SHORT breakouts allowed ✅' : '= R1 → Neutral zone ⚠️'}
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+                ` : `
+                <div style="margin-top: 20px; padding: 20px; background: #fef3c7; border-radius: 12px; border: 2px dashed #f59e0b;">
+                    <div style="text-align: center; color: #92400e; font-weight: 600;">
+                        ⚠️ Daily pivots not available - Directional bias filter bypassed
+                    </div>
+                </div>
+                `}
+                
+                <div class="info-grid" style="margin-top: 20px;">
                     <div class="info-card">
                         <h4>🎯 Breakout Detection</h4>
                         <div class="info-value">
@@ -4211,108 +4317,244 @@ class TradingBot {
             </div>
         </div>
         
-        <!-- 4. OPTION INSTRUMENT & POSITION -->
+        <!-- 4. LIVE MARKING CANDLE TRACKING -->
         <div class="dashboard-section">
             <div class="section-header">
-                <div class="section-title">🎯 Selected Option Instrument</div>
+                <div class="section-title">🕯️ Live Marking Candle & 5-Min Updates</div>
             </div>
             <div class="section-content">
                 <div class="info-grid">
                     <div class="info-card">
-                        <h4>📝 Instrument Details</h4>
-                        <div class="info-value" id="instrumentInfo">Loading instrument information...</div>
-                        <div class="info-subtitle" id="instrumentDetails">Selecting optimal strike price...</div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>💰 Live Premium</h4>
-                        <div class="info-value" id="instrumentLTP">Loading...</div>
-                        <div class="info-subtitle" id="instrumentPremiumDetails">Fetching option price...</div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>🎯 Strike Selection</h4>
-                        <div class="info-value">${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'CALL' : 'PUT') : 'Not selected'}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Direction:</strong> ${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'LONG' : 'SHORT') : 'Waiting for signal'}</div>
-                            <div><strong>NIFTY Price:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.price.toFixed(2) : '--'}</div>
-                            <div><strong>Signal Time:</strong> ${latestBreakoutSignal ? new Date(latestBreakoutSignal.timestamp).toLocaleTimeString() : '--'}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>⚡ Auto Selection</h4>
+                        <h4>📊 Marking Candle Status</h4>
                         <div class="info-value">
-                            <span class="status-indicator active">ENABLED</span>
+                            <span class="status-indicator ${markingCandleState?.isActive ? 'warning' : 'inactive'}">
+                                ${markingCandleState?.isActive ? '🟡 TRACKING' : '⚪ INACTIVE'}
+                            </span>
                         </div>
                         <div class="info-subtitle">
-                            <div><strong>Algorithm:</strong> ATM + Delta optimization</div>
-                            <div><strong>Status:</strong> Instrument selected automatically</div>
+                            <div><strong>Search Phase:</strong> ${markingCandleState?.searchPhase?.toUpperCase() || 'Not active'}</div>
+                            <div><strong>Update Count:</strong> ${markingCandleState?.currentMarkingCandle?.updateCount || 0}/1</div>
+                            <div><strong>Status:</strong> ${markingCandleState?.isActive ? 'Monitoring 5-min candles' : 'Waiting for breakout'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🎯 Current Entry/Stop Levels</h4>
+                        <div class="info-value">
+                            ${markingCandleState?.currentMarkingCandle ? '✅ SET' : '⏳ PENDING'}
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Entry Price:</strong> ₹${markingCandleState?.currentMarkingCandle?.entryPrice?.toFixed(2) || '--'}</div>
+                            <div><strong>Stop Loss:</strong> ₹${markingCandleState?.currentMarkingCandle?.stopLoss?.toFixed(2) || '--'}</div>
+                            <div><strong>Risk:</strong> ${markingCandleState?.currentMarkingCandle ? '₹' + Math.abs(markingCandleState.currentMarkingCandle.entryPrice - markingCandleState.currentMarkingCandle.stopLoss).toFixed(2) : '--'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🕯️ Live Candle Data</h4>
+                        <div class="info-value">
+                            ${markingCandleState?.currentMarkingCandle ? 'UPDATING' : 'NO DATA'}
+                        </div>
+                        <div class="info-subtitle">
+                            ${markingCandleState?.currentMarkingCandle ? `
+                                <div><strong>Open:</strong> ₹${markingCandleState.currentMarkingCandle.candle.open.toFixed(2)}</div>
+                                <div><strong>High:</strong> ₹${markingCandleState.currentMarkingCandle.candle.high.toFixed(2)}</div>
+                                <div><strong>Low:</strong> ₹${markingCandleState.currentMarkingCandle.candle.low.toFixed(2)}</div>
+                                <div><strong>Close:</strong> ₹${markingCandleState.currentMarkingCandle.candle.close.toFixed(2)}</div>
+                            ` : `
+                                <div><strong>Open:</strong> --</div>
+                                <div><strong>High:</strong> --</div>
+                                <div><strong>Low:</strong> --</div>
+                                <div><strong>Close:</strong> --</div>
+                            `}
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>⏰ Timing & Progress</h4>
+                        <div class="info-value">
+                            ${markingCandleState?.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))}/20` : '0/20'}
+                        </div>
+                        <div class="info-subtitle">
+                            <div><strong>Time Limit:</strong> ${markingCandleState?.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))} of 20 minutes` : 'Not started'}</div>
+                            <div><strong>Candle Time:</strong> ${markingCandleState?.currentMarkingCandle ? new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleTimeString() : '--'}</div>
+                            <div><strong>Breakout Type:</strong> ${markingCandleState?.breakoutReference ? (markingCandleState.breakoutReference.type === 'long_breakout' ? '📈 LONG' : '📉 SHORT') : '--'}</div>
+                        </div>
+                    </div>
+                </div>
+                
+                ${markingCandleState?.isActive && markingCandleState.searchPhase === 'initial' ? `
+                <div style="margin-top: 20px;">
+                    <h4 style="color: #1e293b; margin-bottom: 15px;">🔍 Initial Search Phase</h4>
+                    <div class="info-card" style="border-left: 4px solid #f59e0b;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                            <div>
+                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">📊 Progress</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Bars Processed:</strong> ${markingCandleState.barsProcessedSinceBreakout || 0}/10</div>
+                                    <div><strong>Status:</strong> Looking for opposite direction candle</div>
+                                    <div><strong>Phase:</strong> ${markingCandleState.searchPhase.toUpperCase()}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #06b6d4; margin-bottom: 8px;">🎯 Criteria</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Direction:</strong> ${markingCandleState.breakoutReference ? (markingCandleState.breakoutReference.type === 'long_breakout' ? 'Looking for RED candle' : 'Looking for GREEN candle') : 'Unknown'}</div>
+                                    <div><strong>Requirement:</strong> Opposite color candle</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+                
+                ${markingCandleState?.currentMarkingCandle ? `
+                <div style="margin-top: 20px;">
+                    <h4 style="color: #1e293b; margin-bottom: 15px;">📈 Active Marking Candle Details</h4>
+                    <div class="info-card" style="border-left: 4px solid #22c55e; background: rgba(34, 197, 94, 0.05);">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
+                            <div>
+                                <div style="font-weight: 600; color: #22c55e; margin-bottom: 8px;">💰 Trade Levels</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Entry:</strong> ₹${markingCandleState.currentMarkingCandle.entryPrice.toFixed(2)}</div>
+                                    <div><strong>Stop Loss:</strong> ₹${markingCandleState.currentMarkingCandle.stopLoss.toFixed(2)}</div>
+                                    <div><strong>Risk:</strong> ₹${Math.abs(markingCandleState.currentMarkingCandle.entryPrice - markingCandleState.currentMarkingCandle.stopLoss).toFixed(2)}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #06b6d4; margin-bottom: 8px;">🕯️ OHLC Data</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>O:</strong> ₹${markingCandleState.currentMarkingCandle.candle.open.toFixed(2)}</div>
+                                    <div><strong>H:</strong> ₹${markingCandleState.currentMarkingCandle.candle.high.toFixed(2)}</div>
+                                    <div><strong>L:</strong> ₹${markingCandleState.currentMarkingCandle.candle.low.toFixed(2)}</div>
+                                    <div><strong>C:</strong> ₹${markingCandleState.currentMarkingCandle.candle.close.toFixed(2)}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">⚡ Updates</div>
+                                <div style="color: #64748b; font-size: 0.9rem;">
+                                    <div><strong>Count:</strong> ${markingCandleState.currentMarkingCandle.updateCount}/1</div>
+                                    <div><strong>Last Update:</strong> ${new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleTimeString()}</div>
+                                    <div><strong>Next:</strong> Every 5 minutes</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+        </div>
+        
+        <!-- 5. ENTRY/EXIT LEVELS & RISK MANAGEMENT -->
+        <div class="dashboard-section">
+            <div class="section-header">
+                <div class="section-title">🎯 Entry/Exit Levels & Risk Management</div>
+            </div>
+            <div class="section-content">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>🚪 Entry Level</h4>
+                        <div class="info-value">₹${tradeStateInfo.tradeSetupRequest?.entryLevel || '--'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Direction:</strong> ${tradeStateInfo.tradeSetupRequest?.direction || 'Not set'}</div>
+                            <div><strong>Status:</strong> ${tradeStateInfo.tradeState === 'in_trade' ? '✅ Executed' : tradeStateInfo.tradeSetupRequest ? '⏳ Pending' : '❌ No setup'}</div>
+                            <div><strong>Order Type:</strong> Market Order</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🛡️ Stop Loss</h4>
+                        <div class="info-value" style="color: #ef4444;">₹${tradeStateInfo.tradeSetupRequest?.stopLossLevel || '--'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Risk Amount:</strong> ₹${tradeStateInfo.tradeSetupRequest ? Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel).toFixed(2) : '--'}</div>
+                            <div><strong>Distance:</strong> ${tradeStateInfo.tradeSetupRequest ? (Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel) / tradeStateInfo.tradeSetupRequest.entryLevel * 100).toFixed(2) + '%' : '--'}</div>
+                            <div><strong>Protection:</strong> ${tradeStateInfo.tradeSetupRequest ? 'Automatic' : 'Not set'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>🎯 Target Level</h4>
+                        <div class="info-value" style="color: #22c55e;">₹${tradeStateInfo.tradeSetupRequest?.targetLevel || '--'}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Profit Potential:</strong> ₹${tradeStateInfo.tradeSetupRequest ? Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel).toFixed(2) : '--'}</div>
+                            <div><strong>Return:</strong> ${tradeStateInfo.tradeSetupRequest ? (Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel) / tradeStateInfo.tradeSetupRequest.entryLevel * 100).toFixed(2) + '%' : '--'}</div>
+                            <div><strong>Risk/Reward:</strong> ${tradeStateInfo.tradeSetupRequest ? '1:' + (Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel) / Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel)).toFixed(1) : '--'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="info-card">
+                        <h4>⚙️ Trade Setup</h4>
+                        <div class="info-value">${tradeStateInfo.tradeState.replace(/_/g, ' ').toUpperCase()}</div>
+                        <div class="info-subtitle">
+                            <div><strong>Strategy:</strong> Breakout Retracement</div>
+                            <div><strong>Position Size:</strong> ${tradingConfig?.niftyLotSize || 75} units</div>
+                            <div><strong>Capital Risk:</strong> ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '3.0'}%</div>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
         
-        <!-- Active Position Details -->
+        <!-- 6. POSITION & INSTRUMENT DETAILS -->
         <div class="dashboard-section">
             <div class="section-header">
-                <div class="section-title">💼 Active Position Details</div>
+                <div class="section-title">💼 Position & Instrument Details</div>
             </div>
             <div class="section-content">
                 <div class="info-grid">
                     <div class="info-card">
-                        <h4>📝 Position Info</h4>
+                        <h4>📝 Current Position</h4>
                         <div class="info-value">${activePosition?.instrument ? activePosition.instrument.tradingsymbol : 'No active position'}</div>
                         <div class="info-subtitle">
                             ${activePosition?.instrument ? `
                                 <div><strong>Strike:</strong> ₹${activePosition.instrument.strike}</div>
-                                <div><strong>Expiry:</strong> ${new Date(activePosition.instrument.expiry).toLocaleDateString()}</div>
                                 <div><strong>Type:</strong> ${activePosition.instrument.instrument_type}</div>
-                            ` : 'Waiting for trade execution'}
+                                <div><strong>Expiry:</strong> ${new Date(activePosition.instrument.expiry).toLocaleDateString()}</div>
+                            ` : `
+                                <div id="instrumentInfo">Loading instrument information...</div>
+                                <div id="instrumentDetails">Selecting optimal strike price...</div>
+                            `}
                         </div>
                     </div>
                     
                     <div class="info-card">
-                        <h4>💹 Trade Details</h4>
-                        <div class="info-value">${activePosition?.direction || 'No direction'}</div>
+                        <h4>� Premium & Price</h4>
+                        <div class="info-value" id="instrumentLTP">${activePosition?.entryPrice ? '₹' + activePosition.entryPrice : 'Loading...'}</div>
                         <div class="info-subtitle">
-                            <div><strong>Quantity:</strong> ${activePosition?.quantity || '--'}</div>
-                            <div><strong>Entry Price:</strong> ₹${activePosition?.entryPrice || '--'}</div>
-                            <div><strong>Order ID:</strong> ${activePosition?.entryOrderId || '--'}</div>
+                            ${activePosition ? `
+                                <div><strong>Entry Price:</strong> ₹${activePosition.entryPrice || '--'}</div>
+                                <div><strong>Exit Price:</strong> ₹${activePosition.exitPrice || 'Position Open'}</div>
+                                <div><strong>Order ID:</strong> ${activePosition.entryOrderId || '--'}</div>
+                            ` : `<div id="instrumentPremiumDetails">Fetching option price...</div>`}
                         </div>
                     </div>
                     
                     <div class="info-card">
-                        <h4>📊 P&L Analysis</h4>
+                        <h4>📊 Position P&L</h4>
                         <div class="info-value ${activePosition?.pnl && activePosition.pnl >= 0 ? 'positive' : 'negative'}">
                             ₹${activePosition?.pnl !== undefined ? activePosition.pnl.toLocaleString() : '0'}
                         </div>
                         <div class="info-subtitle">
-                            <div><strong>Exit Price:</strong> ₹${activePosition?.exitPrice || 'Position Open'}</div>
-                            <div><strong>Exit Reason:</strong> ${activePosition?.exitReason || 'N/A'}</div>
-                            <div><strong>Status:</strong> ${activePosition?.exitPrice ? 'CLOSED' : 'OPEN'}</div>
+                            <div><strong>Direction:</strong> ${activePosition?.direction || (latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'LONG' : 'SHORT') : 'Waiting')}</div>
+                            <div><strong>Quantity:</strong> ${activePosition?.quantity || '--'}</div>
+                            <div><strong>Status:</strong> ${activePosition?.exitPrice ? '🔴 CLOSED' : activePosition ? '🟢 OPEN' : '⚪ No Position'}</div>
                         </div>
                     </div>
                     
                     <div class="info-card">
-                        <h4>🎯 Risk Management</h4>
-                        <div class="info-value">
-                            ${tradeStateInfo.tradeSetupRequest ? `₹${tradeStateInfo.tradeSetupRequest.stopLossLevel}` : 'N/A'}
-                        </div>
+                        <h4>🎯 Strike & Selection</h4>
+                        <div class="info-value">${latestBreakoutSignal ? (latestBreakoutSignal.type === 'long_breakout' ? 'CALL' : 'PUT') : 'Not selected'}</div>
                         <div class="info-subtitle">
-                            ${tradeStateInfo.tradeSetupRequest ? `
-                                <div><strong>Entry:</strong> ₹${tradeStateInfo.tradeSetupRequest.entryLevel}</div>
-                                <div><strong>Stop Loss:</strong> ₹${tradeStateInfo.tradeSetupRequest.stopLossLevel}</div>
-                                <div><strong>Target:</strong> ₹${tradeStateInfo.tradeSetupRequest.targetLevel}</div>
-                            ` : 'No active trade setup'}
+                            <div><strong>NIFTY Price:</strong> ${latestBreakoutSignal ? '₹' + latestBreakoutSignal.price.toFixed(2) : '--'}</div>
+                            <div><strong>Algorithm:</strong> ATM + Delta optimization</div>
+                            <div><strong>Auto Selection:</strong> <span class="status-indicator active">ENABLED</span></div>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
         
-        <!-- 5. TECHNICAL ANALYSIS -->
+        <!-- 7. TECHNICAL ANALYSIS -->
         <div class="dashboard-section">
             <div class="section-header">
                 <div class="section-title">📊 Technical Analysis & Market Data</div>
@@ -4372,135 +4614,7 @@ class TradingBot {
             </div>
         </div>
         
-        <!-- 6. LIVE MARKING CANDLE TRACKING -->
-        <div class="dashboard-section">
-            <div class="section-header">
-                <div class="section-title">🕯️ Live Marking Candle & 5-Min Updates</div>
-            </div>
-            <div class="section-content">
-                <div class="info-grid">
-                    <div class="info-card">
-                        <h4>📊 Marking Candle Status</h4>
-                        <div class="info-value">
-                            <span class="status-indicator ${markingCandleState?.isActive ? 'warning' : 'inactive'}">
-                                ${markingCandleState?.isActive ? '🟡 TRACKING' : '⚪ INACTIVE'}
-                            </span>
-                        </div>
-                        <div class="info-subtitle">
-                            <div><strong>Search Phase:</strong> ${markingCandleState?.searchPhase?.toUpperCase() || 'Not active'}</div>
-                            <div><strong>Update Count:</strong> ${markingCandleState?.currentMarkingCandle?.updateCount || 0}/2</div>
-                            <div><strong>Status:</strong> ${markingCandleState?.isActive ? 'Monitoring 5-min candles' : 'Waiting for breakout'}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>🎯 Current Entry/Stop Levels</h4>
-                        <div class="info-value">
-                            ${markingCandleState?.currentMarkingCandle ? '✅ SET' : '⏳ PENDING'}
-                        </div>
-                        <div class="info-subtitle">
-                            <div><strong>Entry Price:</strong> ₹${markingCandleState?.currentMarkingCandle?.entryPrice?.toFixed(2) || '--'}</div>
-                            <div><strong>Stop Loss:</strong> ₹${markingCandleState?.currentMarkingCandle?.stopLoss?.toFixed(2) || '--'}</div>
-                            <div><strong>Risk:</strong> ${markingCandleState?.currentMarkingCandle ? '₹' + Math.abs(markingCandleState.currentMarkingCandle.entryPrice - markingCandleState.currentMarkingCandle.stopLoss).toFixed(2) : '--'}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>🕯️ Live Candle Data</h4>
-                        <div class="info-value">
-                            ${markingCandleState?.currentMarkingCandle ? 'UPDATING' : 'NO DATA'}
-                        </div>
-                        <div class="info-subtitle">
-                            ${markingCandleState?.currentMarkingCandle ? `
-                                <div><strong>Open:</strong> ₹${markingCandleState.currentMarkingCandle.candle.open.toFixed(2)}</div>
-                                <div><strong>High:</strong> ₹${markingCandleState.currentMarkingCandle.candle.high.toFixed(2)}</div>
-                                <div><strong>Low:</strong> ₹${markingCandleState.currentMarkingCandle.candle.low.toFixed(2)}</div>
-                                <div><strong>Close:</strong> ₹${markingCandleState.currentMarkingCandle.candle.close.toFixed(2)}</div>
-                            ` : `
-                                <div><strong>Open:</strong> --</div>
-                                <div><strong>High:</strong> --</div>
-                                <div><strong>Low:</strong> --</div>
-                                <div><strong>Close:</strong> --</div>
-                            `}
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>⏰ Timing & Progress</h4>
-                        <div class="info-value">
-                            ${markingCandleState?.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))}/18` : '0/18'}
-                        </div>
-                        <div class="info-subtitle">
-                            <div><strong>Time Limit:</strong> ${markingCandleState?.startTime ? `${Math.floor((Date.now() - new Date(markingCandleState.startTime).getTime()) / (1000 * 60))} of 18 minutes` : 'Not started'}</div>
-                            <div><strong>Candle Time:</strong> ${markingCandleState?.currentMarkingCandle ? new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleTimeString() : '--'}</div>
-                            <div><strong>Breakout Type:</strong> ${markingCandleState?.breakoutReference ? (markingCandleState.breakoutReference.type === 'long_breakout' ? '📈 LONG' : '📉 SHORT') : '--'}</div>
-                        </div>
-                    </div>
-                </div>
-                
-                ${markingCandleState?.isActive && markingCandleState.searchPhase === 'initial' ? `
-                <div style="margin-top: 20px;">
-                    <h4 style="color: #1e293b; margin-bottom: 15px;">🔍 Initial Search Phase</h4>
-                    <div class="info-card" style="border-left: 4px solid #f59e0b;">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                            <div>
-                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">📊 Progress</div>
-                                <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>Bars Processed:</strong> ${markingCandleState.barsProcessedSinceBreakout || 0}/5</div>
-                                    <div><strong>Status:</strong> Looking for opposite direction candle</div>
-                                    <div><strong>Phase:</strong> ${markingCandleState.searchPhase.toUpperCase()}</div>
-                                </div>
-                            </div>
-                            <div>
-                                <div style="font-weight: 600; color: #06b6d4; margin-bottom: 8px;">🎯 Criteria</div>
-                                <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>Direction:</strong> ${markingCandleState.breakoutReference ? (markingCandleState.breakoutReference.type === 'long_breakout' ? 'Looking for RED candle' : 'Looking for GREEN candle') : 'Unknown'}</div>
-                                    <div><strong>Requirement:</strong> Opposite color candle</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                ` : ''}
-                
-                ${markingCandleState?.currentMarkingCandle ? `
-                <div style="margin-top: 20px;">
-                    <h4 style="color: #1e293b; margin-bottom: 15px;">📈 Active Marking Candle Details</h4>
-                    <div class="info-card" style="border-left: 4px solid #22c55e; background: rgba(34, 197, 94, 0.05);">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
-                            <div>
-                                <div style="font-weight: 600; color: #22c55e; margin-bottom: 8px;">💰 Trade Levels</div>
-                                <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>Entry:</strong> ₹${markingCandleState.currentMarkingCandle.entryPrice.toFixed(2)}</div>
-                                    <div><strong>Stop Loss:</strong> ₹${markingCandleState.currentMarkingCandle.stopLoss.toFixed(2)}</div>
-                                    <div><strong>Risk:</strong> ₹${Math.abs(markingCandleState.currentMarkingCandle.entryPrice - markingCandleState.currentMarkingCandle.stopLoss).toFixed(2)}</div>
-                                </div>
-                            </div>
-                            <div>
-                                <div style="font-weight: 600; color: #06b6d4; margin-bottom: 8px;">🕯️ OHLC Data</div>
-                                <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>O:</strong> ₹${markingCandleState.currentMarkingCandle.candle.open.toFixed(2)}</div>
-                                    <div><strong>H:</strong> ₹${markingCandleState.currentMarkingCandle.candle.high.toFixed(2)}</div>
-                                    <div><strong>L:</strong> ₹${markingCandleState.currentMarkingCandle.candle.low.toFixed(2)}</div>
-                                    <div><strong>C:</strong> ₹${markingCandleState.currentMarkingCandle.candle.close.toFixed(2)}</div>
-                                </div>
-                            </div>
-                            <div>
-                                <div style="font-weight: 600; color: #f59e0b; margin-bottom: 8px;">⚡ Updates</div>
-                                <div style="color: #64748b; font-size: 0.9rem;">
-                                    <div><strong>Count:</strong> ${markingCandleState.currentMarkingCandle.updateCount}/2</div>
-                                    <div><strong>Last Update:</strong> ${new Date(markingCandleState.currentMarkingCandle.candle.timestamp).toLocaleTimeString()}</div>
-                                    <div><strong>Next:</strong> Every 5 minutes</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                ` : ''}
-            </div>
-        </div>
-        
-        <!-- Latest 1-Minute Candle Data -->
+        <!-- 8. LATEST 1-MINUTE CANDLE & VOLUME -->
         <div class="dashboard-section">
             <div class="section-header">
                 <div class="section-title">📊 Latest 1-Minute Candle & Volume Analysis</div>
@@ -4569,58 +4683,7 @@ class TradingBot {
             </div>
         </div>
         
-        <!-- Entry/Exit Levels & Risk Management -->
-        
-        <div class="dashboard-section">
-            <div class="section-header">
-                <div class="section-title">🎯 Entry/Exit Levels & Risk Management</div>
-            </div>
-            <div class="section-content">
-                <div class="info-grid">
-                    <div class="info-card">
-                        <h4>🚪 Entry Level</h4>
-                        <div class="info-value">₹${tradeStateInfo.tradeSetupRequest?.entryLevel || '--'}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Direction:</strong> ${tradeStateInfo.tradeSetupRequest?.direction || 'Not set'}</div>
-                            <div><strong>Status:</strong> ${tradeStateInfo.tradeState === 'in_trade' ? '✅ Executed' : tradeStateInfo.tradeSetupRequest ? '⏳ Pending' : '❌ No setup'}</div>
-                            <div><strong>Order Type:</strong> Market Order</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>🛡️ Stop Loss</h4>
-                        <div class="info-value" style="color: #ef4444;">₹${tradeStateInfo.tradeSetupRequest?.stopLossLevel || '--'}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Risk Amount:</strong> ₹${tradeStateInfo.tradeSetupRequest ? Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel).toFixed(2) : '--'}</div>
-                            <div><strong>Distance:</strong> ${tradeStateInfo.tradeSetupRequest ? (Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel) / tradeStateInfo.tradeSetupRequest.entryLevel * 100).toFixed(2) + '%' : '--'}</div>
-                            <div><strong>Protection:</strong> ${tradeStateInfo.tradeSetupRequest ? 'Automatic' : 'Not set'}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>🎯 Target Level</h4>
-                        <div class="info-value" style="color: #22c55e;">₹${tradeStateInfo.tradeSetupRequest?.targetLevel || '--'}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Profit Potential:</strong> ₹${tradeStateInfo.tradeSetupRequest ? Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel).toFixed(2) : '--'}</div>
-                            <div><strong>Return:</strong> ${tradeStateInfo.tradeSetupRequest ? (Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel) / tradeStateInfo.tradeSetupRequest.entryLevel * 100).toFixed(2) + '%' : '--'}</div>
-                            <div><strong>Risk/Reward:</strong> ${tradeStateInfo.tradeSetupRequest ? '1:' + (Math.abs(tradeStateInfo.tradeSetupRequest.targetLevel - tradeStateInfo.tradeSetupRequest.entryLevel) / Math.abs(tradeStateInfo.tradeSetupRequest.entryLevel - tradeStateInfo.tradeSetupRequest.stopLossLevel)).toFixed(1) : '--'}</div>
-                        </div>
-                    </div>
-                    
-                    <div class="info-card">
-                        <h4>⚙️ Trade Setup</h4>
-                        <div class="info-value">${tradeStateInfo.tradeState.replace(/_/g, ' ').toUpperCase()}</div>
-                        <div class="info-subtitle">
-                            <div><strong>Strategy:</strong> Breakout Retracement</div>
-                            <div><strong>Position Size:</strong> ${tradingConfig?.niftyLotSize || 75} units</div>
-                            <div><strong>Capital Risk:</strong> ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}%</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Recent Trade History -->
+        <!-- 9. RECENT TRADE HISTORY -->
         <div class="dashboard-section">
             <div class="section-header">
                 <div class="section-title">📜 Recent Trade History</div>
@@ -4722,7 +4785,7 @@ class TradingBot {
         
         `}
         
-        <!-- 7. PERFORMANCE ANALYTICS & RESULTS -->
+        <!-- 10. PERFORMANCE ANALYTICS & RESULTS -->
         <div class="dashboard-section">
             <div class="section-header">
                 <div class="section-title">📈 Performance Analytics & Results</div>
@@ -4781,7 +4844,7 @@ class TradingBot {
                         <div>
                             <div style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 8px;">Risk Management</div>
                             <div style="color: #06b6d4; font-weight: 600;">
-                                ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}% per trade
+                                ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '3.0'}% per trade
                             </div>
                         </div>
                         <div>
@@ -4801,7 +4864,7 @@ class TradingBot {
             </div>
         </div>
         
-        <!-- QC CHECKLIST SECTION -->
+        <!-- 11. QUALITY CONTROL CHECKLIST -->
         <div class="dashboard-section">
             <div class="section-header">
                 <div class="section-title">✅ Quality Control Checklist</div>
@@ -5010,8 +5073,8 @@ class TradingBot {
                             <div>
                                 <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px;">⏰ Timing Rules</div>
                                 <div>• 1-minute timeframe execution</div>
-                                <div>• 18-minute marking candle window</div>
-                                <div>• Maximum 2 candle updates</div>
+                                <div>• 20-minute marking candle window</div>
+                                <div>• Maximum 1 candle update</div>
                                 <div>• Real-time price monitoring (1-sec polling)</div>
                             </div>
                             <div>
@@ -5019,7 +5082,7 @@ class TradingBot {
                                 <div>• Stop loss at marking candle low/high</div>
                                 <div>• Target level optimization</div>
                                 <div>• Position sizing: 75 units (1 lot)</div>
-                                <div>• Capital risk: ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '5.0'}% per trade</div>
+                                <div>• Capital risk: ${tradingConfig ? (tradingConfig.riskPerTrade * 100).toFixed(1) : '3.0'}% per trade</div>
                             </div>
                             <div>
                                 <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px;">📊 Option Selection</div>
@@ -5234,6 +5297,51 @@ class TradingBot {
       } catch (error) {
         this.logger.error(`Error stopping strategy ${req.params.id}:`, error);
         res.status(500).json({ error: 'Failed to stop strategy' });
+      }
+    });
+
+    // P0: Clear active position for Bollinger Band strategy (manual cleanup for orphaned positions)
+    this.app.post('/api/strategy/:id/clear-position', async (req: Request, res: Response): Promise<void> => {
+      try {
+        const strategyId = req.params.id;
+        
+        if (strategyId !== 'bollinger-band-01') {
+          res.status(400).json({ 
+            error: 'Invalid strategy',
+            message: 'Clear position is only available for bollinger-band-01' 
+          });
+          return;
+        }
+        
+        const strategy = StrategyRegistry.getInstance(strategyId);
+        if (!strategy) {
+          res.status(404).json({ error: 'Strategy not found' });
+          return;
+        }
+        
+        // Call clearActivePosition() method on Bollinger Band strategy (now async)
+        // Type assertion: BollingerBandStrategy has this public method
+        if (typeof (strategy as any).clearActivePosition !== 'function') {
+          res.status(500).json({ 
+            error: 'Strategy does not support manual position clearing' 
+          });
+          return;
+        }
+        
+        // P0: clearActivePosition is now async and records P&L
+        await (strategy as any).clearActivePosition();
+        
+        this.logger.info(`✅ Position cleared for strategy: ${strategyId}`);
+        res.json({ 
+          success: true, 
+          message: 'Active position cleared successfully with P&L recorded' 
+        });
+      } catch (error) {
+        this.logger.error(`Error clearing position for ${req.params.id}:`, error);
+        res.status(500).json({ 
+          error: 'Failed to clear position',
+          message: error instanceof Error ? error.message : 'Unknown error'
+        });
       }
     });
 
@@ -5651,6 +5759,11 @@ class TradingBot {
             <button class="btn" onclick="refreshStatus()">
               Refresh
             </button>
+            ${isBollingerBand ? `
+            <button class="btn" onclick="clearPosition()" style="background: #dc3545;">
+              🧹 Clear Position
+            </button>
+            ` : ''}
           </div>
 
           ${isBollingerBand ? this.renderBollingerBandMetrics(status) : this.renderGenericMetrics(status)}
@@ -5705,6 +5818,26 @@ ${JSON.stringify(status.config, null, 2)}
             }
           }
 
+          async function clearPosition() {
+            if (!confirm('Are you sure you want to manually clear the active position? This should only be used for orphaned positions that failed to exit properly.')) {
+              return;
+            }
+            
+            try {
+              const response = await fetch('/api/strategy/${strategyId}/clear-position', { method: 'POST' });
+              const result = await response.json();
+              
+              if (result.success) {
+                alert('Position cleared successfully!');
+                window.location.reload();
+              } else {
+                alert('Failed to clear position: ' + (result.error || 'Unknown error'));
+              }
+            } catch (error) {
+              alert('Error clearing position: ' + error.message);
+            }
+          }
+
           function refreshStatus() {
             window.location.reload();
           }
@@ -5741,6 +5874,22 @@ ${JSON.stringify(status.config, null, 2)}
     const currentNiftyPrice = status.currentNiftyPrice || indicators.bollingerBands?.middle || 25170;
     const currentNifty50Price = currentNiftyPrice.toFixed(2);
 
+    // Calculate trade performance metrics
+    const tradeHistory = status.recentTrades || [];
+    const closedTrades = tradeHistory.filter((t: any) => t.status === 'CLOSED');
+    const winningTrades = closedTrades.filter((t: any) => t.pnl > 0);
+    const losingTrades = closedTrades.filter((t: any) => t.pnl < 0);
+    const totalPnL = closedTrades.reduce((sum: number, t: any) => sum + (t.pnl || 0), 0);
+    const winRate = closedTrades.length > 0 ? (winningTrades.length / closedTrades.length) * 100 : 0;
+    const avgWin = winningTrades.length > 0 ? winningTrades.reduce((sum: number, t: any) => sum + t.pnl, 0) / winningTrades.length : 0;
+    const avgLoss = losingTrades.length > 0 ? losingTrades.reduce((sum: number, t: any) => sum + t.pnl, 0) / losingTrades.length : 0;
+    const profitFactor = Math.abs(avgLoss) > 0 ? Math.abs(avgWin * winningTrades.length) / Math.abs(avgLoss * losingTrades.length) : 0;
+    
+    // ROI calculation: Use initial capital (capitalAllocation) as base, not current capital
+    // ROI = (Total P&L / Initial Capital) × 100
+    const initialCapital = status.capitalAllocation || 200000;
+    const roi = initialCapital > 0 ? ((totalPnL / initialCapital) * 100) : 0;
+
     return `
       <div class="metrics">
         <!-- Strategy Status Banner -->
@@ -5760,26 +5909,14 @@ ${JSON.stringify(status.config, null, 2)}
         <!-- Current 5-Minute Candle (Entry Signal Basis) -->
         ${this.render5MinuteCandle(status.currentCandle)}
 
-        <!-- Trading Metrics -->
+        <!-- Key Strategy Info -->
         <div class="metric-card">
-          <div class="metric-value">${status.metrics.totalTrades}</div>
-          <div>Total Trades</div>
+          <div class="metric-value">${status.currentLots || 1} Lots</div>
+          <div>Dynamic Position Size</div>
         </div>
         <div class="metric-card">
-          <div class="metric-value">₹${status.metrics.profitLoss.toFixed(2)}</div>
-          <div>Profit & Loss</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-value">${status.metrics.winRate.toFixed(1)}%</div>
-          <div>Win Rate</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-value">${status.fixedLots || 10} Lots</div>
-          <div>Fixed Position Size</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-value">₹${(status.capitalAllocation || 200000).toLocaleString()}</div>
-          <div>Capital Allocation</div>
+          <div class="metric-value">₹${(status.currentCapital || status.capitalAllocation || 200000).toLocaleString()}</div>
+          <div>Current Capital</div>
         </div>
         <div class="metric-card">
           <div class="metric-value">${status.config.timeframe}</div>
@@ -5787,17 +5924,26 @@ ${JSON.stringify(status.config, null, 2)}
         </div>
       </div>
 
+      <!-- Live Signal Analysis (TOP PRIORITY) -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">🎯 Live Signal Analysis</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+          ${this.renderSignalAnalysis('LONG', indicators, pivots, currentNiftyPrice)}
+          ${this.renderSignalAnalysis('SHORT', indicators, pivots, currentNiftyPrice)}
+        </div>
+      </div>
+
       <!-- Technical Indicators Section -->
       <div style="margin-top: 30px;">
         <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📊 Technical Indicators</h3>
         <div class="metrics" style="margin-top: 20px;">
-          <div class="metric-card" style="background: #ffffff; border: 2px solid ${indicators.rsi >= 70 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'}; border-left: 6px solid ${indicators.rsi >= 70 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'};">
-            <div class="metric-value" style="color: ${indicators.rsi >= 70 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'};">${indicators.rsi ? indicators.rsi.toFixed(2) : 'N/A'}</div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${indicators.rsi >= 68 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'}; border-left: 6px solid ${indicators.rsi >= 68 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'};">
+            <div class="metric-value" style="color: ${indicators.rsi >= 68 ? '#ef4444' : indicators.rsi <= 30 ? '#22c55e' : '#f59e0b'};">${indicators.rsi ? indicators.rsi.toFixed(2) : 'N/A'}</div>
             <div style="color: #1f2937; font-weight: 600;">RSI (10)</div>
             <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
-              ${indicators.rsi >= 70 && indicators.rsi <= 80 ? '✅ LONG Range' : 
+              ${indicators.rsi >= 68 && indicators.rsi <= 85 ? '✅ LONG Range' : 
                 indicators.rsi >= 10 && indicators.rsi <= 30 ? '✅ SHORT Range' : 
-                indicators.rsi > 80 ? '⚠️ Overbought' : 
+                indicators.rsi > 85 ? '⚠️ Overbought' : 
                 indicators.rsi < 10 ? '⚠️ Oversold' : '⏸️ Neutral'}
             </div>
           </div>
@@ -5848,7 +5994,7 @@ ${JSON.stringify(status.config, null, 2)}
               ${status.positionInfo.tradingSymbol}
             </div>
             <div style="font-size: 0.85em; margin-top: 5px; color: #9ca3af;">
-              Qty: ${status.positionInfo.quantity} shares (${status.fixedLots || 10} lots)
+              Qty: ${status.positionInfo.quantity} shares (${status.currentLots || 1} lots)
             </div>
           </div>
 
@@ -5906,6 +6052,57 @@ ${JSON.stringify(status.config, null, 2)}
           </div>
           ` : ''}
 
+          <!-- Current Trail % - NEW METRIC -->
+          ${status.positionInfo.currentTrailPercent ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #06b6d4; border-left: 6px solid #06b6d4;">
+            <div class="metric-value" style="color: #06b6d4;">${status.positionInfo.currentTrailPercent.toFixed(1)}%</div>
+            <div style="color: #1f2937; font-weight: 600;">Current Trail %</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              ${status.positionInfo.currentTrailPercent <= 5 ? '🔥 Very Tight' : 
+                status.positionInfo.currentTrailPercent <= 7 ? '⚡ Tight' : 
+                status.positionInfo.currentTrailPercent <= 9 ? '📍 Moderate' : '🎯 Standard'}
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- Minutes Since Entry - NEW METRIC -->
+          ${status.positionInfo.minutesSinceEntry !== undefined ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #10b981; border-left: 6px solid #10b981;">
+            <div class="metric-value" style="color: #10b981;">${status.positionInfo.minutesSinceEntry.toFixed(1)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Minutes Since Entry</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              ${status.positionInfo.minutesSinceEntry >= 40 ? '🔥 Auto 5% Trail' : 
+                status.positionInfo.minutesSinceEntry >= 35 ? '⚡ Auto 6% Trail' : 
+                status.positionInfo.minutesSinceEntry >= 30 ? '📍 Auto 7% Trail' :
+                status.positionInfo.minutesSinceEntry >= 20 ? '🎯 Auto 9% Trail' : '⏰ 12% Trail'}
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- Minutes Since Last High - NEW METRIC -->
+          ${status.positionInfo.minutesSinceLastHigh !== undefined ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #f97316; border-left: 6px solid #f97316;">
+            <div class="metric-value" style="color: #f97316;">${status.positionInfo.minutesSinceLastHigh.toFixed(1)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Minutes Since Last High</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: ${status.positionInfo.minutesSinceLastHigh >= 10 ? '#ef4444' : '#6b7280'};">
+              ${status.positionInfo.minutesSinceLastHigh >= 10 ? '⚠️ Stagnant (9% max)' : '✅ Fresh'}
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- Last High Time - NEW METRIC -->
+          ${status.positionInfo.lastHighTime ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #8b5cf6; border-left: 6px solid #8b5cf6;">
+            <div class="metric-value" style="color: #8b5cf6; font-size: 1.2em;">
+              ${new Date(status.positionInfo.lastHighTime).toLocaleTimeString()}
+            </div>
+            <div style="color: #1f2937; font-weight: 600;">Last High Time</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              Last peak achieved
+            </div>
+          </div>
+          ` : ''}
+
           <!-- Last Update Time -->
           <div class="metric-card" style="background: #ffffff; border: 2px solid #6b7280; border-left: 6px solid #6b7280;">
             <div class="metric-value" style="color: #6b7280; font-size: 1.2em;">
@@ -5913,7 +6110,7 @@ ${JSON.stringify(status.config, null, 2)}
             </div>
             <div style="color: #1f2937; font-weight: 600;">Last Updated</div>
             <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
-              Live polling
+              Live polling (1s)
             </div>
           </div>
 
@@ -6003,17 +6200,6 @@ ${JSON.stringify(status.config, null, 2)}
         </div>
       </div>
 
-
-
-      <!-- Entry/Exit Signal Analysis -->
-      <div style="margin-top: 30px;">
-        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">🎯 Live Signal Analysis</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
-          ${this.renderSignalAnalysis('LONG', indicators, pivots, currentNiftyPrice)}
-          ${this.renderSignalAnalysis('SHORT', indicators, pivots, currentNiftyPrice)}
-        </div>
-      </div>
-
       <!-- Strategy Rules -->
       <div style="margin-top: 30px;">
         <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📋 Strategy Rules</h3>
@@ -6022,23 +6208,125 @@ ${JSON.stringify(status.config, null, 2)}
             <h4 style="color: #22c55e; margin-top: 0;">🚀 LONG Entry</h4>
             <ul style="margin: 10px 0; padding-left: 20px;">
               <li>Price > Bollinger Upper Band</li>
-              <li>RSI between 65-85</li>
+              <li>RSI between 68-85</li>
               <li>Supertrend = UP</li>
               <li>Price above R1 or R2</li>
             </ul>
-            <p style="margin: 10px 0 0 0; font-weight: bold; color: #22c55e;">Exit: NIFTY50 < Mid BB</p>
+            <p style="margin: 10px 0 0 0; font-weight: bold; color: #22c55e;">Exit: NIFTY50 < MAX(Entry Candle Low, Mid BB)</p>
           </div>
           <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #ef4444;">
             <h4 style="color: #ef4444; margin-top: 0;">🔻 SHORT Entry</h4>
             <ul style="margin: 10px 0; padding-left: 20px;">
               <li>Price < Bollinger Lower Band</li>
-              <li>RSI between 15-35</li>
+              <li>RSI between 10-30</li>
               <li>Supertrend = DOWN</li>
               <li>Price below R1</li>
             </ul>
-            <p style="margin: 10px 0 0 0; font-weight: bold; color: #ef4444;">Exit: 12% Trailing SL</p>
+            <p style="margin: 10px 0 0 0; font-weight: bold; color: #ef4444;">Exit: Entry Candle High breach OR 12% Trailing SL</p>
           </div>
         </div>
+      </div>
+
+      <!-- Performance Metrics Section (Moved to End) -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📈 Performance Metrics</h3>
+        <div class="metrics" style="margin-top: 20px;">
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #3b82f6; border-left: 6px solid #3b82f6;">
+            <div class="metric-value" style="color: #3b82f6;">${tradeHistory.length}</div>
+            <div style="color: #1f2937; font-weight: 600;">Total Trades</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">${closedTrades.length} closed, ${tradeHistory.length - closedTrades.length} open</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${winRate >= 50 ? '#22c55e' : '#ef4444'}; border-left: 6px solid ${winRate >= 50 ? '#22c55e' : '#ef4444'};">
+            <div class="metric-value" style="color: ${winRate >= 50 ? '#22c55e' : '#ef4444'};">${winRate.toFixed(1)}%</div>
+            <div style="color: #1f2937; font-weight: 600;">Win Rate</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">${winningTrades.length}W / ${losingTrades.length}L</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${totalPnL >= 0 ? '#22c55e' : '#ef4444'}; border-left: 6px solid ${totalPnL >= 0 ? '#22c55e' : '#ef4444'};">
+            <div class="metric-value" style="color: ${totalPnL >= 0 ? '#22c55e' : '#ef4444'};">${totalPnL >= 0 ? '+' : ''}₹${totalPnL.toFixed(2)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Total P&L</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">Realized P&L</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #8b5cf6; border-left: 6px solid #8b5cf6;">
+            <div class="metric-value" style="color: #8b5cf6;">${profitFactor.toFixed(2)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Profit Factor</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">${profitFactor >= 1.5 ? '✅ Excellent' : profitFactor >= 1.0 ? '⚠️ Fair' : '❌ Poor'}</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid ${roi >= 0 ? '#22c55e' : '#ef4444'}; border-left: 6px solid ${roi >= 0 ? '#22c55e' : '#ef4444'};">
+            <div class="metric-value" style="color: ${roi >= 0 ? '#22c55e' : '#ef4444'};">${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</div>
+            <div style="color: #1f2937; font-weight: 600;">ROI</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">On ₹${initialCapital.toLocaleString()} (Initial)</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #3b82f6; border-left: 6px solid #3b82f6;">
+            <div class="metric-value" style="color: #3b82f6;">₹${(status.currentCapital || status.capitalAllocation || 200000).toLocaleString()}</div>
+            <div style="color: #1f2937; font-weight: 600;">Current Capital</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">1 lot per ₹40,000</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #22c55e; border-left: 6px solid #22c55e;">
+            <div class="metric-value" style="color: #22c55e;">+₹${avgWin.toFixed(2)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Avg Win</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">${winningTrades.length} winning trades</div>
+          </div>
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #ef4444; border-left: 6px solid #ef4444;">
+            <div class="metric-value" style="color: #ef4444;">₹${avgLoss.toFixed(2)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Avg Loss</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">${losingTrades.length} losing trades</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent Trade History Section (Moved to End) -->
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📜 Recent Trade History</h3>
+        ${tradeHistory.length > 0 ? `
+          <div style="background: #ffffff; border-radius: 12px; padding: 20px; margin-top: 20px; border: 1px solid #e5e7eb;">
+            <div style="display: grid; gap: 12px;">
+              ${tradeHistory.slice(-10).reverse().map((trade: any, index: number) => `
+                <div style="display: grid; grid-template-columns: 60px 1fr 120px 100px 100px 80px; gap: 15px; align-items: center; padding: 12px 15px; background: #f9fafb; border-radius: 8px; border-left: 4px solid ${trade.pnl >= 0 ? '#22c55e' : '#ef4444'};">
+                  <div style="text-align: center;">
+                    <div style="font-size: 1.2rem;">${trade.pnl >= 0 ? '✅' : '❌'}</div>
+                    <div style="font-size: 0.7rem; color: #6b7280;">#${tradeHistory.length - index}</div>
+                  </div>
+                  <div>
+                    <div style="font-weight: 600; color: #1f2937; font-size: 0.9rem;">${trade.instrument?.tradingsymbol || 'N/A'}</div>
+                    <div style="color: #6b7280; font-size: 0.8rem;">
+                      ${trade.direction} • Strike: ₹${trade.instrument?.strike || 'N/A'} • Qty: ${trade.quantity || 0}
+                    </div>
+                  </div>
+                  <div style="text-align: center;">
+                    <div style="font-weight: 600; color: #3b82f6; font-size: 0.9rem;">₹${trade.entryPrice?.toFixed(2) || 'N/A'}</div>
+                    <div style="color: #6b7280; font-size: 0.8rem;">Entry</div>
+                  </div>
+                  <div style="text-align: center;">
+                    <div style="font-weight: 600; color: ${trade.exitPrice ? '#f59e0b' : '#6b7280'}; font-size: 0.9rem;">
+                      ${trade.exitPrice ? '₹' + trade.exitPrice.toFixed(2) : 'Open'}
+                    </div>
+                    <div style="color: #6b7280; font-size: 0.8rem;">Exit</div>
+                  </div>
+                  <div style="text-align: center;">
+                    <div style="font-weight: 700; color: ${trade.pnl >= 0 ? '#22c55e' : '#ef4444'}; font-size: 0.9rem;">
+                      ${trade.pnl >= 0 ? '+' : ''}₹${trade.pnl?.toFixed(2) || '0.00'}
+                    </div>
+                    <div style="color: #6b7280; font-size: 0.8rem;">P&L</div>
+                  </div>
+                  <div style="text-align: center;">
+                    <div style="font-size: 0.8rem; color: ${trade.status === 'CLOSED' ? '#22c55e' : '#f59e0b'};">
+                      ${trade.status || 'OPEN'}
+                    </div>
+                    <div style="color: #6b7280; font-size: 0.7rem;">
+                      ${trade.exitTime ? new Date(trade.exitTime).toLocaleDateString() : new Date(trade.entryTime).toLocaleDateString()}
+                    </div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : `
+          <div style="text-align: center; padding: 40px; background: #f9fafb; border-radius: 8px; border: 2px dashed #d1d5db; margin-top: 20px;">
+            <div style="font-size: 1.5em; color: #6b7280; margin-bottom: 10px;">📊</div>
+            <div style="color: #374151; font-weight: 500;">No trades yet</div>
+            <div style="color: #6b7280; font-size: 0.9em; margin-top: 5px;">Waiting for entry signal on 5-minute candle close...</div>
+          </div>
+        `}
       </div>
     `;
   }
@@ -6131,13 +6419,13 @@ ${JSON.stringify(status.config, null, 2)}
     
     if (signalType === 'LONG') {
       const priceAboveUpper = price > bbUpper;
-      const rsiInRange = rsi >= 65 && rsi <= 85;
+      const rsiInRange = rsi >= 68 && rsi <= 85;
       const supertrendUp = supertrend === 'UP';
       const aboveR1orR2 = price > r1 || price > r2;
       
       conditions = [
         { name: 'Price > BB Upper', met: priceAboveUpper, value: `₹${price.toFixed(2)} ${priceAboveUpper ? '>' : '<='} ₹${bbUpper.toFixed(2)}` },
-        { name: 'RSI 65-85', met: rsiInRange, value: `${rsi.toFixed(2)} ${rsiInRange ? 'in' : 'out of'} range` },
+        { name: 'RSI 68-85', met: rsiInRange, value: `${rsi.toFixed(2)} ${rsiInRange ? 'in' : 'out of'} range` },
         { name: 'Supertrend UP', met: supertrendUp, value: supertrend },
         { name: 'Above R1/R2', met: aboveR1orR2, value: `Above R1:${price > r1 ? '✅' : '❌'} R2:${price > r2 ? '✅' : '❌'}` }
       ];
@@ -6147,13 +6435,13 @@ ${JSON.stringify(status.config, null, 2)}
       signalColor = metCount === 4 ? '#22c55e' : metCount >= 2 ? '#f59e0b' : '#ef4444';
     } else {
       const priceBelowLower = price < bbLower;
-      const rsiInRange = rsi >= 15 && rsi <= 35;
+      const rsiInRange = rsi >= 10 && rsi <= 30;
       const supertrendDown = supertrend === 'DOWN';
       const belowR1 = price <= r1;
       
       conditions = [
         { name: 'Price < BB Lower', met: priceBelowLower, value: `₹${price.toFixed(2)} ${priceBelowLower ? '<' : '>='} ₹${bbLower.toFixed(2)}` },
-        { name: 'RSI 15-35', met: rsiInRange, value: `${rsi.toFixed(2)} ${rsiInRange ? 'in' : 'out of'} range` },
+        { name: 'RSI 10-30', met: rsiInRange, value: `${rsi.toFixed(2)} ${rsiInRange ? 'in' : 'out of'} range` },
         { name: 'Supertrend DOWN', met: supertrendDown, value: supertrend },
         { name: 'Below R1', met: belowR1, value: `₹${price.toFixed(2)} ${belowR1 ? '<=' : '>'} ₹${r1.toFixed(2)}` }
       ];
