@@ -69,6 +69,26 @@ export interface PersistedData {
   lastUpdated: Date;
 }
 
+export interface DetailedPosition {
+  tradeId: string;
+  direction: 'LONG' | 'SHORT';
+  instrument: string;
+  strikePrice: number;
+  entryPrice: number;
+  quantity: number;
+  entryTime: Date;
+  entryOrderId: string;
+  stopLoss: number;
+  target: number;
+  currentLTP: number | null;
+  currentLTPTimestamp: Date | null;
+  unrealizedPnL: number | null;
+  percentChange: number | null;
+  minutesSinceEntry: number;
+  secondsSinceLastUpdate: number | null;
+  isActive: boolean;
+}
+
 // ===========================
 // MAIN SERVICE CLASS
 // ===========================
@@ -80,6 +100,10 @@ export class TradeExecutionService {
   private dataFilePath: string;
   private instruments: OptionInstrument[] = [];
   private niftyInstruments: OptionInstrument[] = [];
+  
+  // Cached option price for active position monitoring (no extra API calls)
+  private cachedOptionPrice: number | null = null;
+  private cachedOptionTimestamp: Date | null = null;
 
   constructor(kiteConnect: any, logger: Logger) {
     this.kiteConnect = kiteConnect;
@@ -318,6 +342,35 @@ export class TradeExecutionService {
     return nextTuesday;
   }
 
+  /**
+   * Find ATM (At-The-Money) strike closest to current price
+   * 
+   * @param options - Array of option instruments
+   * @param currentPrice - Current underlying price (NIFTY Futures)
+   * @returns ATM strike price
+   */
+  private findATMStrike(options: OptionInstrument[], currentPrice: number): number {
+    if (options.length === 0) {
+      throw new Error('No options available to find ATM strike');
+    }
+
+    // Find strike with smallest absolute difference from current price
+    let atmStrike = options[0]!.strike;
+    let smallestDiff = Math.abs(options[0]!.strike - currentPrice);
+
+    for (const option of options) {
+      const diff = Math.abs(option.strike - currentPrice);
+      if (diff < smallestDiff) {
+        smallestDiff = diff;
+        atmStrike = option.strike;
+      }
+    }
+
+    this.logger.debug(`🎯 ATM Strike calculation: Price=${currentPrice}, ATM=${atmStrike}, Diff=${smallestDiff.toFixed(2)}`);
+
+    return atmStrike;
+  }
+
   public async selectATMOption(direction: 'LONG' | 'SHORT', niftyPrice: number): Promise<OptionInstrument> {
     if (this.niftyInstruments.length === 0) {
       await this.loadInstruments();
@@ -331,51 +384,67 @@ export class TradeExecutionService {
     this.logger.info(`� Target Premium: ₹${targetPremium.toFixed(2)} (1% of futures price)`);
     this.logger.info(`�📅 Target expiry: ${nextTuesdayExpiry.toDateString()}`);
 
-    // Find options with correct expiry and type
-    const relevantOptions = this.niftyInstruments.filter(opt => {
-      const isSameExpiry = Math.abs(opt.expiry.getTime() - nextTuesdayExpiry.getTime()) < 24 * 60 * 60 * 1000; // Within 1 day
+    // Find options with exact expiry match (precise targeting)
+    let relevantOptions = this.niftyInstruments.filter(opt => {
+      const isSameExpiry = opt.expiry.toDateString() === nextTuesdayExpiry.toDateString();
       return isSameExpiry && opt.instrument_type === optionType;
     });
 
+    // Fallback: If no exact match, try ±1 day (holiday/monthly expiry edge case)
     if (relevantOptions.length === 0) {
-      throw new Error(`No ${optionType} options found for expiry ${nextTuesdayExpiry.toDateString()}`);
+      this.logger.warn(`⚠️ No exact expiry match for ${nextTuesdayExpiry.toDateString()}, trying ±1 day fallback...`);
+      relevantOptions = this.niftyInstruments.filter(opt => {
+        const daysDiff = Math.abs((opt.expiry.getTime() - nextTuesdayExpiry.getTime()) / (24*60*60*1000));
+        return daysDiff <= 1 && opt.instrument_type === optionType;
+      });
+      
+      if (relevantOptions.length > 0) {
+        this.logger.info(`✅ Fallback found ${relevantOptions.length} options within ±1 day`);
+      }
+    }
+
+    if (relevantOptions.length === 0) {
+      throw new Error(`No ${optionType} options found for expiry ${nextTuesdayExpiry.toDateString()} or nearby dates`);
     }
 
     this.logger.info(`📋 Found ${relevantOptions.length} ${optionType} options, fetching live prices...`);
 
-    // Fetch live option prices - batch processing to avoid rate limits
-    const optionsWithPremiums: Array<{option: OptionInstrument, premium: number}> = [];
-    const batchSize = 10;
+    // Find ATM strike and select ATM±25 range (51 options) for optimal premium matching
+    const atmStrike = this.findATMStrike(relevantOptions, niftyPrice);
+    const strikeRange = 25; // ±25 strikes from ATM
+    const minStrike = atmStrike - (strikeRange * 50);
+    const maxStrike = atmStrike + (strikeRange * 50);
 
-    for (let i = 0; i < relevantOptions.length; i += batchSize) {
-      const batch = relevantOptions.slice(i, i + batchSize);
-      const symbols = batch.map(opt => `NFO:${opt.tradingsymbol}`);
+    // Filter to ATM±25 range
+    const selectedOptions = relevantOptions.filter(opt => 
+      opt.strike >= minStrike && opt.strike <= maxStrike
+    );
+
+    this.logger.info(`🎯 ATM Strike: ₹${atmStrike} | Range: ₹${minStrike}-₹${maxStrike} | Selected: ${selectedOptions.length} options`);
+
+    // Fetch live prices for selected options in single API call
+    const symbols = selectedOptions.map(opt => `NFO:${opt.tradingsymbol}`);
+    const optionsWithPremiums: Array<{option: OptionInstrument, premium: number}> = [];
+
+    try {
+      const quotes = await this.kiteConnect.getQuote(symbols);
       
-      try {
-        const quotes = await this.kiteConnect.getQuote(symbols);
+      for (const option of selectedOptions) {
+        const symbol = `NFO:${option.tradingsymbol}`;
+        const quote = quotes[symbol];
         
-        for (const option of batch) {
-          const symbol = `NFO:${option.tradingsymbol}`;
-          const quote = quotes[symbol];
-          
-          if (quote && quote.last_price > 0) {
-            optionsWithPremiums.push({
-              option: option,
-              premium: quote.last_price
-            });
-          }
+        if (quote && quote.last_price > 0) {
+          optionsWithPremiums.push({
+            option: option,
+            premium: quote.last_price
+          });
         }
-        
-        // Small delay to avoid rate limits
-        if (i + batchSize < relevantOptions.length) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-      } catch (batchError) {
-        const errorMessage = batchError instanceof Error ? batchError.message : String(batchError);
-        this.logger.warn(`⚠️ Error fetching prices for batch ${i}-${i + batchSize}: ${errorMessage}`);
-        continue;
       }
+      
+      this.logger.info(`✅ Fetched prices for ${optionsWithPremiums.length}/${selectedOptions.length} options`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error(`❌ Error fetching option prices: ${errorMessage}`);
     }
 
     if (optionsWithPremiums.length === 0) {
@@ -626,6 +695,7 @@ export class TradeExecutionService {
 
         this.persistedData.tradeHistory.push(tradeRecord);
         delete this.persistedData.activePosition;
+        this.clearOptionPriceCache(); // Clear cached price when position closes
         this.savePersistedData();
 
         this.logger.info(`✅ Paper position closed successfully`);
@@ -678,6 +748,7 @@ export class TradeExecutionService {
 
         this.persistedData.tradeHistory.push(tradeRecord);
         delete this.persistedData.activePosition;
+        this.clearOptionPriceCache(); // Clear cached price when position closes
         this.savePersistedData();
 
         this.logger.info(`✅ Real position closed successfully`);
@@ -865,6 +936,56 @@ export class TradeExecutionService {
     return this.persistedData.activePosition;
   }
 
+  public getDetailedPosition(): DetailedPosition | null {
+    const position = this.persistedData.activePosition;
+    if (!position) return null;
+
+    const now = new Date();
+    const entryTime = new Date(position.entryTime);
+    const minutesSinceEntry = Math.floor((now.getTime() - entryTime.getTime()) / 60000);
+
+    const cachedPrice = this.getCachedOptionPrice();
+    let currentLTP: number | null = null;
+    let currentLTPTimestamp: Date | null = null;
+    let unrealizedPnL: number | null = null;
+    let percentChange: number | null = null;
+    let secondsSinceLastUpdate: number | null = null;
+
+    if (cachedPrice) {
+      currentLTP = cachedPrice.price;
+      currentLTPTimestamp = cachedPrice.timestamp;
+      
+      // Calculate unrealized P&L: (current - entry) * quantity
+      unrealizedPnL = (currentLTP - position.entryPrice) * position.quantity;
+      
+      // Calculate percent change
+      percentChange = ((currentLTP - position.entryPrice) / position.entryPrice) * 100;
+      
+      // Calculate seconds since last update
+      secondsSinceLastUpdate = Math.floor((now.getTime() - currentLTPTimestamp.getTime()) / 1000);
+    }
+
+    return {
+      tradeId: position.tradeId,
+      direction: position.direction,
+      instrument: position.instrument.tradingsymbol,
+      strikePrice: position.instrument.strike,
+      entryPrice: position.entryPrice,
+      quantity: position.quantity,
+      entryTime: entryTime,
+      entryOrderId: position.entryOrderId,
+      stopLoss: position.stopLoss,
+      target: position.target,
+      currentLTP,
+      currentLTPTimestamp,
+      unrealizedPnL,
+      percentChange,
+      minutesSinceEntry,
+      secondsSinceLastUpdate,
+      isActive: true
+    };
+  }
+
   public getTradeHistory(): TradeRecord[] {
     return this.persistedData.tradeHistory;
   }
@@ -891,6 +1012,36 @@ export class TradeExecutionService {
       totalTrades: this.persistedData.tradeHistory.length,
       paperTradingMode: this.persistedData.config.paperTradingMode
     };
+  }
+
+  /**
+   * Update cached option price for active position monitoring
+   * Called by strategy's WebSocket tick handler (no extra API calls)
+   */
+  public updateOptionPrice(price: number): void {
+    this.cachedOptionPrice = price;
+    this.cachedOptionTimestamp = new Date();
+  }
+
+  /**
+   * Get cached option price for dashboard
+   */
+  public getCachedOptionPrice(): { price: number, timestamp: Date } | null {
+    if (this.cachedOptionPrice === null || this.cachedOptionTimestamp === null) {
+      return null;
+    }
+    return {
+      price: this.cachedOptionPrice,
+      timestamp: this.cachedOptionTimestamp
+    };
+  }
+
+  /**
+   * Clear cached price when position closes
+   */
+  private clearOptionPriceCache(): void {
+    this.cachedOptionPrice = null;
+    this.cachedOptionTimestamp = null;
   }
 
   public async getOptionPriceByToken(instrumentToken: string): Promise<number> {

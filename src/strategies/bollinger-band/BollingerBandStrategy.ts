@@ -676,7 +676,9 @@ export class BollingerBandStrategy extends StrategyBase {
         ...this.getMetrics(),
         isStreaming: false // No real-time streaming needed for 5-minute strategy
       },
-      recentTrades: this.tradeHistory.slice(-10), // Last 10 trades
+      recentTrades: this.tradeHistory.slice(-10), // Last 10 trades for dashboard
+      allTrades: this.getTradeHistory(), // All trades for history page
+      tradeStats: this.getTradingStats(), // Pre-calculated comprehensive stats
       // Custom strategy status
       currentLots: this.calculateLots(), // Dynamic lot size based on current capital
       capitalAllocation: this.CAPITAL_ALLOCATION,
@@ -1612,6 +1614,10 @@ export class BollingerBandStrategy extends StrategyBase {
           
           // ✅ Track successful fetch time for disruption detection
           this.lastSuccessfulFetchTime = Date.now();
+          
+          // ✅ Reset health status after successful fetch
+          this.resetErrorCount();
+          this.logger.debug('[BOLLINGER] ✅ Health status reset after successful candle fetch');
           
           // ✅ Realign timer if disruption was detected
           if (wasDisrupted) {
@@ -2767,10 +2773,10 @@ export class BollingerBandStrategy extends StrategyBase {
         const minutesSinceEntry = (Date.now() - this.currentPosition.entryTime.getTime()) / 60000;
         const movementFromEntry = this.currentPosition.highestPremium - this.currentPosition.entryPrice;
         
-        // 10-minute checkpoint: Require at least ₹5 movement from entry
-        if (minutesSinceEntry >= 10 && minutesSinceEntry < 10.1) {
+        // 15-minute checkpoint: Require at least ₹5 movement from entry
+        if (minutesSinceEntry >= 15 && minutesSinceEntry < 15.1) {
           if (movementFromEntry < 5) {
-            this.logger.info('🔴 SHORT exit: Insufficient movement at 10-minute checkpoint', {
+            this.logger.info('🔴 SHORT exit: Insufficient movement at 15-minute checkpoint', {
               minutesSinceEntry: minutesSinceEntry.toFixed(2),
               entryPrice: this.currentPosition.entryPrice.toFixed(2),
               highestPremium: this.currentPosition.highestPremium.toFixed(2),
@@ -2779,11 +2785,11 @@ export class BollingerBandStrategy extends StrategyBase {
               shortfall: (5 - movementFromEntry).toFixed(2),
               timestamp: new Date().toLocaleTimeString()
             });
-            await this.executeExit('SHORT_INSUFFICIENT_MOVEMENT_10MIN');
+            await this.executeExit('SHORT_INSUFFICIENT_MOVEMENT_15MIN');
             return; // Exit immediately, skip trailing SL check
           } else {
-            // Log successful pass of 10-minute checkpoint
-            this.logger.info('✅ SHORT position passed 10-minute movement checkpoint', {
+            // Log successful pass of 15-minute checkpoint
+            this.logger.info('✅ SHORT position passed 15-minute movement checkpoint', {
               minutesSinceEntry: minutesSinceEntry.toFixed(2),
               entryPrice: this.currentPosition.entryPrice.toFixed(2),
               highestPremium: this.currentPosition.highestPremium.toFixed(2),
@@ -3286,6 +3292,31 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
+   * Find ATM (At-The-Money) strike closest to current price
+   */
+  private findATMStrike(options: any[], currentPrice: number): number {
+    if (options.length === 0) {
+      throw new Error('No options available to find ATM strike');
+    }
+
+    // Find strike with smallest absolute difference from current price
+    let atmStrike = options[0].strike;
+    let smallestDiff = Math.abs(options[0].strike - currentPrice);
+
+    for (const option of options) {
+      const diff = Math.abs(option.strike - currentPrice);
+      if (diff < smallestDiff) {
+        smallestDiff = diff;
+        atmStrike = option.strike;
+      }
+    }
+
+    this.logger.debug(`🎯 ATM Strike calculation: Price=${currentPrice}, ATM=${atmStrike}, Diff=${smallestDiff.toFixed(2)}`);
+
+    return atmStrike;
+  }
+
+  /**
    * Select option instrument based on target premium
    */
   private async selectOptionInstrument(optionType: 'CE' | 'PE', targetPremium: number): Promise<any> {
@@ -3316,20 +3347,40 @@ export class BollingerBandStrategy extends StrategyBase {
         throw new Error('No suitable NIFTY options found');
       }
       
-      // Get quotes for these options to find closest to target premium
-      const tokens = nextTuesdayOptions.slice(0, 50).map((opt: any) => opt.instrument_token); // Limit to 50 for API limits
+      // Get current NIFTY50 spot price for ATM calculation
+      const nifty50Quote = await this.kiteConnect.getQuote([this.NIFTY50_INSTRUMENT_TOKEN]);
+      const nifty50Price = nifty50Quote[this.NIFTY50_INSTRUMENT_TOKEN].last_price;
+      
+      // Find ATM strike and select ±25 options around it
+      const atmStrike = this.findATMStrike(nextTuesdayOptions, nifty50Price);
+      const atmIndex = nextTuesdayOptions.findIndex((opt: any) => opt.strike === atmStrike);
+      
+      if (atmIndex === -1) {
+        throw new Error(`ATM strike ${atmStrike} not found in options array`);
+      }
+      
+      // Calculate range: ATM ± 25 strikes (51 total)
+      const startIndex = Math.max(0, atmIndex - 25);
+      const endIndex = Math.min(nextTuesdayOptions.length - 1, atmIndex + 25);
+      const relevantOptions = nextTuesdayOptions.slice(startIndex, endIndex + 1);
+      
+      this.logger.info(`🎯 ATM Strike: ₹${atmStrike} (NIFTY Spot: ₹${nifty50Price.toFixed(2)})`);
+      this.logger.info(`📊 Selecting ${relevantOptions.length} options: Strikes ${relevantOptions[0].strike} to ${relevantOptions[relevantOptions.length-1].strike}`);
+      
+      // Get quotes for ATM±25 options (single API call, well under 200 symbol limit)
+      const tokens = relevantOptions.map((opt: any) => opt.instrument_token);
       const quotes = await this.kiteConnect.getQuote(tokens);
       
       let bestOption = null;
       let smallestDiff = Infinity;
       
-      for (const token of tokens) {
-        const quote = quotes[token];
+      for (const option of relevantOptions) {
+        const quote = quotes[option.instrument_token];
         if (quote && quote.last_price > 0) {
           const priceDiff = Math.abs(quote.last_price - targetPremium);
           if (priceDiff < smallestDiff) {
             smallestDiff = priceDiff;
-            bestOption = nextTuesdayOptions.find((opt: any) => opt.instrument_token === token);
+            bestOption = option;
           }
         }
       }
@@ -3536,17 +3587,34 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   public getTradingStats(): any {
     const totalTrades = this.tradeHistory.length;
-    const profitableTrades = this.tradeHistory.filter(trade => (trade.pnl || 0) > 0).length;
+    const closedTrades = this.tradeHistory.filter(trade => trade.status === 'CLOSED');
+    const winningTrades = closedTrades.filter(trade => (trade.pnl || 0) > 0);
+    const losingTrades = closedTrades.filter(trade => (trade.pnl || 0) < 0);
     const totalPnL = this.getTotalPnL();
+    
+    const avgWin = winningTrades.length > 0 ? 
+      winningTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0) / winningTrades.length : 0;
+    const avgLoss = losingTrades.length > 0 ? 
+      losingTrades.reduce((sum, trade) => sum + (trade.pnl || 0), 0) / losingTrades.length : 0;
+    const profitFactor = Math.abs(avgLoss) > 0 ? 
+      Math.abs(avgWin * winningTrades.length) / Math.abs(avgLoss * losingTrades.length) : 0;
+    
+    const initialCapital = this.CAPITAL_ALLOCATION;
+    const roi = initialCapital > 0 ? ((totalPnL / initialCapital) * 100) : 0;
     
     return {
       totalTrades,
-      profitableTrades,
-      lossTrades: totalTrades - profitableTrades,
-      winRate: totalTrades > 0 ? (profitableTrades / totalTrades * 100).toFixed(2) : '0.00',
+      closedTrades: closedTrades.length,
+      profitableTrades: winningTrades.length,
+      lossTrades: losingTrades.length,
+      winRate: closedTrades.length > 0 ? ((winningTrades.length / closedTrades.length) * 100).toFixed(2) : '0.00',
       totalPnL: totalPnL.toFixed(2),
+      avgWin: avgWin.toFixed(2),
+      avgLoss: avgLoss.toFixed(2),
+      profitFactor: profitFactor.toFixed(2),
+      roi: roi.toFixed(2),
       currentCapital: this.currentCapital.toFixed(2),
-      capitalChange: (this.currentCapital - 200000).toFixed(2), // Change from initial 2L
+      capitalChange: (this.currentCapital - 200000).toFixed(2),
       capitalChangePercent: ((this.currentCapital - 200000) / 200000 * 100).toFixed(2)
     };
   }

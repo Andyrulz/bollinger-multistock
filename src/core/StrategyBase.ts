@@ -29,6 +29,8 @@ export interface StrategyStatus {
   metrics: StrategyMetrics;
   currentPosition?: any;
   recentTrades: any[];
+  allTrades?: any[]; // All trades for history page
+  tradeStats?: any; // Pre-calculated comprehensive statistics
 }
 
 /**

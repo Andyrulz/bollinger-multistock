@@ -24,8 +24,7 @@ export interface PersistedStrategyState {
   tradeSetupRequest?: TradeSetupRequest | undefined;
   
   // Historical data (CRITICAL - takes time to rebuild)
-  candles: Candle[]; // 5-minute candles (pivot detection)
-  oneMinuteCandles: Candle[]; // 1-minute candles (volume SMA50)
+  candles: Candle[]; // 5-minute candles (pivot detection AND volume SMA50)
   
   // Pivot detection state (CRITICAL - expensive to recalculate)
   latestPivotHigh?: PivotPoint | undefined;
@@ -36,8 +35,10 @@ export interface PersistedStrategyState {
   markingCandleState: MarkingCandleState;
   currentVolumeSMA50: number;
   lastCumulativeVolume: number;
-  currentMinuteAccumulatedVolume: number;
-  lastProcessedOneMinuteCandleTime?: Date | undefined;
+  
+  // Historical candle processing tracking (prevents replay on restart)
+  lastProcessedCandleForBreakout?: Date | undefined;
+  lastFiveMinuteBoundary?: Date | undefined;
   
   // Timestamps for validation
   lastUpdateTime: Date;
@@ -197,6 +198,14 @@ export class StrategyStatePersistence {
     if (stateData.tradeSetupRequest?.timestamp) {
       stateData.tradeSetupRequest.timestamp = new Date(stateData.tradeSetupRequest.timestamp);
     }
+    
+    // Convert historical candle processing tracking timestamps
+    if (stateData.lastProcessedCandleForBreakout) {
+      stateData.lastProcessedCandleForBreakout = new Date(stateData.lastProcessedCandleForBreakout);
+    }
+    if (stateData.lastFiveMinuteBoundary) {
+      stateData.lastFiveMinuteBoundary = new Date(stateData.lastFiveMinuteBoundary);
+    }
   }
 
   /**
@@ -231,18 +240,6 @@ export class StrategyStatePersistence {
           const prevCandle = state.candles[i - 1];
           if (currentCandle && prevCandle && currentCandle.timestamp <= prevCandle.timestamp) {
             this.logger.warn('⚠️ 5m candles are not chronologically ordered');
-            return false;
-          }
-        }
-      }
-      
-      if (state.oneMinuteCandles && state.oneMinuteCandles.length > 0) {
-        // Ensure 1m candles are chronologically ordered
-        for (let i = 1; i < state.oneMinuteCandles.length; i++) {
-          const currentCandle = state.oneMinuteCandles[i];
-          const prevCandle = state.oneMinuteCandles[i - 1];
-          if (currentCandle && prevCandle && currentCandle.timestamp <= prevCandle.timestamp) {
-            this.logger.warn('⚠️ 1m candles are not chronologically ordered');
             return false;
           }
         }
@@ -384,7 +381,7 @@ export class StrategyStatePersistence {
       
       fs.writeFileSync(this.candlesCachePath, compressed, { mode: 0o600 });
       
-      this.logger.debug(`💾 Candles cache saved (${candles5m.length} 5m, ${candles1m.length} 1m candles, ${Math.round(compressed.length / 1024)} KB compressed)`);
+      this.logger.debug(`💾 Candles cache saved (${candles5m.length} 5m candles, ${Math.round(compressed.length / 1024)} KB compressed)`);
       
     } catch (error) {
       this.logger.error('❌ Failed to save candles cache:', error);
@@ -416,7 +413,7 @@ export class StrategyStatePersistence {
         if (candle.timestamp) candle.timestamp = new Date(candle.timestamp);
       });
       
-      this.logger.debug(`🔄 Candles cache loaded (${cacheData.candles5m?.length || 0} 5m, ${cacheData.candles1m?.length || 0} 1m candles)`);
+      this.logger.debug(`🔄 Candles cache loaded (${cacheData.candles5m?.length || 0} 5m candles)`);
       return cacheData;
       
     } catch (error) {
@@ -475,7 +472,6 @@ export class StrategyStatePersistence {
       
       // Historical data
       candles: [...strategyState.candles], // Create copies to avoid reference issues
-      oneMinuteCandles: [...strategyState.oneMinuteCandles],
       
       // Pivot detection state
       latestPivotHigh: strategyState.latestPivotHigh,
@@ -486,8 +482,10 @@ export class StrategyStatePersistence {
       markingCandleState: { ...strategyState.markingCandleState },
       currentVolumeSMA50: strategyState.currentVolumeSMA50,
       lastCumulativeVolume: strategyState.lastCumulativeVolume,
-      currentMinuteAccumulatedVolume: strategyState.currentMinuteAccumulatedVolume,
-      lastProcessedOneMinuteCandleTime: strategyState.lastProcessedOneMinuteCandleTime,
+      
+      // Historical candle processing tracking
+      lastProcessedCandleForBreakout: strategyState.lastProcessedCandleForBreakout,
+      lastFiveMinuteBoundary: strategyState.lastFiveMinuteBoundary,
       
       // Timestamps
       lastUpdateTime: new Date(),

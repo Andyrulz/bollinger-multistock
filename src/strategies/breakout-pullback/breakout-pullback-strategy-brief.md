@@ -2,9 +2,9 @@
 
 ## 📋 Strategy Overview
 
-**Trading Style**: Swing trading on 1-minute NIFTY futures with 5-minute pivot analysis  
+**Trading Style**: Swing trading on NIFTY futures with 5-minute pivot analysis  
 **Capital**: ₹200,000 (independent from Bollinger Band strategy)  
-**Position Sizing**: Risk-based (5% account risk per trade)  
+**Position Sizing**: Risk-based (3% account risk per trade)  
 **Maximum Positions**: 1 active position at a time  
 **Trading Hours**: 9:15 AM - 3:30 PM  
 **Position Type**: Always BUY options (CE for LONG signals, PE for SHORT signals)
@@ -18,8 +18,8 @@
 This is a **pivot breakout-retracement system** that:
 
 1. Identifies pivot highs/lows using 15-bar lookback on 5-minute candles
-2. Detects breakouts on 1-minute candles with volume confirmation
-3. Waits for a **marking candle** (retracement) to set precise entry and stop-loss
+2. Detects breakouts on 5-minute candles with volume confirmation
+3. Waits for a **marking candle** (retracement) to set precise entry and stop-loss (on 5-minute candles)
 4. Enters on retracement and targets breakout continuation
 5. Uses dynamic stop-loss that can update based on price action
 
@@ -32,19 +32,19 @@ This is a **pivot breakout-retracement system** that:
 - Pivot Low: Bar with 15 bars higher on each side
 - These become breakout reference levels
 
-#### **Phase 2: Breakout Detection** (1-minute candles)
+#### **Phase 2: Breakout Detection** (5-minute candles)
 
-- Monitor for 1-minute candles breaking above pivot high (LONG) or below pivot low (SHORT)
+- Monitor for 5-minute candles breaking above pivot high (LONG) or below pivot low (SHORT)
 - Require volume > 50-period SMA for confirmation
 - Breakout candle must not gap (avoid false signals)
 - State: `WAITING_FOR_BREAKOUT` → `WAITING_FOR_ENTRY`
 
-#### **Phase 3: Marking Candle & Entry** (1-minute candles)
+#### **Phase 3: Marking Candle & Entry** (5-minute candles)
 
-- Wait for **opposite-direction marking candle** within 10 bars of breakout
+- Wait for **opposite-direction marking candle** within **4 bars (20 minutes)** of breakout (on 5-minute candles)
 - Marking candle provides entry level and stop-loss
-- Entry and SL can update up to 1 time if stop-loss extends ≥1 point
-- Maximum 20 minutes from breakout to entry
+- Entry and SL can update **up to 1 time** if stop-loss extends ≥1 point
+- Maximum **40 minutes** from breakout to entry (total window for marking candle search and entry trigger)
 - State: `WAITING_FOR_ENTRY` → `IN_TRADE` (when entry level hit)
 
 ---
@@ -53,9 +53,9 @@ This is a **pivot breakout-retracement system** that:
 
 ### **LONG Breakout Setup**
 
-**Breakout Requirements** (1-minute candle):
+**Breakout Requirements** (5-minute candle):
 
-- ✅ **Price**: Close > Latest Pivot High
+- ✅ **Price**: Close > Latest Pivot High (on 5-minute candle)
 - ✅ **Volume**: Candle volume > 50-period SMA
 - ✅ **No Gap**: Candle low < Pivot High (touches pivot level)
 - ✅ **Trend**: Bullish candle (Close > Open) for valid breakout
@@ -64,7 +64,7 @@ This is a **pivot breakout-retracement system** that:
 
 **Marking Candle** (opposite direction - retracement):
 
-- Must appear within 10 bars after breakout
+- Must appear within 10 bars after breakout (on 5-minute candles)
 - Must be **bearish/RED** (Close < Open) - opposite of bullish breakout
 - Represents pullback/retracement after the breakout
 - Provides: Entry = High, Stop Loss = Low
@@ -78,9 +78,9 @@ This is a **pivot breakout-retracement system** that:
 
 ### **SHORT Breakout Setup**
 
-**Breakout Requirements** (1-minute candle):
+**Breakout Requirements** (5-minute candle):
 
-- ✅ **Price**: Close < Latest Pivot Low
+- ✅ **Price**: Close < Latest Pivot Low (on 5-minute candle)
 - ✅ **Volume**: Candle volume > 50-period SMA
 - ✅ **No Gap**: Candle high > Pivot Low (touches pivot level)
 - ✅ **Trend**: Bearish candle (Close < Open) for valid breakout
@@ -89,7 +89,7 @@ This is a **pivot breakout-retracement system** that:
 
 **Marking Candle** (opposite direction - retracement):
 
-- Must appear within 10 bars after breakout
+- Must appear within 10 bars after breakout (on 5-minute candles)
 - Must be **bullish/GREEN** (Close > Open) - opposite of bearish breakout
 - Represents pullback/retracement after the breakout
 - Provides: Entry = Low, Stop Loss = High
@@ -104,6 +104,41 @@ This is a **pivot breakout-retracement system** that:
 ---
 
 ## 🚪 Exit Conditions
+
+### **Stop Loss Cap for Risk Management** ⚡ **NEW FEATURE**
+
+**Automatic SL Capping at 40% of Target**:
+
+To maintain a minimum 1:2.5 Risk:Reward ratio on ALL trades, the stop loss is automatically capped at 40% of the target distance. This prevents wide marking candles from creating poor risk:reward setups.
+
+**How It Works**:
+
+```
+Max SL Distance = (NIFTY Futures Price / 1000) × 0.4
+
+Example (NIFTY @ 26,000):
+- Target Points: 26,000 / 1000 = 26 points
+- Max SL Distance: 26 × 0.4 = 10.4 points
+- Guaranteed R:R: 10.4 : 26 = 1:2.5 ✅
+```
+
+**Behavior**:
+
+- **Small Candles (< 10.4 pts)**: Natural SL used (unchanged)
+- **Wide Candles (> 10.4 pts)**: SL capped at 10.4 points for protection
+
+**Example LONG Trade**:
+
+```
+Wide Marking Candle: High = 100.00, Low = 82.00 (18 points)
+Natural Entry: 100.00, Natural SL: 82.00 ❌ Poor R:R (1:1.44)
+
+With SL Cap Applied:
+Entry: 100.00
+SL: 89.60 (capped from 82.00) ✅ Better protection
+Target: 126.00 (26 points)
+Risk:Reward: 10.4:26 = 1:2.5 ✅ Minimum guaranteed
+```
 
 ### **Target Calculation**
 
@@ -142,9 +177,9 @@ Example:
 ### **Risk-Based Position Sizing**
 
 ```typescript
-// Calculate position size based on 5% account risk
+// Calculate position size based on 3% account risk
 const stopLossPoints = Math.abs(entryLevel - stopLossLevel);
-const riskAmount = currentCapital * 0.05; // 5% of capital
+const riskAmount = currentCapital * 0.03; // 3% of capital
 const maxQuantityFromRisk = Math.floor(riskAmount / stopLossPoints);
 
 // Calculate maximum affordable based on capital
@@ -164,22 +199,38 @@ const finalQuantity = lots * lotSize;
 
 ### **Capital Constraints**
 
-**Example Calculation**:
+**Example Calculation** (with SL Cap Applied):
 
 - Capital: ₹200,000
-- Entry: 24,520, Stop Loss: 24,515 → Risk = 5 points
-- Risk Amount: ₹200,000 × 5% = ₹10,000
-- Max Quantity (Risk): ₹10,000 / 5 = 2,000 shares
+- NIFTY Futures: 26,000
+- Wide Marking Candle: Entry = 24,520, Natural SL = 24,502 (18 points)
+- **SL Cap Applied**: Max SL = 26 × 0.4 = 10.4 points → Capped SL = 24,509.6
+- **Final Risk**: 24,520 - 24,509.6 = 10.4 points ✅
+- Risk Amount: ₹200,000 × 3% = ₹6,000
+- Max Quantity (Risk): ₹6,000 / 10.4 = 576 shares
 - Option Price: ₹245 (1% of 24,500)
 - Max Quantity (Capital): ₹200,000 / ₹245 = 816 shares
-- Final: Use 816 shares → 10 lots (10 × 75 = 750 shares)
+- Final: Use 576 shares → 7 lots (7 × 75 = 525 shares)
+
+**Impact of SL Cap**:
+
+Without Cap:
+
+- Risk: 18 points → Max Qty: 333 shares → Poor R:R (1:1.44)
+
+With Cap:
+
+- Risk: 10.4 points → Max Qty: 576 shares → Better R:R (1:2.5) ✅
+- More position size allowed due to controlled risk
+- Guaranteed minimum 1:2.5 Risk:Reward on all trades
 
 **Safety Checks**:
 
-- Never risk more than 5% of capital per trade
+- Never risk more than 3% of capital per trade
 - Never use more capital than available
 - Minimum 1 lot, maximum based on smaller of risk/capital constraints
 - Real-time capital tracking with P&L updates
+- **SL automatically capped at 40% of target for optimal R:R** ✅
 
 ---
 
@@ -277,7 +328,7 @@ New Capital = Previous Capital + Realized P&L
 ```
 1. Load historical 5-minute candles (72 hours to get ~100 candles)
 2. Detect pivot points (15,15 lookback algorithm)
-3. Fetch historical 1-minute candles (5 days to get 50+ candles)
+3. Fetch historical 5-minute candles (5 days to get 50+ candles)
 4. Calculate initial Volume SMA50
 5. Start WebSocket price streaming
 6. State: WAITING_FOR_BREAKOUT
@@ -294,7 +345,7 @@ Continue monitoring for breakout...
 **10:47 AM - LONG Breakout**
 
 ```
-1-minute candle completes:
+5-minute candle completes:
   Open: 24,512, High: 24,525, Low: 24,510, Close: 24,518
   Volume: 185,000 (SMA50: 120,000) ✅
   Close > Pivot High (24,518 > 24,515) ✅
@@ -308,7 +359,7 @@ Start marking candle search (10-bar window, 20-min limit)
 **10:48 AM - Marking Candle Found**
 
 ```
-1-minute candle (1 bar after breakout):
+5-minute candle (1 bar after breakout):
   Open: 24,522, High: 24,524, Low: 24,516, Close: 24,517
   Bearish/RED candle (24,517 < 24,522) ✅ Opposite direction (retracement)
 
@@ -325,10 +376,10 @@ Select Option:
   Current Premium: ₹248
 
 Position Sizing:
-  Risk: 8 points, Risk Amount: ₹10,000 (5%)
-  Max Qty: 1,250 shares
-  Lots: 16 lots = 1,200 shares
-  Trade Cost: ₹248 × 225 = ₹55,800
+  Risk: 8 points, Risk Amount: ₹6,000 (3%)
+  Max Qty: 750 shares
+  Lots: 10 lots = 750 shares
+  Trade Cost: ₹248 × 750 = ₹186,000
 
 Monitor entry level: Waiting for NIFTY ≥ 24,524
 ```
@@ -372,7 +423,7 @@ Trade Record:
   Entry: 10:51 AM @ ₹250
   Exit: 11:15 AM @ ₹275
   Duration: 24 minutes
-  P&L: +₹30,000 (15% return on ₹200K capital)
+  P&L: +₹18,750 (9.4% return on ₹200K capital)
   Exit Reason: TARGET_HIT
 ```
 
@@ -385,19 +436,19 @@ Trade Record:
 ```
 KiteConnect API
 ├─ WebSocket Streaming (Primary)
-│  └─ Tick Processing → 1-minute Candle Builder
+│  └─ Tick Processing → 5-minute Candle Builder
 │     ├─ Volume accumulation
 │     ├─ OHLC tracking
 │     └─ Candle completion detection
 │
 └─ REST API (Fallback + Historical)
    ├─ Historical 5-minute candles → Pivot Detection
-   ├─ Historical 1-minute candles → Volume SMA50
+   ├─ Historical 5-minute candles → Volume SMA50
    └─ LTP polling if WebSocket fails
 
 Strategy Processing
 ├─ Pivot Detection (5-min candles, 15,15 lookback)
-├─ Breakout Detection (1-min candles, volume confirmation)
+├─ Breakout Detection (5-min candles, volume confirmation)
 ├─ Marking Candle System (5-bar search, 18-min limit, 2 updates max)
 ├─ Entry Monitoring (WebSocket real-time)
 └─ Exit Monitoring (WebSocket real-time)
@@ -429,12 +480,12 @@ Trade Execution Service
 **Tick Processing**:
 
 ```typescript
-// Build 1-minute candles from real-time ticks
+// Build 5-minute candles from real-time ticks
 onTick(tick: TickData) {
-  if (!currentOneMinuteCandle) {
+  if (!currentFiveMinuteCandle) {
     // Start new candle
-    currentOneMinuteCandle = {
-      timestamp: currentMinuteStart,
+    currentFiveMinuteCandle = {
+      timestamp: currentFiveMinuteBoundary,
       open: tick.last_price,
       high: tick.last_price,
       low: tick.last_price,
@@ -444,16 +495,16 @@ onTick(tick: TickData) {
     };
   } else {
     // Update existing candle
-    currentOneMinuteCandle.high = Math.max(high, tick.last_price);
-    currentOneMinuteCandle.low = Math.min(low, tick.last_price);
-    currentOneMinuteCandle.close = tick.last_price;
-    currentOneMinuteCandle.volume = volumeSinceLastCandle;
-    currentOneMinuteCandle.tickCount++;
+    currentFiveMinuteCandle.high = Math.max(high, tick.last_price);
+    currentFiveMinuteCandle.low = Math.min(low, tick.last_price);
+    currentFiveMinuteCandle.close = tick.last_price;
+    currentFiveMinuteCandle.volume = volumeSinceLastCandle;
+    currentFiveMinuteCandle.tickCount++;
   }
 
-  // Check for candle completion (new minute started)
-  if (tick.timestamp.getMinutes() !== currentMinute) {
-    completeOneMinuteCandle();
+  // Check for candle completion (new 5-minute boundary reached)
+  if (isNew5MinuteBoundary(tick.timestamp)) {
+    completeFiveMinuteCandle();
     checkForBreakout(completedCandle);
   }
 }
@@ -520,34 +571,37 @@ function detectPivotLow(candles: Candle[], index: number): boolean {
 
 ### **Two-Phase Detection**
 
-**Phase 1: Initial Search (5-bar window)**
+**Phase 1: Initial Search (4-bar window = 20 minutes)**
 
 ```
 Breakout occurs at bar 0
-Search bars 1-5 for opposite-direction candle
+Search bars 1-4 for opposite-direction candle (20 minutes with 5-minute candles)
 
-LONG Breakout → Wait for bullish marking candle (Close > Open)
-SHORT Breakout → Wait for bearish marking candle (Open > Close)
+LONG Breakout → Wait for bearish/RED marking candle (Close < Open)
+SHORT Breakout → Wait for bullish/GREEN marking candle (Close > Open)
 
-If found: Set Entry and SL
-If not found by bar 5: Abandon trade, return to WAITING_FOR_BREAKOUT
+If found: Set Entry and SL (with 40% SL cap applied if needed)
+If not found by bar 4: Abandon trade, return to WAITING_FOR_BREAKOUT
 ```
 
-**Phase 2: Dynamic Updates (up to 2 updates, 18-min limit)**
+**Phase 2: Dynamic Updates (up to 1 update, 40-min total limit)**
 
 ```
 After initial marking candle found:
 - Monitor subsequent bars for SL extension ≥1 point
 - Update Entry and SL if better level found
-- Maximum 2 updates allowed
-- Total time limit: 18 minutes from breakout
+- Maximum 1 update allowed (simplified for faster execution)
+- Total time limit: 40 minutes from breakout (includes initial search + updates + entry trigger)
 - If limits exceeded: Lock in current levels, proceed to entry
 
 Example LONG Updates:
 Initial Marking: Entry 24,522, SL 24,516 (6 points)
 Update 1: Entry 24,524, SL 24,517 (7 points) - SL moved up 1 point ✅
-Update 2: Entry 24,526, SL 24,519 (7 points) - SL moved up 2 more points ✅
-Update 3: NOT ALLOWED - Max 2 updates reached
+Update 2: NOT ALLOWED - Max 1 update reached
+
+Note: Maximum 1 update reduces complexity and ensures faster execution.
+Total time window of 40 minutes provides ample time for both initial search (20 min)
+and entry trigger (additional 20 min).
 ```
 
 ### **Update Criteria**
@@ -661,8 +715,7 @@ interface PersistedStrategyState {
   markingCandleState: MarkingCandleState;
 
   // Historical Data
-  candles: Candle[]; // Last 100 5-minute candles
-  oneMinuteCandles: Candle[]; // Last 50 1-minute candles
+  candles: Candle[]; // Last 150 5-minute candles for pivot detection and volume SMA
   currentVolumeSMA50: number;
 
   // Metadata
@@ -803,16 +856,16 @@ interface PersistedStrategyState {
 
   // Volume Confirmation
   VOLUME_SMA_PERIOD: 50,           // 50-period SMA
-  VOLUME_CANDLE_INTERVAL: '1minute', // 1-minute candles
+  VOLUME_CANDLE_INTERVAL: '5minute', // 5-minute candles
 
   // Marking Candle System
-  MARKING_INITIAL_BARS: 5,         // Initial search window
-  MARKING_MAX_UPDATES: 2,          // Maximum updates allowed
-  MARKING_TIME_LIMIT: 18,          // Minutes from breakout
+  MARKING_INITIAL_BARS: 4,         // Initial search window (20 minutes with 5-min candles)
+  MARKING_MAX_UPDATES: 1,          // Maximum updates allowed (simplified for faster execution)
+  MARKING_TIME_LIMIT: 40,          // Minutes from breakout (total time for search + entry)
   MARKING_SL_EXTENSION: 1,         // Minimum SL extension (points)
 
   // Position Sizing
-  RISK_PER_TRADE: 0.05,            // 5% account risk
+  RISK_PER_TRADE: 0.03,            // 3% account risk
   TARGET_PREMIUM_PCT: 0.01,        // 1% of futures for option
   NIFTY_LOT_SIZE: 75,              // Shares per lot
 
@@ -850,13 +903,13 @@ interface PersistedStrategyState {
 
 ### **Resource Usage**
 
-| Component         | Usage            | Notes                        |
-| ----------------- | ---------------- | ---------------------------- |
-| WebSocket         | 1 connection     | NIFTY futures only           |
-| Historical API    | 2 calls at start | 5-min + 1-min candles        |
-| REST Fallback     | 60 calls/min     | Only if WebSocket fails      |
-| State Persistence | 1 write/5s       | When state is dirty          |
-| Memory            | ~5 MB            | 100 5-min + 50 1-min candles |
+| Component         | Usage           | Notes                   |
+| ----------------- | --------------- | ----------------------- |
+| WebSocket         | 1 connection    | NIFTY futures only      |
+| Historical API    | 1 call at start | 5-min candles           |
+| REST Fallback     | 60 calls/min    | Only if WebSocket fails |
+| State Persistence | 1 write/5s      | When state is dirty     |
+| Memory            | ~5 MB           | 150 5-min candles       |
 
 ---
 
@@ -911,9 +964,12 @@ Before placing exit order:
 - `startStrategy()`: Initialize and start complete system
 - `stopStrategy()`: Stop all operations gracefully
 - `detectPivotPoints()`: 15,15 pivot detection on 5-min candles
-- `checkForBreakout()`: Breakout detection on 1-min candles
+- `checkForBreakout()`: Breakout detection on 5-min candles
 - `startMarkingCandleTracking()`: Begin marking candle search
 - `processMarkingCandleUpdate()`: Handle new bars and updates
+- `calculateCappedStopLoss()`: **NEW** - Cap SL at 40% of target for minimum 1:2.5 R:R
+- `checkForInitialMarkingCandle()`: Find initial marking candle with SL capping
+- `checkForMarkingCandleUpdate()`: Update marking candle with SL capping
 - `checkEntryTrigger()`: Monitor for entry level cross
 - `checkExitTriggers()`: Monitor for SL/Target hits
 - `executeTradeEntry()`: Place entry order (atomic)
@@ -923,7 +979,7 @@ Before placing exit order:
 
 - `placeMarketOrder()`: Handle option selection and order placement
 - `exitPosition()`: Close active position
-- `calculatePositionSize()`: Risk-based sizing
+- `calculatePositionSize()`: Risk-based sizing (uses capped SL)
 - `selectATMOption()`: Premium-based option selection
 - `calculatePnL()`: (exitPrice - entryPrice) × quantity
 - `syncWithBrokerState()`: Verify position consistency
@@ -935,7 +991,8 @@ Before placing exit order:
 - [x] P&L calculation formula verified (Exit - Entry)
 - [x] Pivot detection algorithm tested (15,15 lookback)
 - [x] Breakout detection with volume confirmation working
-- [x] Marking candle system fully operational (5-bar, 2 updates, 18-min)
+- [x] Marking candle system fully operational (10-bar, 1 update, 20-min)
+- [x] **SL Cap feature implemented (40% of target, minimum 1:2.5 R:R)** ✅ **NEW**
 - [x] WebSocket streaming with automatic reconnection
 - [x] REST API fallback on WebSocket failure
 - [x] Circuit breakers preventing cascade failures
@@ -962,54 +1019,74 @@ Before placing exit order:
 1. **Pivot-Breakout-Retracement**: Not just breakout, waits for pullback
 2. **Marking Candle System**: Unique 5-bar initial + 2-update mechanism
 3. **Dynamic Stop Loss**: SL can improve (tighten) up to 2 times
-4. **Volume Confirmation**: 50-period SMA on 1-minute candles
-5. **Risk-Based Sizing**: 1% account risk per trade
+4. **Volume Confirmation**: 50-period SMA on 5-minute candles
+5. **Risk-Based Sizing**: 3% account risk per trade
 6. **WebSocket Primary**: Sub-second latency for entries/exits
 7. **18-Minute Rule**: Clear time limit prevents stale setups
 
 ### **Common Scenarios**
 
-**Scenario 1: Perfect LONG Setup**
+**Scenario 1: Perfect LONG Setup (Small Candle - Natural SL)**
 
 ```
-10:15 AM - Pivot High detected at 24,515
-10:47 AM - LONG breakout (bullish: close 24,518 > open 24,512, volume 1.5x SMA50)
-10:48 AM - Bearish/RED marking candle (high 24,524, low 24,516) - retracement
-10:49 AM - Entry 24,524, SL 24,516, Target 24,549
+10:15 AM - Pivot High detected at 24,515 (5-min candle)
+10:45 AM - LONG breakout (bullish 5-min candle: close 24,518 > open 24,512, volume 1.5x SMA50)
+10:50 AM - Bearish/RED marking candle (5-min: high 24,524, low 24,516) - retracement
+          Natural SL: 8 points (24,524 - 24,516)
+          Max SL: 10.4 points (26 × 0.4)
+          8 < 10.4 → Use Natural SL ✅
+10:50 AM - Entry 24,524, SL 24,516 (natural, 8 pts), Target 24,549
 10:51 AM - Entry triggered at 24,525
-11:15 AM - Target hit at 24,550 → +₹5,625 profit
+11:15 AM - Target hit at 24,550 → +₹6,000 profit
 ```
 
-**Scenario 2: Marking Candle Updates**
+**Scenario 1b: LONG Setup with Wide Candle (SL Capped)**
 
 ```
-11:20 AM - SHORT breakout (bearish: close 24,482 < open 24,489, volume 2.1x SMA50)
-11:21 AM - Bullish/GREEN marking (low 24,479, high 24,483) - retracement
-          Entry 24,479, SL 24,483 (4 points)
-11:22 AM - Better bullish candle (low 24,477, high 24,481)
+10:15 AM - Pivot High detected at 24,500 (5-min candle)
+10:45 AM - LONG breakout (bullish 5-min candle, volume confirmed)
+10:50 AM - Wide bearish/RED marking candle (5-min: high 24,524, low 24,506) - retracement
+          Natural SL: 18 points (24,524 - 24,506)
+          Max SL: 10.4 points (26 × 0.4)
+          18 > 10.4 → CAP IT! ⚠️
+          Capped SL = 24,524 - 10.4 = 24,513.6
+          Log: "⚠️ Wide marking candle detected! Natural SL: 18.00 pts,
+                Capping at 10.40 pts (40% of 26 pt target) for minimum 1:2.5 R:R"
+          Log: "🔒 Natural SL: ₹24,506.00 → Capped SL: ₹24,513.60"
+10:50 AM - Entry 24,524, SL 24,513.6 (capped, 10.4 pts), Target 24,549
+          R:R = 10.4:26 = 1:2.5 ✅ Guaranteed minimum!
+10:51 AM - Entry triggered at 24,525
+11:15 AM - Target hit at 24,550 → +₹8,100 profit (better than natural SL would allow)
+```
+
+**Scenario 2: Marking Candle Updates (40-Minute Window)**
+
+```
+11:20 AM - SHORT breakout (bearish 5-min candle: close 24,482 < open 24,489, volume 2.1x SMA50)
+11:25 AM - Bullish/GREEN marking (5-min: low 24,479, high 24,483) - retracement
+          Entry 24,479, SL 24,483 (4 points, within 10.4 cap)
+11:30 AM - Better bullish candle (5-min: low 24,477, high 24,481)
           Update: Entry 24,477, SL 24,481 (4 points, SL lowered 2 pts) ✅
-11:23 AM - Even better (low 24,475, high 24,478)
-          Update: Entry 24,475, SL 24,478 (3 points, SL lowered 3 pts) ✅
-11:24 AM - Another update NOT ALLOWED (max 2 reached)
-11:25 AM - Entry triggered at 24,474
+11:35 AM - Another update NOT ALLOWED (max 1 reached)
+11:36 AM - Entry triggered at 24,476
 ```
 
-**Scenario 3: Abandoned Setup (No Marking Candle)**
+**Scenario 3: Abandoned Setup (No Marking Candle in 4 Bars)**
 
 ```
-14:30 PM - LONG breakout detected (bullish candle)
-14:31-35 PM - 5 bars pass, all bullish (no bearish/RED marking candle)
-14:35 PM - Setup abandoned, return to WAITING_FOR_BREAKOUT
+14:30 PM - LONG breakout detected (bullish 5-min candle)
+14:35-14:50 PM - 4 bars pass (20 minutes), all bullish (no bearish/RED marking candle)
+14:50 PM - Setup abandoned (4-bar limit reached), return to WAITING_FOR_BREAKOUT
 ```
 
-**Scenario 4: Time Limit Exceeded**
+**Scenario 4: Time Limit Exceeded (40-Minute Window)**
 
 ```
-14:45 PM - SHORT breakout (bearish candle) with bullish/GREEN marking candle
-          Entry 24,420, SL 24,425
-14:46-15:03 PM - NIFTY stays above 24,420 (entry not hit)
-15:03 PM - 18 minutes elapsed
-15:03 PM - Setup abandoned, too much time passed
+14:00 PM - SHORT breakout (bearish 5-min candle) with bullish/GREEN marking candle
+          Entry 24,420, SL 24,425 (capped if needed)
+14:05-14:40 PM - NIFTY stays above 24,420 (entry not hit)
+14:40 PM - 40 minutes elapsed from breakout
+14:40 PM - Setup abandoned, time limit exceeded
 ```
 
 **Scenario 5: End-of-Day Force Exit**
@@ -1041,14 +1118,14 @@ Before placing exit order:
 
 ### **Capital Efficiency**
 
-- 5% risk per trade balances growth with safety
+- 3% risk per trade balances growth with safety
 - Risk-based sizing prevents over-leveraging
 - Option premium targeting ensures liquidity
 - Capital updated after each trade
 
 ### **Drawdown Characteristics**
 
-- Expected maximum drawdown: 25-50% (5-10 losing trades at 5% risk each)
+- Expected maximum drawdown: 15-30% (5-10 losing trades at 3% risk each)
 - Recovery typically quick in trending markets
 - Reduced exposure in choppy markets (fewer signals)
 

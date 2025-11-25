@@ -63,7 +63,7 @@ export interface BreakoutSignal {
   price: number; // breakout candle close price
   timestamp: Date;
   volume: number; // breakout candle volume
-  volumeMA50: number; // 50-period SMA of 1m candle volumes
+  volumeMA50: number; // 50-period SMA of 5m candle volumes
   pivotPrice: number; // the pivot level that was broken
   pivotType: 'high' | 'low'; // which pivot was broken
   candleOpen: number; // breakout candle open price
@@ -130,17 +130,16 @@ export interface StrategyState {
   currentTradeId?: string; // ID of active trade setup/execution
   tradeSetupRequest?: TradeSetupRequest; // Current trade setup details
   candles: Candle[];
-  oneMinuteCandles: Candle[];
   latestPivotHigh?: PivotPoint | undefined;
   latestPivotLow?: PivotPoint | undefined;
   latestBreakoutSignal?: BreakoutSignal | undefined;
   markingCandleState: MarkingCandleState; // new marking candle state
   currentVolumeSMA50: number;
-  // Volume tracking for incremental calculation
+  // Volume tracking for incremental calculation (for WebSocket tick processing)
   lastCumulativeVolume: number; // Last known cumulative daily volume
-  currentMinuteAccumulatedVolume: number; // Volume accumulated in current minute
-  // New breakout detection state
-  lastProcessedOneMinuteCandleTime?: Date | undefined; // track last processed 1m candle to avoid duplicates
+  // Historical candle processing tracking (prevents replay on restart)
+  lastProcessedCandleForBreakout?: Date | undefined; // Last candle that ran through checkForBreakout()
+  lastFiveMinuteBoundary?: Date | undefined; // Last 5-minute boundary timestamp for API fetching
 }
 
 export class BreakoutPullbackStrategy {
@@ -231,7 +230,7 @@ export class BreakoutPullbackStrategy {
   private isDirty = false; // Track if state needs saving
   private readonly PERSISTENCE_INTERVAL = 5000; // 5 seconds
 
-  // One-minute candle generation
+  // Five-minute candle data from API
   private currentOneMinuteCandle: {
     timestamp: Date;
     open: number;
@@ -243,6 +242,10 @@ export class BreakoutPullbackStrategy {
   } | null = null;
 
   private updateTimer: NodeJS.Timeout | undefined;
+
+  // Five-minute candle processing
+  private lastProcessedFiveMinuteTime: number = 0; // Track last processed 5-min boundary
+  private isProcessingFiveMinute: boolean = false;  // Prevent concurrent processing
 
   // Execution guard flags to prevent race conditions
   private isExecutingEntry: boolean = false;
@@ -260,10 +263,8 @@ export class BreakoutPullbackStrategy {
       breakoutDetectionActive: false,
       tradeState: TradeState.WAITING_FOR_BREAKOUT,
       candles: [],
-      oneMinuteCandles: [],
       currentVolumeSMA50: 0,
       lastCumulativeVolume: 0,
-      currentMinuteAccumulatedVolume: 0,
       markingCandleState: {
         isActive: false,
         breakoutReference: null,
@@ -279,133 +280,6 @@ export class BreakoutPullbackStrategy {
   }
 
   /**
-   * Fetch historical 1-minute candles for volume SMA50 initialization
-   * Uses progressive date range expansion to ensure we get at least 50 trading candles
-   */
-  private async fetchHistorical1MinuteCandles(): Promise<void> {
-    try {
-      if (!this.strategyState.currentContract) {
-        this.logger.error('No current contract available for historical data fetch');
-        return;
-      }
-
-      const instrumentToken = this.strategyState.currentContract.instrument_token;
-      const toDate = new Date();
-      let allHistoricalCandles: Candle[] = [];
-      
-      // Progressive date range expansion to ensure we get at least 50 candles
-      const dateRanges = [
-        { hours: 2, description: '2 hours' },
-        { hours: 6, description: '6 hours' },
-        { hours: 12, description: '12 hours' },
-        { hours: 24, description: '1 day' },
-        { hours: 48, description: '2 days' },
-        { hours: 72, description: '3 days' },
-        { hours: 96, description: '4 days' },
-        { hours: 120, description: '5 days' }
-      ];
-
-      this.logger.info(`📈 Fetching historical 1-minute candles for ${this.strategyState.currentContract.tradingsymbol}`);
-      this.logger.info(`🎯 Target: At least 50 trading candles for Volume SMA50 calculation`);
-
-      for (const range of dateRanges) {
-        const fromDate = new Date();
-        fromDate.setHours(fromDate.getHours() - range.hours);
-        
-        this.logger.info(`📅 Trying ${range.description} range: ${fromDate.toISOString()} to ${toDate.toISOString()}`);
-
-        try {
-          const historicalData = await this.kiteConnect.getHistoricalData(
-            instrumentToken,
-            'minute',
-            fromDate,
-            toDate
-          );
-
-          if (historicalData && historicalData.length > 0) {
-            // Convert to our Candle format with volume validation
-            const historicalCandles: Candle[] = historicalData.map((kiteCandle: any, index: number) => {
-              const volume = kiteCandle.volume || 0;
-              
-              // Log first few volume values for validation
-              if (index < 5) {
-                this.logger.debug(`📊 Historical candle ${index}: timestamp=${new Date(kiteCandle.date).toISOString()}, volume=${volume}`);
-              }
-              
-              return {
-                timestamp: new Date(kiteCandle.date),
-                open: kiteCandle.open,
-                high: kiteCandle.high,
-                low: kiteCandle.low,
-                close: kiteCandle.close,
-                volume: volume
-              };
-            });
-
-            // Sort by timestamp to ensure proper order
-            historicalCandles.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-            
-            // Validate volume data integrity
-            this.validateHistoricalVolumeData(historicalCandles);
-            
-            allHistoricalCandles = historicalCandles;
-            this.logger.info(`📊 Retrieved ${historicalCandles.length} candles from ${range.description} range`);
-
-            // Check if we have enough candles for SMA50
-            if (historicalCandles.length >= 50) {
-              this.logger.info(`✅ Success! Got ${historicalCandles.length} candles (≥50 required)`);
-              break;
-            } else {
-              this.logger.warn(`⚠️ Only ${historicalCandles.length} candles from ${range.description}, expanding range...`);
-            }
-          } else {
-            this.logger.warn(`⚠️ No data returned for ${range.description} range`);
-          }
-        } catch (rangeError) {
-          this.logger.error(`❌ Failed to fetch ${range.description} range:`, rangeError);
-          continue; // Try next range
-        }
-      }
-
-      if (allHistoricalCandles.length === 0) {
-        this.logger.error('❌ Failed to retrieve any historical 1-minute data after trying all date ranges');
-        return;
-      }
-
-      // Keep only the latest 50 candles for memory optimization
-      const candlesToKeep = allHistoricalCandles.slice(-50);
-      this.strategyState.oneMinuteCandles = candlesToKeep;
-
-      this.logger.info(`✅ Loaded ${allHistoricalCandles.length} historical candles (keeping latest ${candlesToKeep.length})`);
-      
-      // Calculate initial volume SMA50 if we have enough data
-      if (candlesToKeep.length >= 50) {
-        this.updateVolumeSMA50();
-        this.logger.info(`📊 Initial Volume SMA50 calculated: ${this.strategyState.currentVolumeSMA50.toFixed(2)}`);
-      } else {
-        this.logger.warn(`⚠️ Only ${candlesToKeep.length} candles available after all attempts. Volume confirmation will be limited initially.`);
-        // Still calculate SMA with available data
-        if (candlesToKeep.length > 0) {
-          this.updateVolumeSMA50();
-          this.logger.info(`📊 Partial Volume SMA${candlesToKeep.length} calculated: ${this.strategyState.currentVolumeSMA50.toFixed(2)}`);
-        }
-      }
-
-      // Set last processed time to the last historical candle
-      if (allHistoricalCandles.length > 0) {
-        const lastCandle = allHistoricalCandles[allHistoricalCandles.length - 1];
-        if (lastCandle) {
-          this.strategyState.lastProcessedOneMinuteCandleTime = lastCandle.timestamp;
-          this.logger.info(`🕐 Last processed 1m candle time set to: ${lastCandle.timestamp.toLocaleString()}`);
-        }
-      }
-
-    } catch (error) {
-      this.logger.error('Failed to fetch historical 1-minute candles:', error);
-    }
-  }
-
-  /**
    * Start the strategy
    */
   public async startStrategy(): Promise<void> {
@@ -415,13 +289,37 @@ export class BreakoutPullbackStrategy {
       // Try to restore previous state first
       const restoredState = await this.strategyPersistence.loadStrategyState();
       
-      if (restoredState && await this.validateAndRestoreState(restoredState)) {
-        this.logger.info('🔄 Strategy state restored successfully from previous session');
+      // Determine if we need fresh initialization
+      let needsFreshInit = false;
+      
+      if (restoredState) {
+        // Check if this is a new trading day
+        const isNewDay = this.isNewTradingDay(restoredState);
         
-        // Always recalculate daily pivots on startup (even with restored state)
-        // Pivots are date-specific and must use latest previous day's data
-        await this.initializeDailyPivots();
+        if (isNewDay) {
+          this.logger.info('📅 NEW TRADING DAY DETECTED - Performing daily cleanup');
+          await this.dailyCleanup();
+          needsFreshInit = true;
+        } else {
+          // Same day - try to restore state
+          if (await this.validateAndRestoreState(restoredState)) {
+            this.logger.info('🔄 Strategy state restored successfully (same trading day)');
+            
+            // Always recalculate daily pivots on startup (even with restored state)
+            // Pivots are date-specific and must use latest previous day's data
+            await this.initializeDailyPivots();
+          } else {
+            // Validation failed - need fresh init
+            needsFreshInit = true;
+          }
+        }
       } else {
+        // No saved state - need fresh init
+        needsFreshInit = true;
+      }
+      
+      // Fresh initialization if needed (new day, no state, or validation failed)
+      if (needsFreshInit) {
         this.logger.info('📝 Starting fresh strategy initialization...');
         
         // Initialize current month Nifty futures contract
@@ -434,11 +332,40 @@ export class BreakoutPullbackStrategy {
         // Load historical 5-minute candles for pivot detection
         await this.loadHistoricalCandles();
 
+        // Initialize 5-minute boundary tracking to prevent processing historical candles
+        // Use the LAST historical candle timestamp so only NEW live candles are processed
+        if (this.strategyState.candles.length > 0) {
+          const lastHistoricalCandle = this.strategyState.candles[this.strategyState.candles.length - 1]!;
+          this.lastProcessedFiveMinuteTime = lastHistoricalCandle.timestamp.getTime();
+          this.logger.info(`✅ Initialized 5-minute boundary tracking from last historical candle: ${lastHistoricalCandle.timestamp.toLocaleString()}`);
+          this.logger.info(`📊 Will only process NEW 5-minute candles after this timestamp`);
+        } else {
+          // Fallback: If no historical candles, use current boundary
+          const now = new Date();
+          const currentMinute = now.getMinutes();
+          const currentFiveMinBoundary = Math.floor(currentMinute / 5) * 5;
+          this.lastProcessedFiveMinuteTime = new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate(),
+            now.getHours(),
+            currentFiveMinBoundary,
+            0,
+            0
+          ).getTime();
+          this.logger.warn(`⚠️ No historical candles found - initialized to current boundary: ${new Date(this.lastProcessedFiveMinuteTime).toLocaleTimeString()}`);
+        }
+
+        // CRITICAL: Mark all historical candles as already processed for breakout detection
+        // This prevents replaying historical candles through breakout logic on new day startup
+        if (this.strategyState.candles.length > 0) {
+          const lastHistoricalCandle = this.strategyState.candles[this.strategyState.candles.length - 1]!;
+          this.strategyState.lastProcessedCandleForBreakout = lastHistoricalCandle.timestamp;
+          this.logger.info(`✅ lastProcessedCandleForBreakout initialized to: ${lastHistoricalCandle.timestamp.toLocaleString()}`);
+        }
+
         // Calculate daily pivots for directional bias filtering
         await this.initializeDailyPivots();
-
-        // Load historical 1-minute candles for volume SMA50 initialization
-        await this.fetchHistorical1MinuteCandles();
       }
 
       // CRITICAL FIX: Cross-validate strategy state with TradeExecutionService
@@ -824,7 +751,7 @@ export class BreakoutPullbackStrategy {
     try {
       // Clear historical data (keep only logs)
       this.strategyState.candles = [];
-      this.strategyState.oneMinuteCandles = [];
+      delete this.strategyState.lastProcessedCandleForBreakout;
       delete this.strategyState.latestPivotHigh;
       delete this.strategyState.latestPivotLow;
       delete this.strategyState.latestBreakoutSignal;
@@ -832,8 +759,6 @@ export class BreakoutPullbackStrategy {
       delete this.strategyState.lastUpdateTime;
       this.strategyState.currentVolumeSMA50 = 0;
       this.strategyState.lastCumulativeVolume = 0;
-      this.strategyState.currentMinuteAccumulatedVolume = 0;
-      delete this.strategyState.lastProcessedOneMinuteCandleTime;
       
       // Reset trade state to waiting for breakout
       this.strategyState.tradeState = TradeState.WAITING_FOR_BREAKOUT;
@@ -874,6 +799,23 @@ export class BreakoutPullbackStrategy {
       this.logger.error('❌ Error during daily cleanup:', error);
       throw error;
     }
+  }
+
+  /**
+   * Check if restored state is from a previous trading day
+   * Used to determine if daily cleanup is needed on startup
+   */
+  private isNewTradingDay(restoredState: any): boolean {
+    // If no lastProcessedCandleForBreakout, treat as new day (safe default)
+    if (!restoredState.lastProcessedCandleForBreakout) {
+      return true;
+    }
+    
+    const lastStateDate = new Date(restoredState.lastProcessedCandleForBreakout);
+    const today = new Date();
+    
+    // Compare calendar dates (ignoring time)
+    return lastStateDate.toDateString() !== today.toDateString();
   }
 
   /**
@@ -1064,8 +1006,13 @@ export class BreakoutPullbackStrategy {
       // Monitor trade levels based on current state
       this.monitorTradeLevels(tickData.last_price);
 
-      // Process tick for 1-minute candle generation
-      this.processTickForOneMinuteCandle(tickData);
+      // Process tick for 5-minute boundary detection
+      this.processTick(tickData);
+
+      // Update option price cache if there's an active position (non-blocking)
+      this.updateOptionPriceCache().catch(err => 
+        this.logger.debug('Option price cache update skipped:', err)
+      );
 
       // Record successful API call
       this.recordPollingSuccess();
@@ -1265,8 +1212,13 @@ export class BreakoutPullbackStrategy {
           // Monitor trade levels based on current state (CRITICAL: was missing in WebSocket processing)
           this.monitorTradeLevels(tickData.last_price);
 
-          // Process the tick for one-minute candle building
-          this.processTickForOneMinuteCandle(tickData);
+          // Process tick for 5-minute boundary detection
+          this.processTick(tickData);
+
+          // Update option price cache if there's an active position (non-blocking)
+          this.updateOptionPriceCache().catch(err => 
+            this.logger.debug('Option price cache update skipped:', err)
+          );
 
           // Record successful WebSocket data reception
           this.recordWebSocketSuccess();
@@ -1277,6 +1229,28 @@ export class BreakoutPullbackStrategy {
         }
       }
     });
+  }
+
+  /**
+   * Update option price cache if there's an active position
+   * Called from WebSocket tick handler to keep option prices fresh
+   */
+  private async updateOptionPriceCache(): Promise<void> {
+    try {
+      const activePosition = this.tradeExecutionService.getActivePosition();
+      if (!activePosition) return;
+
+      const symbol = `NFO:${activePosition.instrument.tradingsymbol}`;
+      const quotes = await this.kiteConnect.getQuote([symbol]);
+      const quote = quotes[symbol];
+
+      if (quote && quote.last_price) {
+        this.tradeExecutionService.updateOptionPrice(quote.last_price);
+      }
+    } catch (error) {
+      // Silently fail - option price caching is non-critical
+      this.logger.debug('Failed to update option price cache:', error);
+    }
   }
 
   /**
@@ -1613,29 +1587,10 @@ export class BreakoutPullbackStrategy {
   }
 
   /**
-   * Get one minute candle count
-   */
-  public getOneMinuteCandleCount(): number {
-    return this.strategyState.oneMinuteCandles.length;
-  }
-
-  /**
    * Get current volume SMA 50
    */
   public getCurrentVolumeSMA50(): number {
     return this.strategyState.currentVolumeSMA50;
-  }
-
-  /**
-   * Get memory usage summary for 1-minute candles
-   */
-  public getCandleMemoryInfo(): { count: number, maxAllowed: number, memoryOptimized: boolean } {
-    const count = this.strategyState.oneMinuteCandles.length;
-    return {
-      count: count,
-      maxAllowed: 50,
-      memoryOptimized: count <= 50
-    };
   }
 
   /**
@@ -1671,23 +1626,6 @@ export class BreakoutPullbackStrategy {
   }
 
   /**
-   * Get latest one minute candle
-   */
-  public getLatestOneMinuteCandle(): Candle | undefined {
-    if (this.strategyState.oneMinuteCandles.length === 0) {
-      return undefined;
-    }
-    return this.strategyState.oneMinuteCandles[this.strategyState.oneMinuteCandles.length - 1];
-  }
-
-  /**
-   * Get all one-minute candles for debugging
-   */
-  public getOneMinuteCandles(): Candle[] {
-    return this.strategyState.oneMinuteCandles;
-  }
-
-  /**
    * Get trade execution service instance for manual operations
    */
   public getTradeExecutionService(): TradeExecutionService {
@@ -1716,6 +1654,13 @@ export class BreakoutPullbackStrategy {
 
   // Pivot detection constants
   private readonly LOOKBACK_PERIOD = 15; // 15,15 pivot detection as per requirements
+  
+  // Marking candle timing constants (5-minute candles)
+  private readonly INITIAL_SEARCH_BARS = 4;    // 20 minutes (4 x 5 min bars)
+  private readonly TIME_LIMIT_MINUTES = 40;    // 40 minutes (8 x 5 min bars)
+  
+  // Stop Loss cap for risk management (maintain minimum 1:2.5 R:R)
+  private readonly SL_CAP_RATIO = 0.4;         // SL capped at 40% of target distance
 
   // Placeholder methods for breakout detection and candle processing
   private async startBreakoutDetection(): Promise<void> {
@@ -1966,132 +1911,98 @@ export class BreakoutPullbackStrategy {
     this.logger.info('============================');
   }
 
-  private processTickForOneMinuteCandle(tick: TickData): void {
-    const now = new Date(tick.timestamp || new Date());
-    const currentMinute = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0);
+  /**
+   * Process ticks to detect 5-minute boundaries and trigger candle processing
+   * Uses API-provided 5-minute candles for breakout detection
+   */
+  private processTick(tick: TickData): void {
+    // Check if we're at a 5-minute boundary (X:X0 or X:X5)
+    const now = new Date(tick.last_trade_time || tick.exchange_timestamp || tick.timestamp || new Date());
+    const currentMinute = now.getMinutes();
+    const currentSecond = now.getSeconds();
 
-    // Calculate incremental volume from cumulative daily volume with robust fallback
+    // Update cumulative volume tracking for API candles
     const cumulativeVolume = tick.volume || 0;
-    let incrementalVolume = 0;
-    let volumeSource = 'unknown';
-    
-    // Volume calculation debugging (controlled by LOG_LEVEL)
-    this.logger.debug(`🔍 VOLUME CALCULATION: cumulative=${cumulativeVolume}, last=${this.strategyState.lastCumulativeVolume}, tick.volume=${tick.volume}, will_calc=${cumulativeVolume - this.strategyState.lastCumulativeVolume}, source=about_to_determine`);
-    
-    if (this.strategyState.lastCumulativeVolume > 0 && cumulativeVolume >= this.strategyState.lastCumulativeVolume) {
-      incrementalVolume = cumulativeVolume - this.strategyState.lastCumulativeVolume;
-      volumeSource = 'cumulative_diff';
-      
-      // CRITICAL INSIGHT: If cumulative volume hasn't changed, that's normal! No trades happened.
-      // But we still need to process the tick for price updates, just with zero volume.
-      if (incrementalVolume === 0) {
-        // This is normal - no trades occurred since last tick, so no volume change
-        // We don't need to force volume here, zero is correct for this tick
-        volumeSource = 'no_trades_normal';
-      }
-    } else if (this.strategyState.lastCumulativeVolume === 0 && cumulativeVolume > 0) {
-      // First tick of the day or after reset - use a minimal volume to avoid zero volume candles
-      incrementalVolume = Math.max(1, Math.floor(cumulativeVolume * 0.001)); // Use 0.1% of cumulative as fallback
-      volumeSource = 'first_tick_fallback';
-      this.logger.info(`📊 Volume fallback: Using ${incrementalVolume} for first tick (cumulative: ${cumulativeVolume})`);
-    } else if (cumulativeVolume < this.strategyState.lastCumulativeVolume) {
-      // Volume reset detected (new day or data inconsistency) - use minimum viable volume
-      incrementalVolume = Math.max(1, 100); // Use conservative estimate
-      volumeSource = 'reset_fallback';
-      this.logger.warn(`⚠️ Volume reset detected: ${cumulativeVolume} < ${this.strategyState.lastCumulativeVolume}, using fallback: ${incrementalVolume}`);
-    } else if (cumulativeVolume === 0 && this.strategyState.lastCumulativeVolume === 0) {
-      // Both current and last are zero - for WebSocket estimated volumes, use the volume directly
-      if (tick.volume > 0) {
-        incrementalVolume = tick.volume; // This is likely an estimated volume from WebSocket processing
-        volumeSource = 'websocket_estimated';
-      } else {
-        incrementalVolume = Math.max(1, 50); // Use conservative minimum volume for tick
-        volumeSource = 'persistent_zero_fallback';
-      }
-      if (Math.random() < 0.01) { // Log 1% of these cases
-        this.logger.warn(`⚠️ Using volume=${incrementalVolume} (source: ${volumeSource})`);
-      }
-    }
-    
-    // DEBUG: Log when we would have forced volume to understand the real issue
-    if (incrementalVolume === 0) {
-      if (Math.random() < 0.01) { // 1% of zero-volume ticks
-        this.logger.debug(`📊 Zero incremental volume (${volumeSource}): cumulative=${cumulativeVolume}, last=${this.strategyState.lastCumulativeVolume} - this is NORMAL when no trades occur`);
-      }
-      // DON'T force volume - zero incremental volume is correct when no trades happen
-    }
-    
-    // Enhanced debug logging for volume calculations with proper severity levels
-    if (incrementalVolume > 0) {
-      this.logger.debug(`📊 Volume calc (${volumeSource}): Cumulative=${cumulativeVolume}, Last=${this.strategyState.lastCumulativeVolume}, Incremental=${incrementalVolume}`);
-    } else if (volumeSource === 'no_trades_normal') {
-      // This is NORMAL - no trades occurred, so zero incremental volume is correct
-      if (Math.random() < 0.005) { // Log only 0.5% to avoid spam
-        this.logger.debug(`📊 Normal: No trades since last tick (cumulative=${cumulativeVolume} unchanged)`);
-      }
-    } else {
-      // This indicates a real problem with volume calculation
-      this.logger.error(`🚨 CRITICAL: Zero incremental volume after all fallbacks! Cumulative=${cumulativeVolume}, Last=${this.strategyState.lastCumulativeVolume}, Source=${volumeSource}`);
-    }
-    
-    // Update tracking for next calculation
     this.strategyState.lastCumulativeVolume = cumulativeVolume;
 
-    if (!this.currentOneMinuteCandle || this.currentOneMinuteCandle.timestamp.getTime() !== currentMinute.getTime()) {
-      // Save the previous candle if it exists
-      if (this.currentOneMinuteCandle) {
-        const completedCandle: Candle = {
-          timestamp: this.currentOneMinuteCandle.timestamp,
-          open: this.currentOneMinuteCandle.open,
-          high: this.currentOneMinuteCandle.high,
-          low: this.currentOneMinuteCandle.low,
-          close: this.currentOneMinuteCandle.close,
-          volume: this.strategyState.currentMinuteAccumulatedVolume // Use accumulated incremental volume for completed candle
-        };
-        
-        this.strategyState.oneMinuteCandles.push(completedCandle);
-        
-        // Keep only the latest 50 candles for memory optimization
-        if (this.strategyState.oneMinuteCandles.length > 50) {
-          this.strategyState.oneMinuteCandles = this.strategyState.oneMinuteCandles.slice(-50);
-          this.logger.debug('🗑️ Trimmed 1m candles to latest 50 for memory optimization');
-        }
-        
-        // Update volume SMA50
-        this.updateVolumeSMA50();
-        
-        // Enhanced logging for candle completion with market hours info
-        const marketHours = this.isMarketHours();
-        this.logger.info(`✅ 1m candle completed: O:${completedCandle.open.toFixed(2)} H:${completedCandle.high.toFixed(2)} L:${completedCandle.low.toFixed(2)} C:${completedCandle.close.toFixed(2)} V:${completedCandle.volume} | Market: ${marketHours ? 'OPEN' : 'CLOSED'}`);
-        
-        // Check for breakout on the completed candle (includes market hours validation)
-        this.checkForBreakout(completedCandle);
-        
-        // Process marking candle logic after breakout check
-        this.processMarkingCandle(completedCandle);
+    // Check if current minute is 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, or 55
+    // AND wait 5 seconds after boundary for API to make candle available
+    // AND not already processing to prevent concurrent calls
+    if (currentMinute % 5 === 0 && currentSecond >= 5 && !this.isProcessingFiveMinute) {
+      // Check if we already processed this 5-minute boundary
+      const lastProcessed = this.lastProcessedFiveMinuteTime;
+      const currentFiveMinBoundary = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), currentMinute, 0, 0).getTime();
+
+      if (!lastProcessed || currentFiveMinBoundary > lastProcessed) {
+        // New 5-minute candle available - process it!
+        this.isProcessingFiveMinute = true;
+        this.processFiveMinuteCandle()
+          .then(() => {
+            // Only mark as processed if successful
+            this.lastProcessedFiveMinuteTime = currentFiveMinBoundary;
+            this.strategyState.lastFiveMinuteBoundary = new Date(currentFiveMinBoundary);
+            this.markStateAsDirty();
+            this.logger.info(`✅ Successfully processed 5-minute boundary: ${new Date(currentFiveMinBoundary).toLocaleTimeString()}`);
+          })
+          .catch((error) => {
+            this.logger.error(`❌ Failed to process 5-minute candle at ${new Date(currentFiveMinBoundary).toLocaleTimeString()}:`, error);
+            // Don't update lastProcessedFiveMinuteTime - will retry on next tick
+          })
+          .finally(() => {
+            this.isProcessingFiveMinute = false;
+          });
+      }
+    }
+  }
+
+  /**
+   * Process 5-minute candle for breakout and marking candle detection
+   * Called when a new 5-minute boundary is detected
+   */
+  private async processFiveMinuteCandle(): Promise<void> {
+    try {
+      this.logger.info('📊 Processing 5-minute candle cycle...');
+
+      // 1. Refresh 5-minute candles from Zerodha API
+      await this.refreshRecentCandles();
+
+      // 2. Filter candles to only NEW ones (after lastProcessedCandleForBreakout)
+      // This prevents replaying historical candles through breakout logic on restart
+      const lastProcessedForBreakout = this.strategyState.lastProcessedCandleForBreakout;
+      
+      const newCandlesForAnalysis = this.strategyState.candles.filter(candle => {
+        if (!lastProcessedForBreakout) return true; // First run - process all
+        return candle.timestamp.getTime() > lastProcessedForBreakout.getTime();
+      });
+
+      if (newCandlesForAnalysis.length === 0) {
+        this.logger.debug('📊 No new 5m candles to analyze for breakout (all already processed)');
+        return;
       }
 
-      // Start a new one-minute candle - reset accumulated volume for new minute
-      this.strategyState.currentMinuteAccumulatedVolume = incrementalVolume; // Start with current incremental volume
-      
-      this.currentOneMinuteCandle = {
-        timestamp: currentMinute,
-        open: tick.last_price,
-        high: tick.last_price,
-        low: tick.last_price,
-        close: tick.last_price,
-        volume: incrementalVolume, // Use incremental volume for the current minute
-        tickCount: 1
-      };
-    } else {
-      // Update the current candle - accumulate incremental volume for this minute
-      this.strategyState.currentMinuteAccumulatedVolume += incrementalVolume;
-      
-      this.currentOneMinuteCandle.high = Math.max(this.currentOneMinuteCandle.high, tick.last_price);
-      this.currentOneMinuteCandle.low = Math.min(this.currentOneMinuteCandle.low, tick.last_price);
-      this.currentOneMinuteCandle.close = tick.last_price;
-      this.currentOneMinuteCandle.volume = this.strategyState.currentMinuteAccumulatedVolume; // Use accumulated incremental volume
-      this.currentOneMinuteCandle.tickCount++;
+      this.logger.info(`📈 Analyzing ${newCandlesForAnalysis.length} NEW candle(s) for breakout (not replaying historical)`);
+
+      // 3. Process each new candle in chronological order
+      for (const candle of newCandlesForAnalysis) {
+        this.logger.info(`📊 Processing 5m candle: ${candle.timestamp.toLocaleTimeString()} - O:${candle.open} H:${candle.high} L:${candle.low} C:${candle.close} V:${candle.volume}`);
+
+        // Update volume SMA50 (from 5-minute candles)
+        this.updateVolumeSMA50();
+
+        // Check for breakout (only on NEW candles)
+        this.checkForBreakout(candle);
+
+        // Process marking candle
+        this.processMarkingCandle(candle);
+
+        // Mark this candle as processed for breakout detection
+        this.strategyState.lastProcessedCandleForBreakout = candle.timestamp;
+        this.markStateAsDirty();
+      }
+
+    } catch (error) {
+      this.logger.error('❌ Error processing 5-minute candle:', error);
+      throw error; // Re-throw so .catch() in caller knows it failed
     }
   }
 
@@ -2200,17 +2111,39 @@ export class BreakoutPullbackStrategy {
         this.strategyState.tradeSetupRequest = restoredState.tradeSetupRequest;
       }
       this.strategyState.candles = restoredState.candles;
-      this.strategyState.oneMinuteCandles = restoredState.oneMinuteCandles;
       this.strategyState.latestPivotHigh = restoredState.latestPivotHigh;
       this.strategyState.latestPivotLow = restoredState.latestPivotLow;
       this.strategyState.latestBreakoutSignal = restoredState.latestBreakoutSignal;
       this.strategyState.markingCandleState = restoredState.markingCandleState;
       this.strategyState.currentVolumeSMA50 = restoredState.currentVolumeSMA50;
       this.strategyState.lastCumulativeVolume = restoredState.lastCumulativeVolume;
-      this.strategyState.currentMinuteAccumulatedVolume = restoredState.currentMinuteAccumulatedVolume;
-      this.strategyState.lastProcessedOneMinuteCandleTime = restoredState.lastProcessedOneMinuteCandleTime;
       
-      this.logger.info(`📊 Restored strategy state: ${restoredState.candles.length} 5m candles, ${restoredState.oneMinuteCandles.length} 1m candles, Volume SMA50: ${restoredState.currentVolumeSMA50.toFixed(2)}`);
+      // Mark ALL restored candles as already processed for breakout detection
+      // This prevents replaying historical candles through breakout logic on restart
+      if (restoredState.lastProcessedCandleForBreakout) {
+        // Defensive conversion: ensure it's a Date object (in case persistence layer didn't convert)
+        const processedDate = restoredState.lastProcessedCandleForBreakout instanceof Date 
+          ? restoredState.lastProcessedCandleForBreakout 
+          : new Date(restoredState.lastProcessedCandleForBreakout);
+        this.strategyState.lastProcessedCandleForBreakout = processedDate;
+        this.logger.info(`✅ Historical candles marked as processed up to: ${processedDate.toISOString()}`);
+      } else if (this.strategyState.candles.length > 0) {
+        // Fallback: If no flag in saved state (old format), use last candle timestamp
+        const lastCandle = this.strategyState.candles[this.strategyState.candles.length - 1];
+        if (lastCandle) {
+          this.strategyState.lastProcessedCandleForBreakout = lastCandle.timestamp;
+          this.logger.info(`✅ Historical candles marked as processed up to last candle: ${lastCandle.timestamp.toLocaleString()}`);
+        }
+      }
+      
+      // Restore 5-minute boundary tracking separately
+      if (restoredState.lastFiveMinuteBoundary) {
+        const boundaryDate = new Date(restoredState.lastFiveMinuteBoundary);
+        this.lastProcessedFiveMinuteTime = boundaryDate.getTime();
+        this.strategyState.lastFiveMinuteBoundary = boundaryDate;
+      }
+      
+      this.logger.info(`📊 Restored strategy state: ${restoredState.candles.length} 5m candles (no replay), Volume SMA50: ${restoredState.currentVolumeSMA50.toFixed(2)}`);
       
       return true;
       
@@ -2302,7 +2235,23 @@ export class BreakoutPullbackStrategy {
             this.strategyState.latestBreakoutSignal = undefined;
             this.markStateAsDirty();
             this.logger.info(`✅ Stale breakout signal cleared - Ready for fresh detection`);
-          } else {
+          }
+          
+          // Check for stale marking candle state
+          if (this.strategyState.markingCandleState.isActive) {
+            this.logger.info(`🧹 Found stale marking candle state without active trade - clearing to prevent phantom detection`);
+            this.logger.info(`   Marking candle was active with breakout: ${this.strategyState.markingCandleState.breakoutReference?.type}`);
+            this.strategyState.markingCandleState.isActive = false;
+            this.strategyState.markingCandleState.breakoutReference = null;
+            this.strategyState.markingCandleState.currentMarkingCandle = null;
+            this.strategyState.markingCandleState.startTime = null;
+            this.strategyState.markingCandleState.searchPhase = 'initial';
+            this.strategyState.markingCandleState.barsProcessedSinceBreakout = 0;
+            this.markStateAsDirty();
+            this.logger.info(`✅ Stale marking candle state cleared`);
+          }
+          
+          if (!this.strategyState.latestBreakoutSignal && !this.strategyState.markingCandleState.isActive) {
             this.logger.info(`✅ Trade state validation passed - No active trade ID found, state is clean`);
           }
         }
@@ -2359,30 +2308,30 @@ export class BreakoutPullbackStrategy {
   }
 
   /**
-   * Update 50-period Simple Moving Average of 1-minute candle volumes
+   * Update 50-period Simple Moving Average of 5-minute candle volumes
    * Always uses exactly the last 50 candles (or all available if less than 50)
    */
   private updateVolumeSMA50(): void {
-    const oneMinuteCandles = this.strategyState.oneMinuteCandles;
+    const candles = this.strategyState.candles; // 5-minute candles
     
-    if (oneMinuteCandles.length === 0) {
+    if (candles.length === 0) {
       this.strategyState.currentVolumeSMA50 = 0;
       return;
     }
     
-    // Use all available candles (up to 50 max due to our trimming)
-    const period = Math.min(50, oneMinuteCandles.length);
-    const recentCandles = oneMinuteCandles.slice(-period);
+    // Use all available candles (up to 50 max)
+    const period = Math.min(50, candles.length);
+    const recentCandles = candles.slice(-period);
     
     // Calculate simple moving average of volumes
     const totalVolume = recentCandles.reduce((sum, candle) => sum + candle.volume, 0);
     this.strategyState.currentVolumeSMA50 = totalVolume / period;
     
-    this.logger.debug(`📊 Volume SMA50 updated: ${this.strategyState.currentVolumeSMA50.toFixed(0)} (based on ${period} candles, total array size: ${oneMinuteCandles.length})`);
+    this.logger.debug(`📊 Volume SMA50 updated: ${this.strategyState.currentVolumeSMA50.toFixed(0)} (based on ${period} x 5m candles = ${(period * 5)} minutes, total array size: ${candles.length})`);
   }
 
   /**
-   * Check completed 1-minute candle for breakout signals
+   * Check completed 5-minute candle for breakout signals
    */
   private checkForBreakout(completedCandle: Candle): void {
     try {
@@ -2392,7 +2341,7 @@ export class BreakoutPullbackStrategy {
       this.logger.info(`   ⏰ Time: ${completedCandle.timestamp.toLocaleString()}`);
       this.logger.info(`   🎯 Market Hours: ${this.isMarketHours()}`);
       this.logger.info(`   📈 Trade State: ${this.strategyState.tradeState}`);
-      this.logger.info(`   📊 1m Candles: ${this.strategyState.oneMinuteCandles.length}/50`);
+      this.logger.info(`   📊 5m Candles: ${this.strategyState.candles.length}`);
       this.logger.info(`   📊 Volume SMA50: ${this.strategyState.currentVolumeSMA50.toFixed(0)}`);
       this.logger.info(`   🎯 Pivot High: ${this.strategyState.latestPivotHigh?.price.toFixed(2) || 'N/A'}`);
       this.logger.info(`   🎯 Pivot Low: ${this.strategyState.latestPivotLow?.price.toFixed(2) || 'N/A'}`);
@@ -2405,28 +2354,19 @@ export class BreakoutPullbackStrategy {
 
       // Skip if we don't have pivots or sufficient volume data
       if (!this.strategyState.latestPivotHigh && !this.strategyState.latestPivotLow) {
-        this.logger.info('� BREAKOUT SKIPPED - No pivots available for breakout detection');
+        this.logger.info('⛔ BREAKOUT SKIPPED - No pivots available for breakout detection');
         return;
       }
       
-      if (this.strategyState.oneMinuteCandles.length < 50) {
-        this.logger.info(`� BREAKOUT SKIPPED - Insufficient 1m candles for volume SMA50 (${this.strategyState.oneMinuteCandles.length}/50)`);
+      if (this.strategyState.candles.length < 50) {
+        this.logger.info(`⛔ BREAKOUT SKIPPED - Insufficient 5m candles for volume SMA50 (${this.strategyState.candles.length}/50)`);
         return;
       }
       
       if (this.strategyState.currentVolumeSMA50 <= 0) {
-        this.logger.info('� BREAKOUT SKIPPED - Volume SMA50 not available or zero');
+        this.logger.info('⛔ BREAKOUT SKIPPED - Volume SMA50 not available or zero');
         return;
       }
-      
-      // Avoid processing the same candle multiple times
-      if (this.strategyState.lastProcessedOneMinuteCandleTime && 
-          completedCandle.timestamp.getTime() === this.strategyState.lastProcessedOneMinuteCandleTime.getTime()) {
-        this.logger.debug('⚠️ Skipping duplicate candle processing');
-        return;
-      }
-      
-      this.strategyState.lastProcessedOneMinuteCandleTime = completedCandle.timestamp;
       
       const volumeRatio = completedCandle.volume / this.strategyState.currentVolumeSMA50;
       
@@ -2709,6 +2649,60 @@ export class BreakoutPullbackStrategy {
     this.strategyState.markingCandleState.startTime = null;
     
     this.logger.info(`🧹 Marking candle system disabled and state reset`);
+  }
+
+  /**
+   * STOP LOSS CAPPING
+   * Caps stop loss at 40% of target distance to maintain minimum 1:2.5 R:R
+   * 
+   * @param entryPrice - Entry price level
+   * @param naturalSL - Natural SL from marking candle (low for LONG, high for SHORT)
+   * @param direction - Trade direction (LONG or SHORT)
+   * @returns Capped SL level (returns naturalSL if already within limit)
+   */
+  private calculateCappedStopLoss(
+    entryPrice: number,
+    naturalSL: number,
+    direction: 'LONG' | 'SHORT'
+  ): number {
+    if (!this.strategyState.livePrice) {
+      this.logger.warn('⚠️ No live price available for SL cap calculation, using natural SL');
+      return naturalSL;
+    }
+
+    // Calculate target distance (same formula as calculateTargetLevel)
+    const futurePrice = this.strategyState.livePrice.last_price;
+    const targetPoints = Math.round(futurePrice / 1000);
+
+    // Calculate max allowed SL distance (40% of target)
+    const maxSLDistance = targetPoints * this.SL_CAP_RATIO;
+
+    // Calculate natural SL distance
+    const naturalSLDistance = Math.abs(entryPrice - naturalSL);
+
+    // Check if capping is needed
+    if (naturalSLDistance > maxSLDistance) {
+      // Cap the SL
+      const cappedSL = direction === 'LONG'
+        ? entryPrice - maxSLDistance
+        : entryPrice + maxSLDistance;
+
+      this.logger.info(
+        `⚠️ Wide marking candle detected! Natural SL: ${naturalSLDistance.toFixed(2)} pts, ` +
+        `Capping at ${maxSLDistance.toFixed(2)} pts (${(this.SL_CAP_RATIO * 100)}% of ${targetPoints} pt target) ` +
+        `for minimum 1:2.5 R:R`
+      );
+      this.logger.info(`   🔒 Natural SL: ₹${naturalSL.toFixed(2)} → Capped SL: ₹${cappedSL.toFixed(2)}`);
+
+      return cappedSL;
+    } else {
+      // SL within limits, use natural SL
+      this.logger.debug(
+        `✅ SL within limits: ${naturalSLDistance.toFixed(2)} pts ≤ ${maxSLDistance.toFixed(2)} pts max, ` +
+        `using natural SL`
+      );
+      return naturalSL;
+    }
   }
 
   /**
@@ -3147,26 +3141,35 @@ export class BreakoutPullbackStrategy {
   /**
    * MARKING CANDLE PROCESSING CORE
    * Main processing logic that handles marking candle detection and updates
-   * Called after each completed 1-minute candle during active tracking
+   * Called after each completed 5-minute candle during active tracking
    * 
-   * @param completedCandle - The newly completed 1-minute candle to evaluate
+   * @param completedCandle - The newly completed 5-minute candle to evaluate
    */
   private processMarkingCandle(completedCandle: Candle): void {
     if (!this.strategyState.markingCandleState.isActive) {
       this.logger.debug(`🔒 Marking candle tracking not active, skipping processing`);
       return; // Not tracking marking candles
     }
+    
+    // Guard: Verify we're in the correct state for marking candle processing
+    if (this.strategyState.tradeState !== TradeState.WAITING_FOR_ENTRY) {
+      this.logger.warn(`🚫 Marking candle processing skipped - Wrong state: ${this.strategyState.tradeState} (need: WAITING_FOR_ENTRY)`);
+      this.logger.warn(`   isActive=${this.strategyState.markingCandleState.isActive} but state is ${this.strategyState.tradeState}`);
+      this.logger.warn(`   This indicates orphaned marking candle state - disabling tracking`);
+      this.strategyState.markingCandleState.isActive = false;
+      return;
+    }
 
     this.logger.debug(`🕯️ Processing marking candle: O:${completedCandle.open} H:${completedCandle.high} L:${completedCandle.low} C:${completedCandle.close}`);
 
     const markingState = this.strategyState.markingCandleState;
 
-    // Check 20-minute time limit
+    // Check time limit
     if (markingState.startTime) {
       const minutesElapsed = (completedCandle.timestamp.getTime() - markingState.startTime.getTime()) / (1000 * 60);
-      this.logger.debug(`⏰ Time elapsed since breakout: ${minutesElapsed.toFixed(1)} minutes (limit: 20 minutes)`);
-      if (minutesElapsed > 20) {
-        this.logger.info(`⏰ 20-minute time limit exceeded for marking candle tracking`);
+      this.logger.debug(`⏰ Time elapsed since breakout: ${minutesElapsed.toFixed(1)} minutes (limit: ${this.TIME_LIMIT_MINUTES} minutes)`);
+      if (minutesElapsed > this.TIME_LIMIT_MINUTES) {
+        this.logger.info(`⏰ ${this.TIME_LIMIT_MINUTES}-minute time limit exceeded for marking candle tracking`);
         this.skipMarkingCandleTrade('time_limit_exceeded');
         return;
       }
@@ -3176,9 +3179,9 @@ export class BreakoutPullbackStrategy {
     this.logger.debug(`📊 Bars processed since breakout: ${markingState.barsProcessedSinceBreakout} (phase: ${markingState.searchPhase})`);
 
     if (markingState.searchPhase === 'initial') {
-      // Initial search phase - looking for first marking candle within 10 bars
-      if (markingState.barsProcessedSinceBreakout <= 10) {
-        this.logger.debug(`🔍 Looking for initial marking candle (bar ${markingState.barsProcessedSinceBreakout}/10)`);
+      // Initial search phase - looking for first marking candle within configured bars
+      if (markingState.barsProcessedSinceBreakout <= this.INITIAL_SEARCH_BARS) {
+        this.logger.debug(`🔍 Looking for initial marking candle (bar ${markingState.barsProcessedSinceBreakout}/${this.INITIAL_SEARCH_BARS})`);
         const markingCandle = this.checkForInitialMarkingCandle(completedCandle);
         if (markingCandle) {
           markingState.currentMarkingCandle = markingCandle;
@@ -3268,11 +3271,19 @@ export class BreakoutPullbackStrategy {
 
     this.logger.info(`✅ VALID MARKING CANDLE FOUND! Close: ${candle.close} within range [${breakoutCandle.low}, ${breakoutCandle.high}]`);
 
-    // Create marking candle
+    // Calculate entry and natural stop loss from marking candle
+    const entryPrice = isLongBreakout ? candle.high : candle.low;
+    const naturalSL = isLongBreakout ? candle.low : candle.high;
+    const direction = isLongBreakout ? 'LONG' : 'SHORT';
+
+    // Apply SL cap if needed (maintains minimum 1:2.5 R:R)
+    const cappedSL = this.calculateCappedStopLoss(entryPrice, naturalSL, direction);
+
+    // Create marking candle with capped SL
     const markingCandle: MarkingCandle = {
       candle: candle,
-      entryPrice: isLongBreakout ? candle.high : candle.low,
-      stopLoss: isLongBreakout ? candle.low : candle.high,
+      entryPrice: entryPrice,
+      stopLoss: cappedSL,
       updateCount: 0,
       detectedAt: new Date()
     };
@@ -3317,11 +3328,18 @@ export class BreakoutPullbackStrategy {
       return null; // SL not extended by at least 1 point
     }
 
-    // Create updated marking candle
+    // Calculate entry and apply SL cap
+    const entryPrice = isLongBreakout ? candle.high : candle.low;
+    const direction = isLongBreakout ? 'LONG' : 'SHORT';
+
+    // Apply SL cap to updated marking candle (maintains minimum 1:2.5 R:R)
+    const cappedSL = this.calculateCappedStopLoss(entryPrice, newSL, direction);
+
+    // Create updated marking candle with capped SL
     const updatedMarkingCandle: MarkingCandle = {
       candle: candle,
-      entryPrice: isLongBreakout ? candle.high : candle.low,
-      stopLoss: newSL,
+      entryPrice: entryPrice,
+      stopLoss: cappedSL,
       updateCount: currentMarking.updateCount + 1,
       detectedAt: new Date()
     };
@@ -3483,365 +3501,6 @@ export class BreakoutPullbackStrategy {
    * These methods test each component independently
    */
 
-  /**
-   * Test 1: Volume SMA50 Calculation Logic
-   */
-  public testVolumeSMA50Calculation(): void {
-    this.logger.info('🧪 TESTING Volume SMA50 Calculation...');
-    
-    // Clear existing data
-    this.strategyState.oneMinuteCandles = [];
-    this.strategyState.currentVolumeSMA50 = 0;
-    
-    // Simulate 60 candles with known volumes
-    const testVolumes = [
-      // First 50 candles with volume 1000 each
-      ...Array(50).fill(1000),
-      // Next 10 candles with volume 2000 each
-      ...Array(10).fill(2000)
-    ];
-    
-    this.logger.info(`📊 Creating ${testVolumes.length} test candles...`);
-    
-    for (let i = 0; i < testVolumes.length; i++) {
-      const testCandle: Candle = {
-        timestamp: new Date(2025, 8, 24, 9, 15 + i), // 9:15 AM + i minutes
-        open: 25000,
-        high: 25010,
-        low: 24990,
-        close: 25005,
-        volume: testVolumes[i]
-      };
-      
-      this.strategyState.oneMinuteCandles.push(testCandle);
-      this.updateVolumeSMA50();
-      
-      if (i === 49) {
-        // After 50 candles, SMA50 should be 1000
-        const expectedSMA = 1000;
-        const actualSMA = this.strategyState.currentVolumeSMA50;
-        this.logger.info(`✅ After 50 candles: Expected SMA50=${expectedSMA}, Actual=${actualSMA.toFixed(2)}`);
-        
-        if (Math.abs(actualSMA - expectedSMA) < 0.01) {
-          this.logger.info('✅ Volume SMA50 calculation CORRECT for 50 candles');
-        } else {
-          this.logger.error(`❌ Volume SMA50 calculation INCORRECT! Expected ${expectedSMA}, got ${actualSMA}`);
-        }
-      }
-      
-      if (i === 59) {
-        // After 60 candles (last 50 should be: 40×1000 + 10×2000)
-        const expectedSMA = (40 * 1000 + 10 * 2000) / 50; // = 1400
-        const actualSMA = this.strategyState.currentVolumeSMA50;
-        this.logger.info(`✅ After 60 candles: Expected SMA50=${expectedSMA}, Actual=${actualSMA.toFixed(2)}`);
-        
-        if (Math.abs(actualSMA - expectedSMA) < 0.01) {
-          this.logger.info('✅ Volume SMA50 rolling calculation CORRECT');
-        } else {
-          this.logger.error(`❌ Volume SMA50 rolling calculation INCORRECT! Expected ${expectedSMA}, got ${actualSMA}`);
-        }
-      }
-    }
-  }
-
-  /**
-   * Test 2: Breakout Detection Logic
-   */
-  public testBreakoutDetectionLogic(): void {
-    this.logger.info('🧪 TESTING Breakout Detection Logic...');
-    
-    // Setup test pivots
-    this.strategyState.latestPivotHigh = {
-      price: 25100,
-      timestamp: new Date(2025, 8, 24, 10, 0),
-      type: 'high'
-    };
-    
-    this.strategyState.latestPivotLow = {
-      price: 24900,
-      timestamp: new Date(2025, 8, 24, 10, 0),
-      type: 'low'
-    };
-    
-    // Setup volume SMA50 = 1500 for testing
-    this.strategyState.currentVolumeSMA50 = 1500;
-    
-    // Ensure we have 50+ candles for volume requirement
-    this.strategyState.oneMinuteCandles = Array(50).fill(0).map((_, i) => ({
-      timestamp: new Date(2025, 8, 24, 9, 15 + i),
-      open: 25000,
-      high: 25010,
-      low: 24990,
-      close: 25005,
-      volume: 1500
-    }));
-    
-    this.logger.info(`📊 Test Setup: Pivot HIGH=₹${this.strategyState.latestPivotHigh.price}, Pivot LOW=₹${this.strategyState.latestPivotLow.price}, Volume SMA50=${this.strategyState.currentVolumeSMA50}`);
-    
-    // Test Case 1: Valid LONG breakout
-    this.logger.info('🔍 TEST CASE 1: Valid LONG breakout');
-    const longBreakoutCandle: Candle = {
-      timestamp: new Date(2025, 8, 24, 11, 30),
-      open: 25095, // Below pivot high
-      high: 25120,
-      low: 25090,
-      close: 25110, // Above pivot high
-      volume: 2000 // Above SMA50
-    };
-    
-    this.logger.info(`   Candle: O=${longBreakoutCandle.open} C=${longBreakoutCandle.close} V=${longBreakoutCandle.volume}`);
-    this.logger.info(`   Logic: close(${longBreakoutCandle.close}) > pivotHigh(${this.strategyState.latestPivotHigh.price}) = ${longBreakoutCandle.close > this.strategyState.latestPivotHigh.price}`);
-    this.logger.info(`   Logic: open(${longBreakoutCandle.open}) < pivotHigh(${this.strategyState.latestPivotHigh.price}) = ${longBreakoutCandle.open < this.strategyState.latestPivotHigh.price}`);
-    this.logger.info(`   Logic: volume(${longBreakoutCandle.volume}) > SMA50(${this.strategyState.currentVolumeSMA50}) = ${longBreakoutCandle.volume > this.strategyState.currentVolumeSMA50}`);
-    
-    this.checkForBreakout(longBreakoutCandle);
-    
-    if (this.strategyState.latestBreakoutSignal && this.strategyState.latestBreakoutSignal.type === 'long_breakout') {
-      this.logger.info('✅ LONG breakout detection WORKING CORRECTLY');
-    } else {
-      this.logger.error('❌ LONG breakout detection FAILED');
-    }
-    
-    // Test Case 2: Valid SHORT breakout  
-    this.logger.info('🔍 TEST CASE 2: Valid SHORT breakout');
-    const shortBreakoutCandle: Candle = {
-      timestamp: new Date(2025, 8, 24, 11, 35),
-      open: 24905, // Above pivot low
-      high: 24910,
-      low: 24880,
-      close: 24885, // Below pivot low
-      volume: 1800 // Above SMA50
-    };
-    
-    this.logger.info(`   Candle: O=${shortBreakoutCandle.open} C=${shortBreakoutCandle.close} V=${shortBreakoutCandle.volume}`);
-    this.logger.info(`   Logic: close(${shortBreakoutCandle.close}) < pivotLow(${this.strategyState.latestPivotLow.price}) = ${shortBreakoutCandle.close < this.strategyState.latestPivotLow.price}`);
-    this.logger.info(`   Logic: open(${shortBreakoutCandle.open}) > pivotLow(${this.strategyState.latestPivotLow.price}) = ${shortBreakoutCandle.open > this.strategyState.latestPivotLow.price}`);
-    this.logger.info(`   Logic: volume(${shortBreakoutCandle.volume}) > SMA50(${this.strategyState.currentVolumeSMA50}) = ${shortBreakoutCandle.volume > this.strategyState.currentVolumeSMA50}`);
-    
-    this.checkForBreakout(shortBreakoutCandle);
-    
-    if (this.strategyState.latestBreakoutSignal && this.strategyState.latestBreakoutSignal.type === 'short_breakout') {
-      this.logger.info('✅ SHORT breakout detection WORKING CORRECTLY');
-    } else {
-      this.logger.error('❌ SHORT breakout detection FAILED');
-    }
-    
-    // Test Case 3: Invalid breakout (gap up - open > pivot)
-    this.logger.info('🔍 TEST CASE 3: Invalid LONG breakout (gap up)');
-    const gapUpCandle: Candle = {
-      timestamp: new Date(2025, 8, 24, 11, 40),
-      open: 25105, // Above pivot high (should be gap)
-      high: 25120,
-      low: 25100,
-      close: 25115, // Above pivot high
-      volume: 2500 // Above SMA50
-    };
-    
-    this.logger.info(`   Candle: O=${gapUpCandle.open} C=${gapUpCandle.close} V=${gapUpCandle.volume}`);
-    this.logger.info(`   Logic: Should REJECT because open(${gapUpCandle.open}) > pivotHigh(${this.strategyState.latestPivotHigh.price})`);
-    
-    const previousSignal = this.strategyState.latestBreakoutSignal;
-    this.checkForBreakout(gapUpCandle);
-    
-    if (this.strategyState.latestBreakoutSignal === previousSignal) {
-      this.logger.info('✅ Gap-up rejection WORKING CORRECTLY (no new signal generated)');
-    } else {
-      this.logger.error('❌ Gap-up rejection FAILED (new signal was generated)');
-    }
-    
-    // Test Case 4: Invalid breakout (insufficient volume)
-    this.logger.info('🔍 TEST CASE 4: Invalid breakout (low volume)');
-    const lowVolumeCandle: Candle = {
-      timestamp: new Date(2025, 8, 24, 11, 45),
-      open: 25095, // Below pivot high
-      high: 25120,
-      low: 25090,
-      close: 25110, // Above pivot high
-      volume: 1000 // Below SMA50 (1500)
-    };
-    
-    this.logger.info(`   Candle: O=${lowVolumeCandle.open} C=${lowVolumeCandle.close} V=${lowVolumeCandle.volume}`);
-    this.logger.info(`   Logic: Should REJECT because volume(${lowVolumeCandle.volume}) < SMA50(${this.strategyState.currentVolumeSMA50})`);
-    
-    const previousSignal2 = this.strategyState.latestBreakoutSignal;
-    this.checkForBreakout(lowVolumeCandle);
-    
-    if (this.strategyState.latestBreakoutSignal === previousSignal2) {
-      this.logger.info('✅ Low volume rejection WORKING CORRECTLY');
-    } else {
-      this.logger.error('❌ Low volume rejection FAILED');
-    }
-  }
-
-  /**
-   * Test 3: 1-Minute Candle Building Logic
-   */
-  public testCandleBuildingLogic(): void {
-    this.logger.info('🧪 TESTING 1-Minute Candle Building Logic...');
-    
-    // Clear existing candle data
-    this.currentOneMinuteCandle = null;
-    this.strategyState.oneMinuteCandles = [];
-    
-    // Simulate ticks for the same minute
-    const baseTime = new Date(2025, 8, 24, 10, 30, 0); // 10:30:00 AM
-    
-    const testTicks = [
-      { time: new Date(baseTime.getTime() + 0 * 1000), price: 25000, volume: 1000 },    // 10:30:00
-      { time: new Date(baseTime.getTime() + 15 * 1000), price: 25005, volume: 1500 },   // 10:30:15  
-      { time: new Date(baseTime.getTime() + 30 * 1000), price: 24995, volume: 1800 },   // 10:30:30
-      { time: new Date(baseTime.getTime() + 45 * 1000), price: 25010, volume: 2000 },   // 10:30:45
-      // Next minute starts here
-      { time: new Date(baseTime.getTime() + 60 * 1000), price: 25008, volume: 2200 },   // 10:31:00
-    ];
-    
-    this.logger.info('📊 Processing test ticks...');
-    
-    for (let i = 0; i < testTicks.length; i++) {
-      const tick = testTicks[i];
-      if (!tick) continue; // Type safety check
-      
-      const mockTickData: TickData = {
-        instrument_token: 123456,
-        last_price: tick.price,
-        volume: tick.volume,
-        buy_quantity: 0,
-        sell_quantity: 0,
-        ohlc: { open: 25000, high: 25020, low: 24980, close: tick.price },
-        change: 0,
-        last_trade_time: tick.time,
-        exchange_timestamp: tick.time,
-        timestamp: tick.time
-      };
-      
-      this.logger.info(`   Tick ${i + 1}: ${tick.time.toLocaleTimeString()} - Price: ₹${tick.price}, Volume: ${tick.volume}`);
-      
-      const candleCountBefore = this.strategyState.oneMinuteCandles.length;
-      this.processTickForOneMinuteCandle(mockTickData);
-      const candleCountAfter = this.strategyState.oneMinuteCandles.length;
-      
-      if (i === 4) {
-        // After the 5th tick (new minute), a candle should be completed
-        if (candleCountAfter > candleCountBefore) {
-          const completedCandle = this.strategyState.oneMinuteCandles[candleCountAfter - 1];
-          if (completedCandle) {
-            this.logger.info(`✅ Candle completed: O=${completedCandle.open} H=${completedCandle.high} L=${completedCandle.low} C=${completedCandle.close} V=${completedCandle.volume}`);
-            
-            // Verify OHLC logic
-            if (completedCandle.open === 25000 && 
-                completedCandle.high === 25010 && 
-                completedCandle.low === 24995 && 
-                completedCandle.close === 25010) {
-              this.logger.info('✅ OHLC calculation CORRECT');
-            } else {
-              this.logger.error('❌ OHLC calculation INCORRECT');
-            }
-          }
-        } else {
-          this.logger.error('❌ Candle completion FAILED');
-        }
-      }
-    }
-  }
-
-  /**
-   * Run all manual tests
-   */
-  public runAllManualTests(): void {
-    this.logger.info('🚀 STARTING COMPREHENSIVE MANUAL TESTING...');
-    this.logger.info('================================================');
-    
-    try {
-      this.testVolumeSMA50Calculation();
-      this.logger.info('================================================');
-      
-      this.testBreakoutDetectionLogic();
-      this.logger.info('================================================');
-      
-      this.testCandleBuildingLogic();
-      this.logger.info('================================================');
-      
-      this.logger.info('✅ ALL MANUAL TESTS COMPLETED');
-      
-      // Clear test data after testing
-      this.clearTestData();
-      
-    } catch (error) {
-      this.logger.error('❌ MANUAL TESTING FAILED:', error);
-    }
-  }
-
-  /**
-   * Clear test data and reset strategy state
-   */
-  public clearTestData(): void {
-    this.logger.info('🧹 Clearing test data and resetting strategy state...');
-    
-    // Clear test breakout signals
-    this.strategyState.latestBreakoutSignal = undefined;
-    
-    // Clear test pivot data (reset to undefined so real pivots can be detected)
-    this.strategyState.latestPivotHigh = undefined;
-    this.strategyState.latestPivotLow = undefined;
-    
-    // Clear test candle data (only affects 1m candles, keeps them optimized to max 50)
-    this.strategyState.oneMinuteCandles = [];
-    this.currentOneMinuteCandle = null;
-    this.strategyState.currentVolumeSMA50 = 0;
-    
-    // Reset processed time tracking
-    this.strategyState.lastProcessedOneMinuteCandleTime = undefined;
-    
-    this.logger.info('✅ Test data cleared, strategy ready for real market data (1m candles optimized to max 50)');
-  }
-
-  /**
-   * VALIDATION TEST: Test volume calculation fixes
-   */
-  public testVolumeCalculationFixes(): void {
-    this.logger.info('🧪 TESTING VOLUME CALCULATION FIXES...');
-    
-    // Test scenario 1: First tick (zero lastCumulativeVolume)
-    this.strategyState.lastCumulativeVolume = 0;
-    const testTick1: TickData = {
-      instrument_token: 13355010,
-      last_price: 25400,
-      volume: 1000000, // 1M cumulative volume
-      buy_quantity: 0,
-      sell_quantity: 0,
-      ohlc: { open: 25390, high: 25410, low: 25380, close: 25400 },
-      change: 0,
-      last_trade_time: new Date(),
-      exchange_timestamp: new Date(),
-      timestamp: new Date()
-    };
-    
-    this.logger.info('📊 Test 1: First tick scenario (lastCumulativeVolume = 0)');
-    this.processTickForOneMinuteCandle(testTick1);
-    
-    // Test scenario 2: Normal incremental volume
-    const testTick2: TickData = {
-      ...testTick1,
-      volume: 1000500, // +500 volume
-      timestamp: new Date(Date.now() + 1000) // 1 second later
-    };
-    
-    this.logger.info('📊 Test 2: Normal incremental volume');
-    this.processTickForOneMinuteCandle(testTick2);
-    
-    // Test scenario 3: Volume reset (new day scenario)
-    const testTick3: TickData = {
-      ...testTick1,
-      volume: 100, // Lower than previous (reset scenario)
-      timestamp: new Date(Date.now() + 2000) // 2 seconds later
-    };
-    
-    this.logger.info('📊 Test 3: Volume reset scenario');
-    this.processTickForOneMinuteCandle(testTick3);
-    
-    this.logger.info('✅ VOLUME CALCULATION TESTS COMPLETED');
-  }
-
   // ===========================
   // TRADE EXECUTION SERVICE ACCESS
   // ===========================
@@ -3858,6 +3517,13 @@ export class BreakoutPullbackStrategy {
    */
   public getActivePosition(): any {
     return this.tradeExecutionService.getActivePosition();
+  }
+
+  /**
+   * Get detailed position with live price data from TradeExecutionService
+   */
+  public getDetailedPosition(): any {
+    return this.tradeExecutionService.getDetailedPosition();
   }
 
   /**
@@ -3963,7 +3629,7 @@ export class BreakoutPullbackStrategy {
       hasPosition: !!this.strategyState.currentTradeId,
       pivotHighPrice: this.strategyState.latestPivotHigh?.price || 'none',
       pivotLowPrice: this.strategyState.latestPivotLow?.price || 'none',
-      candleCount: this.strategyState.oneMinuteCandles.length,
+      candleCount: this.strategyState.candles.length,
       lastUpdate: now.toISOString()
     };
   }
