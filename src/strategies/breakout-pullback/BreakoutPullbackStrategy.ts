@@ -537,8 +537,8 @@ export class BreakoutPullbackStrategy {
       const toDate = new Date();
       toDate.setDate(toDate.getDate() - 1); // Use yesterday to ensure complete data
       
-      const fromDate = new Date();
-      fromDate.setDate(toDate.getDate() - 10); // Get last 10 days
+      const fromDate = new Date(toDate);
+      fromDate.setDate(fromDate.getDate() - 10); // Get last 10 days
       
       this.logger.info('📅 Fetching daily pivot data', {
         contract: this.strategyState.currentContract.tradingsymbol,
@@ -3046,14 +3046,23 @@ export class BreakoutPullbackStrategy {
       try {
         this.logger.info(`🔄 Processing manual exit - Current state: ${this.strategyState.tradeState}`);
         
-        // CRITICAL: Clear TradeExecutionService persisted data first
-        // This handles cases where user manually exited on broker platform
+        // CRITICAL: Fetch exit order and record trade with P&L before clearing
+        // This is similar to BollingerBandStrategy.clearActivePosition()
         const remainingPosition = this.tradeExecutionService.getActivePosition();
         if (remainingPosition) {
           this.logger.warn(`⚠️ Found orphaned position in TradeExecutionService: ${remainingPosition.tradeId}`);
-          this.logger.info(`🧹 Clearing orphaned position data from persistence...`);
-          this.tradeExecutionService.clearOrphanedPosition();
-          this.logger.info(`✅ Orphaned position data cleared`);
+          this.logger.info(`🧹 Clearing orphaned position and fetching exit price from broker...`);
+          
+          try {
+            // Use enhanced method that fetches exit price and records trade
+            await this.tradeExecutionService.clearOrphanedPositionWithExitPrice();
+            this.logger.info(`✅ Orphaned position cleared with exit price and P&L recorded`);
+          } catch (error) {
+            this.logger.error('❌ Error fetching exit price, falling back to basic clear:', error);
+            // Fallback to basic clear if exit price fetch fails
+            this.tradeExecutionService.clearOrphanedPosition();
+            this.logger.info(`✅ Orphaned position cleared (without exit price)`);
+          }
         }
         
         // Check if we're actually in a trade state
@@ -3094,9 +3103,15 @@ export class BreakoutPullbackStrategy {
         this.logger.error('❌ Error processing manual exit:', error);
         // Even on error, try to reset state to avoid being stuck
         try {
-          this.tradeExecutionService.clearOrphanedPosition();
+          await this.tradeExecutionService.clearOrphanedPositionWithExitPrice();
         } catch (clearError) {
           this.logger.error('❌ Error clearing orphaned position during error recovery:', clearError);
+          // Last resort: basic clear without exit price
+          try {
+            this.tradeExecutionService.clearOrphanedPosition();
+          } catch (basicClearError) {
+            this.logger.error('❌ Error with basic clear:', basicClearError);
+          }
         }
         delete this.strategyState.currentTradeId;
         delete this.strategyState.tradeSetupRequest;

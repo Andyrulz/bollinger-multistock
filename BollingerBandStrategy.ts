@@ -492,26 +492,15 @@ export class BollingerBandStrategy extends StrategyBase {
       let exitTime = new Date();
       
       try {
-        const exitOrder = await this.fetchExitOrderFromBroker(positionSymbol, entryOrderId, entryTime, quantity);
+        const exitOrder = await this.fetchExitOrderFromBroker(positionSymbol, entryOrderId, entryTime);
         if (exitOrder) {
           exitPrice = exitOrder.average_price || exitOrder.price || entryPrice;
           exitOrderId = exitOrder.order_id;
           exitTime = new Date(exitOrder.order_timestamp);
-          
-          // Validate quantity match
-          if (exitOrder.quantity !== quantity) {
-            this.logger.warn(`⚠️ Quantity mismatch detected!`, {
-              entryQty: quantity,
-              exitQty: exitOrder.quantity,
-              warning: 'Using this exit order but quantities differ'
-            });
-          }
-          
           this.logger.info('✅ Found actual exit order from broker', {
             exitOrderId: exitOrderId,
             exitPrice: exitPrice,
-            exitTime: exitTime.toLocaleString(),
-            exitQty: exitOrder.quantity
+            exitTime: exitTime.toLocaleString()
           });
         } else {
           this.logger.warn('⚠️ Could not find exit order from broker, using entry price for P&L');
@@ -592,51 +581,33 @@ export class BollingerBandStrategy extends StrategyBase {
    * P0: Helper method to fetch exit order from broker's order history
    * Looks for SELL order matching the position's symbol after entry time
    */
-  private async fetchExitOrderFromBroker(symbol: string, entryOrderId: string, entryTime: Date, entryQuantity?: number): Promise<any> {
+  private async fetchExitOrderFromBroker(symbol: string, entryOrderId: string, entryTime: Date): Promise<any> {
     try {
       // Fetch all orders for today
       const orders = await this.kiteConnect.getOrders();
       
       // Filter for this symbol's SELL orders after entry time
-      // ONLY untagged orders (manual exits from broker, not bot-placed exits)
-      let exitCandidates = orders.filter((order: any) => {
+      const exitCandidates = orders.filter((order: any) => {
         const orderTime = new Date(order.order_timestamp);
         return order.tradingsymbol === symbol
           && order.transaction_type === 'SELL'
           && order.status === 'COMPLETE'
-          && orderTime > entryTime
-          && (!order.tag || order.tag === ''); // ONLY untagged (manual) exits
+          && orderTime > entryTime;
       });
       
       if (exitCandidates.length === 0) {
-        this.logger.warn(`⚠️ No manual SELL orders found for ${symbol} after ${entryTime.toLocaleTimeString()}`);
+        this.logger.warn(`⚠️ No SELL orders found for ${symbol} after ${entryTime.toLocaleTimeString()}`);
         return null;
       }
       
-      // If entry quantity provided, prioritize matching quantity
-      if (entryQuantity) {
-        const exactMatch = exitCandidates.filter((order: any) => order.quantity === entryQuantity);
-        if (exactMatch.length > 0) {
-          exitCandidates = exactMatch;
-          this.logger.info(`✅ Found ${exactMatch.length} quantity-matching exit orders (qty=${entryQuantity})`);
-        } else {
-          this.logger.warn(`⚠️ No exact quantity match found. Using closest by time.`);
-        }
-      }
-      
-      // Sort by timestamp to get closest exit after entry
-      exitCandidates.sort((a: any, b: any) => 
-        new Date(a.order_timestamp).getTime() - new Date(b.order_timestamp).getTime()
-      );
-      
+      // Take the first SELL order after entry (most likely the exit)
       const exitOrder = exitCandidates[0];
-      this.logger.info(`✅ Selected exit order (${exitCandidates.length} candidates after filters)`, {
+      this.logger.debug('Found exit order candidate:', {
         orderId: exitOrder.order_id,
-        qty: exitOrder.quantity,
+        symbol: exitOrder.tradingsymbol,
         price: exitOrder.average_price,
-        time: exitOrder.order_timestamp,
-        tag: exitOrder.tag || 'NONE (manual)',
-        quantityMatch: entryQuantity ? (exitOrder.quantity === entryQuantity ? '✅ MATCH' : '⚠️ MISMATCH') : 'N/A'
+        quantity: exitOrder.quantity,
+        time: exitOrder.order_timestamp
       });
       
       return exitOrder;
@@ -797,9 +768,8 @@ export class BollingerBandStrategy extends StrategyBase {
     // We BUY options at entry and SELL at exit, so profit = (exit/current - entry) * quantity
     // This applies to both LONG (CE) and SHORT (PE) directions
     const priceDiff = currentPrice - this.currentPosition.entryPrice;
-    const totalQuantity = this.currentPosition.quantity * 75; // Convert lots to shares (NIFTY lot size)
     
-    return priceDiff * totalQuantity;
+    return priceDiff * this.currentPosition.quantity;
   }
 
   // Technical Indicator Calculations
@@ -1966,12 +1936,27 @@ export class BollingerBandStrategy extends StrategyBase {
           }
           
           // Now proceed with exit checks
-          // Real-time monitoring for BOTH LONG and SHORT positions
+          // IMPORTANT: Only SHORT positions are monitored via real-time polling
+          // LONG positions exit ONLY on 5-minute candle close (handled by master cycle)
           if (this.currentPosition.type === 'SHORT') {
             await this.checkShortExitUnified(currentPremium, 'polling');
           } else if (this.currentPosition.type === 'LONG') {
-            // LONG: Use real-time simple 12% trailing SL exit logic
-            await this.checkLongExitSimple(currentPremium, 'polling');
+            // LONG: Track highestPremium for monitoring (exit logic still on candle close)
+            if (currentPremium > (this.currentPosition.highestPremium || 0)) {
+              this.currentPosition.highestPremium = currentPremium;
+              
+              // Update last high time
+              if (!this.currentPosition.timeDecayTrailing) {
+                this.currentPosition.timeDecayTrailing = { lastHighTime: new Date() };
+              } else {
+                this.currentPosition.timeDecayTrailing.lastHighTime = new Date();
+              }
+              
+              this.logger.info(`📈 LONG: New high premium reached`, {
+                newHigh: currentPremium.toFixed(2),
+                timestamp: new Date().toLocaleTimeString()
+              });
+            }
           }
           
           // Success - reset failure counter
@@ -2232,7 +2217,7 @@ export class BollingerBandStrategy extends StrategyBase {
     if (!latestCandle) return;
     
     const { rsi, supertrend, bollingerBands } = this.currentIndicators;
-    const { r1, r2, pp } = this.dailyPivots;
+    const { r1, r2 } = this.dailyPivots;
     const close = latestCandle.close;
     const open = latestCandle.open;
     
@@ -2282,7 +2267,7 @@ export class BollingerBandStrategy extends StrategyBase {
       priceBelowLowerBB: close < bollingerBands.lower,
       rsiInRange: rsi >= 10 && rsi <= 30, // Oversold momentum confirmation
       supertrendBearish: supertrend.trend === 'DOWN',
-      belowPP: close <= pp, // High-confidence SHORT filter using central pivot point
+      belowR1: close <= r1,
       candleIsBearish: candleIsBearish // NEW: Entry candle must be bearish
     };
     
@@ -2294,7 +2279,7 @@ export class BollingerBandStrategy extends StrategyBase {
         rsi: rsi.toFixed(2),
         supertrend: supertrend.trend,
         lowerBB: bollingerBands.lower.toFixed(2),
-        pp: pp.toFixed(2)
+        r1: r1.toFixed(2)
       });
       
       // Block SHORT entries after 2:55 PM (except Fridays)
@@ -2318,7 +2303,7 @@ export class BollingerBandStrategy extends StrategyBase {
         priceBelowLowerBB: `${shortConditions.priceBelowLowerBB} (${close.toFixed(2)} < ${bollingerBands.lower.toFixed(2)})`,
         rsiInRange: `${shortConditions.rsiInRange} (${rsi.toFixed(2)} in 10-30)`,
         supertrendBearish: `${shortConditions.supertrendBearish} (${supertrend.trend})`,
-        belowPP: `${shortConditions.belowPP} (${close.toFixed(2)} <= ${pp.toFixed(2)})`,
+        belowR1: `${shortConditions.belowR1} (${close.toFixed(2)} <= ${r1.toFixed(2)})`,
         candleIsBearish: `${shortConditions.candleIsBearish}`
       });
     }
@@ -2394,7 +2379,6 @@ export class BollingerBandStrategy extends StrategyBase {
           entryTime: new Date(),
           ...(entryCandleLow !== undefined && { entryCandleLow: entryCandleLow }),
           ...(entryCandleHigh !== undefined && { entryCandleHigh: entryCandleHigh }),
-          trailingSL: orderResult.price * 0.88, // 12% below entry (simple trailing SL)
           highestPremium: orderResult.price, // Track maximum premium reached
           entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`,
           timeDecayTrailing: { lastHighTime: new Date() } // Initialize for time-based tracking
@@ -2607,18 +2591,8 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * LONG Exit Check - Underlying-Based Safety Net (Secondary Exit)
-   *
-   * This is a SECONDARY exit mechanism based on NIFTY spot price.
-   * PRIMARY exit is via checkLongExitSimple() with trailing SL.
-   *
-   * This acts as:
-   * 1. Technical invalidation (NIFTY breaks below key support)
-   * 2. Safety net if option premium streaming fails
-   * 3. Additional protection against sharp NIFTY drops
-   *
-   * Exit Threshold: MAX(entry candle low, BB midline)
-   * Checked ONLY on 5-minute candle close
+   * Check LONG exit conditions ONLY on 5-minute candle close
+   * This is the ONLY method that should trigger LONG exits
    */
   private async checkLongExitOnCandleClose(candleClosePrice: number): Promise<void> {
     if (!this.currentIndicators || !this.currentPosition) return;
@@ -2626,7 +2600,7 @@ export class BollingerBandStrategy extends StrategyBase {
     
     // Race condition protection - ensure only one exit check at a time
     if (this.isProcessingLongExit) {
-      this.logger.debug('[LONG EXIT CHECK] Exit already in progress, skipping secondary check');
+      this.logger.debug('[LONG EXIT CHECK] Exit already in progress, skipping');
       return;
     }
     
@@ -2642,18 +2616,17 @@ export class BollingerBandStrategy extends StrategyBase {
       this.isProcessingLongExit = true; // Set flag BEFORE async executeExit call
       
       try {
-        this.logger.info('🔴 LONG exit signal: Secondary safety net triggered (underlying-based)', {
+        this.logger.info('🔴 LONG exit signal: 5-minute candle close below exit threshold', {
           candleClose: candleClosePrice.toFixed(2),
           exitThreshold: exitThreshold.toFixed(2),
           entryCandleLow: entryCandleLow.toFixed(2),
           bbMidline: bbMidline.toFixed(2),
           usedThreshold: usedEntryCandleLow ? 'Entry Candle Low' : 'BB Midline',
-          exitType: 'CANDLE_CLOSE_SAFETY_NET',
-          note: 'Primary trailing SL did not trigger first',
+          exitType: 'CANDLE_CLOSE_ONLY',
           timestamp: new Date().toLocaleTimeString()
         });
         
-        await this.executeExit('LONG_CANDLE_CLOSE_SAFETY_NET');
+        await this.executeExit('LONG_CANDLE_CLOSE_EXIT');
       } finally {
         this.isProcessingLongExit = false; // Reset flag in finally block
       }
@@ -2904,92 +2877,6 @@ export class BollingerBandStrategy extends StrategyBase {
       this.logger.error(`Error in unified SHORT exit check (${source}):`, error);
     } finally {
       this.isProcessingShortExit = false;
-    }
-  }
-
-  /**
-   * LONG Exit Check - Simple 12% Trailing SL
-   *
-   * Monitors CE option premium every 1 second via REST API polling.
-   * Implements simple 12% trailing stop loss from highest premium.
-   *
-   * Exit Trigger: Current premium drops 12% below highest premium achieved
-   *
-   * @param currentPremium - Current CE option premium from REST API
-   * @param source - Monitoring source ('polling')
-   */
-  private async checkLongExitSimple(currentPremium: number, source: 'polling'): Promise<void> {
-    if (!this.currentPosition || this.currentPosition.type !== 'LONG') return;
-
-    // Race condition protection (same as SHORT)
-    if (this.isProcessingLongExit) {
-      this.logger.debug(`🔒 LONG exit check already in progress, skipping ${source} request`);
-      return;
-    }
-
-    this.isProcessingLongExit = true;
-
-    try {
-      // STEP 1: Update highest premium if new high reached
-      if (currentPremium > (this.currentPosition.highestPremium || 0)) {
-        const oldHigh = this.currentPosition.highestPremium;
-        this.currentPosition.highestPremium = currentPremium;
-
-        this.logger.info(`📈 LONG: New high premium reached`, {
-          oldHigh: oldHigh?.toFixed(2) || 'none',
-          newHigh: currentPremium.toFixed(2),
-          timestamp: new Date().toLocaleTimeString()
-        });
-      }
-
-      // STEP 2: Calculate 12% trailing SL from highest premium
-      if (this.currentPosition.highestPremium) {
-        const simpleSL = this.currentPosition.highestPremium * 0.88; // 12% below highest
-
-        // Only update if tighter (higher SL = tighter protection for LONG)
-        if (!this.currentPosition.trailingSL || simpleSL > this.currentPosition.trailingSL) {
-          const oldSL = this.currentPosition.trailingSL;
-          this.currentPosition.trailingSL = simpleSL;
-
-          // Save to disk
-          this.saveCapitalData();
-
-          this.logger.info(`🔧 LONG: Trailing SL updated`, {
-            highestPremium: this.currentPosition.highestPremium.toFixed(2),
-            oldSL: oldSL?.toFixed(2) || 'none',
-            newSL: simpleSL.toFixed(2),
-            trailingPct: '12%',
-            source: source,
-            timestamp: new Date().toLocaleTimeString()
-          });
-        }
-      }
-
-      // STEP 3: Check if trailing SL is hit
-      if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
-        this.logger.info(`🔴 LONG exit signal: Trailing SL hit (${source})`, {
-          currentPremium: currentPremium.toFixed(2),
-          trailingSL: this.currentPosition.trailingSL.toFixed(2),
-          trailingPct: '12%',
-          highestPremium: this.currentPosition.highestPremium?.toFixed(2) || 'N/A',
-          source: source,
-          timestamp: new Date().toLocaleTimeString()
-        });
-
-        await this.executeExit(`LONG_TRAILING_SL_${source.toUpperCase()}`);
-      } else {
-        this.logger.debug(`✅ LONG position held (${source})`, {
-          currentPremium: currentPremium.toFixed(2),
-          trailingSL: this.currentPosition.trailingSL?.toFixed(2) || 'not-set',
-          highestPremium: this.currentPosition.highestPremium?.toFixed(2) || 'N/A',
-          cushion: this.currentPosition.trailingSL
-            ? (currentPremium - this.currentPosition.trailingSL).toFixed(2)
-            : 'N/A'
-        });
-      }
-
-    } finally {
-      this.isProcessingLongExit = false;
     }
   }
 
@@ -3556,8 +3443,7 @@ export class BollingerBandStrategy extends StrategyBase {
         quantity: quantity * instrument.lot_size,
         product: 'MIS', // Intraday
         order_type: 'MARKET',
-        validity: 'DAY',
-        tag: 'BB_TRADE' // Tag to identify bot-placed orders vs manual exits
+        validity: 'DAY'
       };
       
       const orderResponse = await this.kiteConnect.placeOrder('regular', orderParams);

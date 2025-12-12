@@ -31,7 +31,7 @@ ALL conditions must be met simultaneously at 5-minute candle close:
 
 - ✅ **Trend Filter**: Close < Supertrend(10,2) line (bearish)
 - ✅ **Momentum Filter**: 10 ≤ RSI(10) ≤ 30
-- ✅ **Range Filter**: Close ≤ Lower Bollinger Band **AND** Close ≤ R1
+- ✅ **Range Filter**: Close ≤ Lower Bollinger Band **AND** Close ≤ PP (Pivot Point)
 - ✅ **Candle Direction**: Entry candle must be bearish (Close < Open)
 - ✅ **Time Restriction**: Before 2:55 PM on non-Friday days (Fridays allowed until 3:25 PM)
 - ✅ **Position Check**: No active position
@@ -40,11 +40,40 @@ ALL conditions must be met simultaneously at 5-minute candle close:
 
 #### **LONG Exit**
 
+LONG positions have TWO independent exit conditions (either triggers exit):
+
+**1. Real-time Trailing Stop Loss (1-second check)**
+
+- **Trailing Stop Loss**: 12% below highest option premium seen
+- **Real-time Monitoring**: 1-second REST API polling (same as SHORT)
+- **Dynamic Adjustment**: SL updates as premium makes new highs
+- **Simple Logic**: Constant 12% (no time-decay, no stagnation, no checkpoints)
+- **Example**:
+  - Entry at ₹246.50 → Initial SL = ₹216.92 (12% below entry)
+  - Premium rises to ₹400 → SL = ₹352 (12% below new high)
+  - Premium drops to ₹450 → SL = ₹396 (12% below new high)
+  - If premium ≤ ₹396 → Immediate market order exit
+  - Exit reason: `LONG_TRAILING_SL_POLLING`
+
+**2. Underlying-Based Safety Net (5-minute candle close check)**
+
 - **Exit Threshold**: MAX(Entry Candle Low, BB Midline) - whichever is hit first as price falls
-- **Trigger**: Exit ONLY when 5-minute candle close < exit threshold
-- **No Real-time Monitoring**: Wait for full 5-minute candle completion
-- **Order Type**: Market order for immediate fill
-- **Logic**: If BB midline is higher, exit there. If entry candle low is higher, exit there.
+- **Trigger**: Exit when 5-minute NIFTY candle close < exit threshold
+- **Purpose**: Secondary protection if option premium streaming fails
+- **Example**:
+  - Entry at NIFTY 24,850 (entry low = 24,830, BB mid = 24,820)
+  - Exit threshold = MAX(24,830, 24,820) = 24,830
+  - 5-minute candle closes at 24,825 → Exit triggered
+  - Exit reason: `LONG_CANDLE_CLOSE_SAFETY_NET`
+
+**Both Exit Conditions Are Independent:**
+
+- Whichever condition is met first triggers the exit
+- No conflict between the two mechanisms (race condition protected)
+- Trailing SL provides profit protection based on option premium movement (primary)
+- Underlying-based safety net provides backup based on NIFTY spot movement (secondary)
+
+**Order Type**: Market order for immediate fill
 
 #### **SHORT Exit**
 
@@ -193,16 +222,41 @@ _Trend determined by price position relative to Supertrend line_
    → Ready for next candle evaluation
    ```
 
-### **Real-time SHORT Position Monitoring**
+### **Real-time Position Monitoring**
 
-Once SHORT position active:
+#### **LONG Position Monitoring**
+
+Once LONG (CE) position active:
 
 1. **Start 1-second REST API polling** for option premium
 2. **Track highest premium** seen since entry
 3. **Calculate trailing SL** = Highest Premium × 0.88 (12% below)
 4. **Check exit condition** every second:
    - If current premium ≤ trailing SL → Execute exit immediately
-5. **Stop polling** once position closed
+5. **Secondary safety net** checked every 5 minutes:
+   - If NIFTY candle close < MAX(entry low, BB mid) → Execute exit
+6. **Stop polling** once position closed
+
+**Exit Logic**: Simple 12% trailing SL (constant percentage, no time-decay adjustments)
+
+#### **SHORT Position Monitoring**
+
+Once SHORT (PE) position active:
+
+1. **Start 1-second REST API polling** for option premium
+2. **Track highest premium** seen since entry
+3. **Calculate trailing SL** = Highest Premium × (12%→9%→7%→6%→5%) with time-decay schedule
+4. **Check exit condition** every second:
+   - If current premium ≤ trailing SL → Execute exit immediately
+5. **Secondary exit check** every 5 minutes:
+   - If NIFTY candle close > entry candle high → Execute exit (technical invalidation)
+6. **Performance checkpoints**:
+   - T+15 min: Require ₹5 minimum gain
+   - T+20 min: Require ₹10 minimum gain
+7. **Stagnation detection**: Cap trailing % at 9% if 10+ minutes without new high
+8. **Stop polling** once position closed
+
+**Exit Logic**: Complex time-decay system with performance checkpoints and stagnation detection
 
 ---
 
@@ -320,20 +374,27 @@ Exit Signal Detection → Market Order (SELL) → P&L Calculation
 
 #### **LONG Position Monitoring**
 
-- **Method**: Candle-close processing only
-- **Frequency**: Every 5 minutes (on candle completion)
-- **Data Source**: Completed 5-minute candle close price
-- **Exit Check**: Compare candle close vs BB midline
-- **API Efficiency**: Minimal (no additional polling needed)
+- **Primary Method**: REST API polling with circuit breaker (same as SHORT)
+- **Frequency**: 1-second intervals for option premium
+- **Data Source**: Live CE option premium via KiteConnect API
+- **Primary Exit Check**: Current premium vs simple 12% trailing SL
+- **Secondary Exit Check**: 5-minute NIFTY candle close vs underlying threshold
+- **Circuit Breaker**: Stop after 10 consecutive failures
+- **Backoff Logic**: 5-second intervals on repeated failures
+- **Exit Logic**: Simple (constant 12%, no time-decay, no stagnation, no checkpoints)
 
 #### **SHORT Position Monitoring**
 
-- **Method**: REST API polling with circuit breaker
-- **Frequency**: 1-second intervals
-- **Data Source**: Live option premium via KiteConnect API
-- **Exit Check**: Current premium vs trailing SL level
+- **Primary Method**: REST API polling with circuit breaker
+- **Frequency**: 1-second intervals for option premium
+- **Data Source**: Live PE option premium via KiteConnect API
+- **Primary Exit Check**: Current premium vs time-decayed trailing SL (12%→5%)
+- **Secondary Exit Check**: 5-minute NIFTY candle close vs entry candle high
+- **Performance Checkpoints**: T+15 min (₹5), T+20 min (₹10)
+- **Stagnation Detection**: Cap trailing % at 9% if 10+ min without new high
 - **Circuit Breaker**: Stop after 10 consecutive failures
 - **Backoff Logic**: 5-second intervals on repeated failures
+- **Exit Logic**: Complex (time-decay schedule, checkpoints, stagnation rules)
 
 ### **State Persistence**
 
@@ -373,18 +434,32 @@ Strategy state saved to disk for recovery:
 ### **Current Position Panel**
 
 - Position Type: LONG/SHORT/None
-- Option Symbol (e.g., NIFTY25100CE)
+- Option Symbol (e.g., NIFTY25100CE, NIFTY24800PE)
 - Entry Price & Time
-- Current Premium (real-time for SHORT, 5-min for LONG)
+- Current Premium (real-time for BOTH via 1-second polling)
 - Unrealized P&L (color-coded: green profit, red loss)
 - Position Duration
 
+### **LONG Position Specific** (when active)
+
+- Highest Premium Seen: ₹XXX.XX (peak gain percentage shown)
+- Current Trailing SL: ₹XXX.XX (12% below highest)
+- Cushion to SL: ₹XX.XX (buffer before exit, XX.X% buffer percentage)
+- Trailing %: 12% (constant, labeled "🎯 Constant (Simple)")
+- Monitoring Status: ✅ Active polling (1s intervals)
+- Exit System: Simple 12% trailing SL + underlying-based safety net
+
 ### **SHORT Position Specific** (when active)
 
-- Highest Premium Seen: ₹XXX.XX
-- Current Trailing SL: ₹XXX.XX (12% below high)
+- Highest Premium Seen: ₹XXX.XX (peak gain percentage shown)
+- Current Trailing SL: ₹XXX.XX (dynamic: 12%→9%→7%→6%→5%)
 - Distance to SL: ₹XX.XX (XXX points)
+- Trailing %: XX% (dynamic, labeled based on tightness: 🔥/⚡/📍/🎯)
+- Minutes Since Entry: XX.X (with auto-trail schedule indicator)
+- Minutes Since Last High: XX.X (with stagnation warning if ≥10 min)
+- Last High Time: HH:MM:SS
 - Monitoring Status: ✅ Active polling (1s intervals)
+- Exit System: Complex time-decay + checkpoints + stagnation detection
 
 ### **Technical Indicators Panel**
 
@@ -429,14 +504,19 @@ Strategy state saved to disk for recovery:
 | State          | API Calls/Minute | Notes                                 |
 | -------------- | ---------------- | ------------------------------------- |
 | No Position    | 0.4              | Historical candle fetch (1 per 5 min) |
-| LONG Position  | 0.4              | Candle-close checks only              |
+| LONG Position  | 60.4             | 1s option polling + candle checks     |
 | SHORT Position | 60.4             | 1s option polling + candle checks     |
 
 **Comparison with Breakout-Pullback:**
 
-- 30x more efficient when no position active
-- 30x more efficient with LONG positions
-- Similar efficiency with SHORT positions
+- 30x more efficient when no position active (0.4 vs 12 API calls/min)
+- Similar efficiency with LONG/SHORT positions (60.4 vs 60 API calls/min)
+
+**LONG vs SHORT Monitoring (within Bollinger Strategy):**
+
+- **API Efficiency**: Identical (both use 1-second polling)
+- **Exit Complexity**: LONG simple (constant 12%), SHORT complex (time-decay + checkpoints)
+- **Exit Conditions**: LONG has 2, SHORT has 2 (different mechanisms)
 
 ---
 
@@ -486,23 +566,29 @@ Strategy state saved to disk for recovery:
 
 ### **Exit Rules**
 
-1. LONG: Only on 5-minute candle close below BB midline
-2. SHORT: Immediate on trailing SL breach (any second)
-3. Both: Force exit at 3:28 PM (end-of-day safety)
-4. Both: MIS auto-squareoff at market close
-5. Always use market orders for guaranteed fills
+1. **LONG**: Primary = 12% trailing SL breach (real-time), Secondary = underlying-based safety net (5-min candle close)
+2. **SHORT**: Primary = time-decayed trailing SL breach (real-time), Secondary = entry candle high breach (5-min candle close)
+3. **Both**: Force exit at 3:28 PM (end-of-day safety)
+4. **Both**: MIS auto-squareoff at market close
+5. **Both**: Always use market orders for guaranteed fills
+6. **Both**: Race condition protected (no overlapping exits possible)
 
 ### **Risk Management**
 
-1. Dynamic position sizing (1 lot per ₹40,000) adjusts exposure to current capital
-2. SHORT positions have built-in dual protection:
-   - 12% trailing SL (protects profits)
-   - Entry candle high breach (technical invalidation)
-3. LONG positions exit on BB midline (technical signal)
-4. No overnight positions (zero carry-forward risk)
-5. Circuit breakers prevent system failures from cascading
-6. Emergency manual exit always available
-7. Position size automatically reduces after losses, increases after profits
+1. **Dynamic Position Sizing**: 1 lot per ₹40,000 adjusts exposure to current capital
+2. **LONG Position Protection**:
+   - Primary: 12% trailing SL (protects profits, simple constant percentage)
+   - Secondary: Underlying-based safety net (technical signal based on NIFTY movement)
+3. **SHORT Position Protection**:
+   - Primary: Time-decayed trailing SL (12%→5%, protects profits with tightening)
+   - Secondary: Entry candle high breach (technical invalidation)
+   - Performance checkpoints: T+15 min (₹5), T+20 min (₹10)
+   - Stagnation detection: Cap trailing % at 9% if 10+ min without new high
+4. **No Overnight Positions**: Zero carry-forward risk (all positions closed by 3:28 PM)
+5. **Circuit Breakers**: Prevent system failures from cascading (polling backoff after failures)
+6. **Emergency Manual Exit**: Always available for both LONG and SHORT
+7. **Automatic Capital Adjustment**: Position size reduces after losses, increases after profits
+8. **Race Condition Protection**: Prevents overlapping exits (flag-based locking for LONG and SHORT separately)
 
 ---
 
@@ -541,23 +627,49 @@ Before executing exit:
 
 ### **What Makes This Strategy Unique**
 
-1. **Asymmetric Exit Logic**: LONG uses candle-close, SHORT uses real-time trailing SL
-2. **Bollinger-Pivot Hybrid**: Combines Bollinger Bands with daily pivot levels
-3. **Triple Filter System**: Trend + Momentum + Range filters
-4. **Pure Options Trading**: Always BUY options, never short/sell at entry
-5. **Resource Efficient**: Smart polling reduces API load vs real-time streaming
+1. **Dual Exit Systems**: BOTH LONG and SHORT use real-time trailing SL + secondary safety net
+2. **Asymmetric Complexity**: LONG uses simple 12% constant, SHORT uses complex time-decay
+3. **Bollinger-Pivot Hybrid**: Combines Bollinger Bands with daily pivot levels
+4. **Triple Filter System**: Trend + Momentum + Range filters
+5. **Pure Options Trading**: Always BUY options, never short/sell at entry
+6. **Resource Efficient**: Smart polling reduces API load vs real-time streaming (1-second intervals)
+7. **Independent Exit Logic**: LONG and SHORT have separate race condition protection and exit mechanisms
 
 ### **Common Scenarios**
 
-**Scenario 1: LONG Entry & Exit**
+**Scenario 1: LONG Entry & Exit via Trailing SL**
 
 ```
 10:15 - Candle closes above upper BB and R2, RSI=70, Supertrend bullish, candle bullish
       → BUY 300 CE @ ₹246.50 (4 lots, capital ₹189,590)
-10:20 - Candle closes above BB mid (no exit)
-10:25 - Candle closes below BB mid
-      → SELL 300 CE @ ₹247.00 (P&L: +₹150)
-      → New capital: ₹189,740
+      → Initial SL: ₹216.92 (12% below entry)
+      → Real-time 1-second polling starts
+
+10:16:23 - Premium rises to ₹280 (new high, SL updates to ₹246.40)
+10:17:45 - Premium rises to ₹320 (new high, SL updates to ₹281.60)
+10:18:12 - Premium rises to ₹360 (new high, SL updates to ₹316.80)
+10:19:08 - Premium drops to ₹310 (above SL ₹316.80, position held)
+10:19:34 - Premium drops to ₹316 (below SL ₹316.80)
+      → SELL 300 CE @ ₹316 (market order executed immediately)
+      → P&L: (316 - 246.50) × 300 = +₹20,850 profit
+      → Exit reason: LONG_TRAILING_SL_POLLING
+      → New capital: ₹210,440
+```
+
+**Scenario 1b: LONG Entry & Exit via Underlying Safety Net**
+
+```
+11:20 - Candle closes above upper BB, RSI=72, bullish candle
+      → BUY 375 CE @ ₹246.50 (5 lots, entry low = 24,830, BB mid = 24,820)
+      → Initial SL: ₹216.92 (12% below entry)
+      → Exit threshold: MAX(24,830, 24,820) = 24,830
+
+11:21 - Premium rises to ₹270 (SL updates to ₹237.60)
+11:25 - NIFTY 5-min candle closes at 24,825 (below exit threshold 24,830)
+      → SELL 375 CE @ ₹265 (market order executed)
+      → P&L: (265 - 246.50) × 375 = +₹6,937.50 profit
+      → Exit reason: LONG_CANDLE_CLOSE_SAFETY_NET
+      → Note: Underlying-based exit triggered before trailing SL hit
 ```
 
 **Scenario 2: SHORT Entry with Trailing SL**
@@ -598,11 +710,15 @@ Before executing exit:
 
 - `processCandleCompletion()`: Main 5-minute candle processing
 - `checkEntryConditions()`: Evaluate LONG/SHORT entry signals
-- `checkLongExitOnCandleClose()`: LONG exit logic
-- `checkShortExitUnified()`: SHORT trailing SL logic
-- `executeEntry()`: Place option buy order
-- `executeExit()`: Place option sell order
+- `checkLongExitSimple()`: LONG real-time 12% trailing SL logic (NEW)
+- `checkLongExitOnCandleClose()`: LONG underlying-based safety net (secondary)
+- `checkShortExitUnified()`: SHORT time-decayed trailing SL logic
+- `checkShortExitOnCandleClose()`: SHORT entry candle high breach (secondary)
+- `executeLongEntry()`: Place CE option buy order
+- `executeShortEntry()`: Place PE option buy order
+- `executeExit()`: Place option sell order (LONG or SHORT)
 - `calculateUnrealizedPnL()`: Real-time P&L calculation
+- `startPollingBasedMonitoring()`: 1-second REST API polling for both LONG and SHORT
 
 ### **Data Structures**
 

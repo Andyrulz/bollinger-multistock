@@ -100,7 +100,7 @@ export class TradeExecutionService {
   private dataFilePath: string;
   private instruments: OptionInstrument[] = [];
   private niftyInstruments: OptionInstrument[] = [];
-  
+
   // Cached option price for active position monitoring (no extra API calls)
   private cachedOptionPrice: number | null = null;
   private cachedOptionTimestamp: Date | null = null;
@@ -109,16 +109,16 @@ export class TradeExecutionService {
     this.kiteConnect = kiteConnect;
     this.logger = logger;
     this.dataFilePath = path.join(__dirname, '../../data/trading-data.json');
-    
+
     // Initialize with default data
     this.persistedData = this.loadPersistedData();
-    
+
     // Ensure data directory exists
     this.ensureDataDirectory();
-    
+
     // Setup graceful shutdown handlers
     this.setupGracefulShutdown();
-    
+
     this.logger.info('🚀 TradeExecutionService initialized');
     this.logger.info(`💰 Current Capital: ₹${this.persistedData.config.capital.toLocaleString()}`);
     if (this.persistedData.activePosition) {
@@ -141,14 +141,14 @@ export class TradeExecutionService {
   private async gracefulShutdown(): Promise<void> {
     try {
       this.logger.info('🔄 Starting graceful shutdown sequence...');
-      
+
       if (this.persistedData.activePosition) {
         this.logger.warn('⚠️ Active position detected during shutdown!');
         this.logger.info(`📊 Position: ${this.persistedData.activePosition.tradeId}`);
         this.logger.info(`📈 Instrument: ${this.persistedData.activePosition.instrument.tradingsymbol}`);
         this.logger.info(`🎲 Quantity: ${this.persistedData.activePosition.quantity}`);
         this.logger.info(`💰 Entry Price: ₹${this.persistedData.activePosition.entryPrice}`);
-        
+
         if (!this.persistedData.config.paperTradingMode) {
           // Verify position still exists in broker account
           await this.syncWithBrokerState();
@@ -164,7 +164,7 @@ export class TradeExecutionService {
       // Save final state
       this.savePersistedData();
       this.logger.info('💾 Final state saved successfully');
-      
+
       this.logger.info('✅ Graceful shutdown completed');
     } catch (error) {
       this.logger.error('❌ Error during graceful shutdown:', error);
@@ -189,8 +189,180 @@ export class TradeExecutionService {
   }
 
   /**
-   * Clear orphaned position state (when user manually exited on broker platform)
-   * This only clears the persisted data without attempting to place orders
+   * Clear orphaned position and record trade with actual exit price from broker
+   * This is called when user manually exited on broker platform and clicks "Clear Position" button
+   * Similar to BollingerBandStrategy.clearActivePosition()
+   */
+  public async clearOrphanedPositionWithExitPrice(): Promise<void> {
+    try {
+      if (!this.persistedData.activePosition) {
+        this.logger.info('📋 No orphaned position to clear');
+        return;
+      }
+
+      const position = this.persistedData.activePosition;
+      const tradeId = position.tradeId;
+      const symbol = position.instrument.tradingsymbol;
+      const entryOrderId = position.entryOrderId;
+      const entryTime = new Date(position.entryTime);
+      const entryPrice = position.entryPrice;
+
+      this.logger.warn(`🧹 Clearing orphaned position: ${tradeId}`);
+      this.logger.info(`   📊 Symbol: ${symbol}, Entry: ₹${entryPrice}, Time: ${entryTime.toLocaleString()}`);
+
+      // Try to fetch actual exit order from broker
+      let exitPrice = entryPrice; // Fallback to entry price if can't find exit
+      let exitOrderId = `MANUAL_CLEAR_${Date.now()}`;
+      let exitTime = new Date();
+
+      try {
+        const exitOrder = await this.fetchExitOrderFromBroker(symbol, entryTime, position.quantity);
+        if (exitOrder) {
+          exitPrice = exitOrder.average_price || exitOrder.price || entryPrice;
+          exitOrderId = exitOrder.order_id;
+          exitTime = new Date(exitOrder.order_timestamp);
+
+          // Validate quantity match
+          if (exitOrder.quantity !== position.quantity) {
+            this.logger.warn(`⚠️ Quantity mismatch detected!`, {
+              entryQty: position.quantity,
+              exitQty: exitOrder.quantity,
+              warning: 'Using this exit order but quantities differ'
+            });
+          }
+
+          this.logger.info('✅ Found actual exit order from broker', {
+            exitOrderId: exitOrderId,
+            exitPrice: exitPrice,
+            exitTime: exitTime.toLocaleString(),
+            exitQty: exitOrder.quantity
+          });
+        } else {
+          this.logger.warn('⚠️ Could not find exit order from broker, using entry price for P&L (P&L = 0)');
+        }
+      } catch (error) {
+        this.logger.error('❌ Error fetching exit order from broker:', error);
+        this.logger.warn('⚠️ Will use entry price for P&L (P&L = 0)');
+      }
+
+      // Calculate P&L
+      const pnl = this.calculatePnL(position, exitPrice);
+
+      // Update capital with P&L (only for real trades, not paper)
+      if (!this.persistedData.config.paperTradingMode) {
+        this.updateCapitalAfterTrade(pnl);
+      }
+
+      // Create trade record for history
+      const tradeRecord: TradeRecord = {
+        tradeId: position.tradeId,
+        entryOrderId: position.entryOrderId,
+        exitOrderId: exitOrderId,
+        instrument: position.instrument,
+        direction: position.direction,
+        quantity: position.quantity,
+        entryPrice: position.entryPrice,
+        exitPrice: exitPrice,
+        entryTime: position.entryTime,
+        exitTime: exitTime,
+        pnl: pnl,
+        exitReason: 'MANUAL',
+        status: 'CLOSED',
+        isPaperTrade: this.persistedData.config.paperTradingMode
+      };
+
+      // Add to trade history
+      this.persistedData.tradeHistory.push(tradeRecord);
+
+      this.logger.info('📊 Trade recorded via manual clear', {
+        exitPrice: exitPrice.toFixed(2),
+        pnl: `₹${pnl > 0 ? '+' : ''}${pnl.toLocaleString()}`,
+        newCapital: `₹${this.persistedData.config.capital.toLocaleString()}`,
+        totalTrades: this.persistedData.tradeHistory.length
+      });
+
+      // Clear active position
+      delete this.persistedData.activePosition;
+
+      // Clear active instrument as it's no longer relevant
+      if (this.persistedData.activeInstrument) {
+        delete this.persistedData.activeInstrument;
+      }
+
+      // Clear cached price
+      this.clearOptionPriceCache();
+
+      // Save the cleaned data with trade record
+      this.savePersistedData();
+
+      this.logger.info(`✅ Orphaned position cleared successfully with P&L recorded`);
+    } catch (error) {
+      this.logger.error('❌ Error clearing orphaned position:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch exit order from broker by finding SELL order after entry time
+   * Similar to BollingerBandStrategy.fetchExitOrderFromBroker()
+   */
+  private async fetchExitOrderFromBroker(symbol: string, entryTime: Date, entryQuantity?: number): Promise<any> {
+    try {
+      // Fetch all orders for today
+      const orders = await this.kiteConnect.getOrders();
+
+      // Filter for this symbol's SELL orders after entry time
+      // ONLY untagged orders (manual exits from broker, not bot-placed exits)
+      let exitCandidates = orders.filter((order: any) => {
+        const orderTime = new Date(order.order_timestamp);
+        return order.tradingsymbol === symbol
+          && order.transaction_type === 'SELL'
+          && order.status === 'COMPLETE'
+          && orderTime > entryTime
+          && (!order.tag || order.tag === ''); // ONLY untagged (manual) exits
+      });
+
+      if (exitCandidates.length === 0) {
+        this.logger.warn(`⚠️ No manual SELL orders found for ${symbol} after ${entryTime.toLocaleTimeString()}`);
+        return null;
+      }
+
+      // If entry quantity provided, prioritize matching quantity
+      if (entryQuantity) {
+        const exactMatch = exitCandidates.filter((order: any) => order.quantity === entryQuantity);
+        if (exactMatch.length > 0) {
+          exitCandidates = exactMatch;
+          this.logger.info(`✅ Found ${exactMatch.length} quantity-matching exit orders (qty=${entryQuantity})`);
+        } else {
+          this.logger.warn(`⚠️ No exact quantity match found. Using closest by time.`);
+        }
+      }
+
+      // Sort by timestamp to get closest exit after entry
+      exitCandidates.sort((a: any, b: any) =>
+        new Date(a.order_timestamp).getTime() - new Date(b.order_timestamp).getTime()
+      );
+
+      const exitOrder = exitCandidates[0];
+      this.logger.info(`✅ Selected exit order (${exitCandidates.length} candidates after filters)`, {
+        orderId: exitOrder.order_id,
+        qty: exitOrder.quantity,
+        price: exitOrder.average_price,
+        time: exitOrder.order_timestamp,
+        tag: exitOrder.tag || 'NONE (manual)',
+        quantityMatch: entryQuantity ? (exitOrder.quantity === entryQuantity ? '✅ MATCH' : '⚠️ MISMATCH') : 'N/A'
+      });
+
+      return exitOrder;
+    } catch (error) {
+      this.logger.error('Error fetching orders from broker:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Legacy method - kept for backward compatibility
+   * Use clearOrphanedPositionWithExitPrice() instead for proper trade recording
    */
   public clearOrphanedPosition(): void {
     try {
@@ -201,18 +373,18 @@ export class TradeExecutionService {
 
       const tradeId = this.persistedData.activePosition.tradeId;
       this.logger.warn(`🧹 Clearing orphaned position: ${tradeId}`);
-      
+
       // Clear active position without placing any orders
       delete this.persistedData.activePosition;
-      
+
       // Also clear active instrument as it's no longer relevant
       if (this.persistedData.activeInstrument) {
         delete this.persistedData.activeInstrument;
       }
-      
+
       // Save the cleaned data
       this.savePersistedData();
-      
+
       this.logger.info(`✅ Orphaned position cleared successfully`);
     } catch (error) {
       this.logger.error('❌ Error clearing orphaned position:', error);
@@ -253,7 +425,7 @@ export class TradeExecutionService {
           }
         })) || [];
         data.lastUpdated = new Date(data.lastUpdated);
-        
+
         this.logger.info('📖 Loaded persisted trading data');
         return data;
       }
@@ -299,11 +471,11 @@ export class TradeExecutionService {
     try {
       this.logger.info('📊 Loading NIFTY option instruments...');
       const allInstruments = await this.kiteConnect.getInstruments('NFO');
-      
+
       // Filter for NIFTY options only
       this.niftyInstruments = allInstruments
-        .filter((inst: any) => 
-          inst.name === 'NIFTY' && 
+        .filter((inst: any) =>
+          inst.name === 'NIFTY' &&
           (inst.instrument_type === 'CE' || inst.instrument_type === 'PE') &&
           inst.lot_size > 0
         )
@@ -329,16 +501,16 @@ export class TradeExecutionService {
     const today = new Date();
     const currentDay = today.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
     const tuesday = 2; // Tuesday is day 2
-    
+
     let daysToAdd = tuesday - currentDay;
     if (daysToAdd <= 0) {
       daysToAdd += 7; // Next Tuesday
     }
-    
+
     const nextTuesday = new Date(today);
     nextTuesday.setDate(today.getDate() + daysToAdd);
     nextTuesday.setHours(15, 30, 0, 0); // Market close time
-    
+
     return nextTuesday;
   }
 
@@ -379,7 +551,7 @@ export class TradeExecutionService {
     const nextTuesdayExpiry = this.getNextTuesdayExpiry();
     const optionType = direction === 'LONG' ? 'CE' : 'PE';
     const targetPremium = niftyPrice * 0.01; // 1% of NIFTY futures price
-    
+
     this.logger.info(`🎯 Selecting ${optionType} option by PREMIUM for NIFTY price: ₹${niftyPrice}`);
     this.logger.info(`� Target Premium: ₹${targetPremium.toFixed(2)} (1% of futures price)`);
     this.logger.info(`�📅 Target expiry: ${nextTuesdayExpiry.toDateString()}`);
@@ -394,10 +566,10 @@ export class TradeExecutionService {
     if (relevantOptions.length === 0) {
       this.logger.warn(`⚠️ No exact expiry match for ${nextTuesdayExpiry.toDateString()}, trying ±1 day fallback...`);
       relevantOptions = this.niftyInstruments.filter(opt => {
-        const daysDiff = Math.abs((opt.expiry.getTime() - nextTuesdayExpiry.getTime()) / (24*60*60*1000));
+        const daysDiff = Math.abs((opt.expiry.getTime() - nextTuesdayExpiry.getTime()) / (24 * 60 * 60 * 1000));
         return daysDiff <= 1 && opt.instrument_type === optionType;
       });
-      
+
       if (relevantOptions.length > 0) {
         this.logger.info(`✅ Fallback found ${relevantOptions.length} options within ±1 day`);
       }
@@ -416,7 +588,7 @@ export class TradeExecutionService {
     const maxStrike = atmStrike + (strikeRange * 50);
 
     // Filter to ATM±25 range
-    const selectedOptions = relevantOptions.filter(opt => 
+    const selectedOptions = relevantOptions.filter(opt =>
       opt.strike >= minStrike && opt.strike <= maxStrike
     );
 
@@ -424,15 +596,15 @@ export class TradeExecutionService {
 
     // Fetch live prices for selected options in single API call
     const symbols = selectedOptions.map(opt => `NFO:${opt.tradingsymbol}`);
-    const optionsWithPremiums: Array<{option: OptionInstrument, premium: number}> = [];
+    const optionsWithPremiums: Array<{ option: OptionInstrument, premium: number }> = [];
 
     try {
       const quotes = await this.kiteConnect.getQuote(symbols);
-      
+
       for (const option of selectedOptions) {
         const symbol = `NFO:${option.tradingsymbol}`;
         const quote = quotes[symbol];
-        
+
         if (quote && quote.last_price > 0) {
           optionsWithPremiums.push({
             option: option,
@@ -440,7 +612,7 @@ export class TradeExecutionService {
           });
         }
       }
-      
+
       this.logger.info(`✅ Fetched prices for ${optionsWithPremiums.length}/${selectedOptions.length} options`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -472,7 +644,7 @@ export class TradeExecutionService {
     this.logger.info(`✅ Selected Premium-Based Option: ${bestOption.option.tradingsymbol}`);
     this.logger.info(`   📊 Strike: ₹${bestOption.option.strike} | Premium: ₹${bestOption.premium.toFixed(2)}`);
     this.logger.info(`   🎯 Target: ₹${targetPremium.toFixed(2)} | Difference: ₹${premiumDifference.toFixed(2)} | Accuracy: ${premiumAccuracy.toFixed(1)}%`);
-    
+
     return bestOption.option;
   }
 
@@ -482,19 +654,19 @@ export class TradeExecutionService {
 
   private calculatePositionSize(stopLossPoints: number, optionPrice: number): number {
     const { capital, riskPerTrade, niftyLotSize } = this.persistedData.config;
-    
+
     // Constraint 1: Risk-based sizing (existing logic)
     const maxRiskAmount = capital * riskPerTrade; // ₹6,000 for 3% of ₹2,00,000
     const riskPerLot = stopLossPoints * niftyLotSize;
     const maxLotsByRisk = Math.floor(maxRiskAmount / riskPerLot);
-    
+
     // Constraint 2: Capital-based sizing (NEW - prevents capital exceeded error)
     const costPerLot = optionPrice * niftyLotSize;
     const maxLotsByCapital = Math.floor(capital / costPerLot);
-    
+
     // Take minimum of both constraints (CRITICAL FIX)
     const finalLots = Math.min(maxLotsByRisk, maxLotsByCapital);
-    
+
     this.logger.info(`📊 Position Sizing Calculation:`);
     this.logger.info(`   💰 Capital: ₹${capital.toLocaleString()}`);
     this.logger.info(`   🎯 Risk per trade: ${(riskPerTrade * 100).toFixed(1)}% = ₹${maxRiskAmount.toLocaleString()}`);
@@ -531,9 +703,9 @@ export class TradeExecutionService {
 
       // Use previously selected option from breakout detection, or select new if none exists
       let selectedOption: OptionInstrument;
-      
-      if (this.persistedData.activeInstrument && 
-          this.persistedData.activeInstrument.direction === tradeSetup.direction) {
+
+      if (this.persistedData.activeInstrument &&
+        this.persistedData.activeInstrument.direction === tradeSetup.direction) {
         // Use the option selected during breakout detection
         selectedOption = this.persistedData.activeInstrument;
         this.logger.info(`🔄 Using previously selected option from breakout: ${selectedOption.tradingsymbol}`);
@@ -543,13 +715,13 @@ export class TradeExecutionService {
         this.logger.warn('⚠️ No option pre-selected at breakout, selecting now...');
         selectedOption = await this.selectATMOption(tradeSetup.direction, tradeSetup.underlyingPrice);
       }
-      
+
       // Get current option price for position sizing
       const optionPrice = await this.getOptionPrice(selectedOption);
-      
+
       // Calculate stop loss points (difference between entry and stop loss levels)
       const stopLossPoints = Math.abs(tradeSetup.entryLevel - tradeSetup.stopLossLevel);
-      
+
       // Calculate position size with both risk and capital constraints
       // Note: New logic ensures we never exceed available capital
       const lotSize = this.calculatePositionSize(stopLossPoints, optionPrice);
@@ -565,7 +737,7 @@ export class TradeExecutionService {
       if (this.persistedData.config.paperTradingMode) {
         this.logger.info('📝 PAPER TRADING MODE - Simulating order placement');
         const simulatedOrderId = `PAPER_${Date.now()}`;
-        
+
         // Create active position record
         this.persistedData.activePosition = {
           tradeId,
@@ -580,14 +752,14 @@ export class TradeExecutionService {
         };
 
         this.savePersistedData();
-        
+
         this.logger.info(`✅ Paper trade placed successfully`);
         this.logger.info(`   📋 Trade ID: ${tradeId}`);
         this.logger.info(`   🎫 Order ID: ${simulatedOrderId}`);
         this.logger.info(`   📊 Instrument: ${selectedOption.tradingsymbol}`);
         this.logger.info(`   🎲 Quantity: ${quantity} (${lotSize} lots)`);
         this.logger.info(`   💰 Entry Price: ₹${optionPrice}`);
-        
+
         return tradeId;
       } else {
         // Real order placement
@@ -598,7 +770,8 @@ export class TradeExecutionService {
           quantity: quantity,
           order_type: 'MARKET',
           product: 'MIS', // Intraday
-          validity: 'DAY'
+          validity: 'DAY',
+          tag: 'BP_TRADE' // Tag to identify bot-placed orders vs manual exits
         };
 
         this.logger.info('📤 Placing real market order...');
@@ -613,7 +786,7 @@ export class TradeExecutionService {
         // Get actual fill price and quantity from executed order
         const actualEntryPrice = await this.getActualFillPrice(orderId);
         const actualQuantity = await this.getActualFillQuantity(orderId);
-        
+
         // Check for partial fill
         if (actualQuantity < quantity) {
           this.logger.warn(`⚠️ Partial fill detected: ${actualQuantity}/${quantity} filled`);
@@ -666,7 +839,7 @@ export class TradeExecutionService {
       }
 
       const position = this.persistedData.activePosition;
-      
+
       if (this.persistedData.config.paperTradingMode) {
         // Simulate exit price (would need real market price in actual implementation)
         const currentPrice = await this.getOptionPrice(position.instrument);
@@ -712,7 +885,8 @@ export class TradeExecutionService {
           quantity: position.quantity,
           order_type: 'MARKET',
           product: 'MIS',
-          validity: 'DAY'
+          validity: 'DAY',
+          tag: 'BP_TRADE' // Tag to identify bot-placed exits
         };
 
         const closeOrderResponse = await this.kiteConnect.placeOrder('regular', closeOrderParams);
@@ -776,9 +950,9 @@ export class TradeExecutionService {
 
       const positions = await this.kiteConnect.getPositions();
       const netPositions = positions.net || [];
-      
-      const matchingPosition = netPositions.find((pos: any) => 
-        pos.tradingsymbol === instrument.tradingsymbol && 
+
+      const matchingPosition = netPositions.find((pos: any) =>
+        pos.tradingsymbol === instrument.tradingsymbol &&
         pos.exchange === instrument.exchange
       );
 
@@ -815,7 +989,7 @@ export class TradeExecutionService {
 
       const position = this.persistedData.activePosition;
       const isVerified = await this.verifyBrokerPosition(position.instrument, position.quantity);
-      
+
       if (!isVerified) {
         this.logger.warn('⚠️ Position mismatch detected with broker - manual intervention may be required');
         // Could implement auto-reconciliation here if needed
@@ -857,18 +1031,18 @@ export class TradeExecutionService {
       try {
         const orderDetails = await this.kiteConnect.getOrderHistory(orderId);
         const latestOrder = orderDetails[orderDetails.length - 1];
-        
+
         if (latestOrder.status === 'COMPLETE') {
           this.logger.info(`✅ Order ${orderId} confirmed as COMPLETE`);
           return;
         } else if (latestOrder.status === 'REJECTED') {
           const rejectionReason = latestOrder.status_message || 'Unknown rejection reason';
           this.logger.error(`❌ Order ${orderId} REJECTED: ${rejectionReason}`);
-          
+
           // Check if rejection is due to insufficient margin or limits
-          if (rejectionReason.toLowerCase().includes('margin') || 
-              rejectionReason.toLowerCase().includes('limit') ||
-              rejectionReason.toLowerCase().includes('fund')) {
+          if (rejectionReason.toLowerCase().includes('margin') ||
+            rejectionReason.toLowerCase().includes('limit') ||
+            rejectionReason.toLowerCase().includes('fund')) {
             this.logger.error(`💰 Margin/Fund related rejection - cannot retry automatically`);
             throw new Error(`Order rejected due to insufficient funds: ${rejectionReason}`);
           } else {
@@ -878,7 +1052,7 @@ export class TradeExecutionService {
         } else if (latestOrder.status === 'CANCELLED') {
           throw new Error(`Order ${orderId} was CANCELLED: ${latestOrder.status_message}`);
         }
-        
+
         this.logger.info(`⏳ Order ${orderId} status: ${latestOrder.status}, retrying in ${retryInterval}ms...`);
         await new Promise(resolve => setTimeout(resolve, retryInterval));
       } catch (error) {
@@ -912,11 +1086,25 @@ export class TradeExecutionService {
   }
 
   private calculatePnL(position: ActivePosition, exitPrice: number): number {
-    const { entryPrice, quantity } = position;
-    
-    // For options: We always BUY (both CE and PE), so P&L = (exit - entry) * quantity
-    // Direction field indicates market expectation, not position direction
-    return (exitPrice - entryPrice) * quantity;
+    const { entryPrice, quantity, direction } = position;
+
+    // For options: We always BUY at entry, SELL at exit
+    // P&L = (exit_price - entry_price) × quantity
+    // Positive when exit > entry (we sold for more than we bought)
+    // Negative when exit < entry (we sold for less than we bought)
+    const pnl = (exitPrice - entryPrice) * quantity;
+
+    this.logger.info(`📊 P&L Calculation:`, {
+      direction: direction,
+      entryPrice: `₹${entryPrice}`,
+      exitPrice: `₹${exitPrice}`,
+      quantity: quantity,
+      priceChange: `₹${(exitPrice - entryPrice).toFixed(2)}`,
+      pnl: `₹${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}`,
+      result: pnl > 0 ? 'PROFIT' : pnl < 0 ? 'LOSS' : 'BREAKEVEN'
+    });
+
+    return pnl;
   }
 
   private updateCapitalAfterTrade(pnl: number): void {
@@ -954,13 +1142,13 @@ export class TradeExecutionService {
     if (cachedPrice) {
       currentLTP = cachedPrice.price;
       currentLTPTimestamp = cachedPrice.timestamp;
-      
+
       // Calculate unrealized P&L: (current - entry) * quantity
       unrealizedPnL = (currentLTP - position.entryPrice) * position.quantity;
-      
+
       // Calculate percent change
       percentChange = ((currentLTP - position.entryPrice) / position.entryPrice) * 100;
-      
+
       // Calculate seconds since last update
       secondsSinceLastUpdate = Math.floor((now.getTime() - currentLTPTimestamp.getTime()) / 1000);
     }
@@ -1050,11 +1238,11 @@ export class TradeExecutionService {
       const tokenNumber = parseInt(instrumentToken, 10);
       const quotes = await this.kiteConnect.getQuote([tokenNumber]);
       const quote = quotes[tokenNumber];
-      
+
       if (!quote) {
         throw new Error(`No quote data found for token: ${instrumentToken}`);
       }
-      
+
       return quote.last_price || 0;
     } catch (error) {
       this.logger.error(`Error fetching option price for token ${instrumentToken}:`, error);
@@ -1073,12 +1261,12 @@ export class TradeExecutionService {
       loaded: loaded,
       count: this.niftyInstruments.length
     };
-    
+
     if (loaded) {
       result.loadedAt = new Date();
       result.sampleInstruments = this.niftyInstruments.slice(0, 5);
     }
-    
+
     return result;
   }
 
@@ -1093,10 +1281,10 @@ export class TradeExecutionService {
   public async onBreakoutDetected(direction: 'LONG' | 'SHORT', underlyingPrice: number, timestamp: Date): Promise<void> {
     try {
       this.logger.info(`🎯 Breakout detected - Auto-selecting ${direction} option by premium for price: ₹${underlyingPrice}`);
-      
+
       // Select option with premium closest to 1% of futures price
       const selectedOption = await this.selectATMOption(direction, underlyingPrice);
-      
+
       // Store for later use when order is placed
       this.persistedData.activeInstrument = {
         ...selectedOption,
@@ -1104,14 +1292,14 @@ export class TradeExecutionService {
         direction: direction,
         underlyingPrice: underlyingPrice
       };
-      
+
       // Save to disk
       this.savePersistedData();
-      
+
       this.logger.info(`✅ Premium-based Option auto-selected: ${selectedOption.tradingsymbol}`);
       this.logger.info(`   📊 Strike: ₹${selectedOption.strike} | Token: ${selectedOption.instrument_token}`);
       this.logger.info(`   💰 Selected with target premium: ₹${(underlyingPrice * 0.01).toFixed(2)} (1% of futures)`);
-      
+
     } catch (error) {
       this.logger.error(`❌ Failed to auto-select option by premium after breakout:`, error);
       // Don't throw - this is just for UI display, not critical for trading

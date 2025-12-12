@@ -1623,6 +1623,100 @@ class TradingBot {
       }
     });
 
+    // Fetch today's orders from Zerodha (temporary debug endpoint)
+    this.app.get('/api/fetch-todays-orders', async (req: Request, res: Response) => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        this.logger.info('Fetching today\'s orders from Zerodha...');
+        const orders = await this.kiteConnect.getOrders();
+        
+        // Filter for today's orders
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todaysOrders = orders.filter((order: any) => {
+          if (!order.order_timestamp) return false;
+          const orderDate = new Date(order.order_timestamp);
+          orderDate.setHours(0, 0, 0, 0);
+          return orderDate.getTime() === today.getTime();
+        });
+        
+        // Group by symbol
+        const bySymbol: any = {};
+        todaysOrders.forEach((order: any) => {
+          const symbol = order.tradingsymbol;
+          if (!bySymbol[symbol]) {
+            bySymbol[symbol] = [];
+          }
+          bySymbol[symbol].push(order);
+        });
+        
+        // Calculate P&L for each symbol
+        const results: any[] = [];
+        Object.keys(bySymbol).forEach(symbol => {
+          const symbolOrders = bySymbol[symbol].sort((a: any, b: any) => 
+            new Date(a.order_timestamp).getTime() - new Date(b.order_timestamp).getTime()
+          );
+          
+          const buyOrders = symbolOrders.filter((o: any) => o.transaction_type === 'BUY' && o.status === 'COMPLETE');
+          const sellOrders = symbolOrders.filter((o: any) => o.transaction_type === 'SELL' && o.status === 'COMPLETE');
+          
+          let pnl = null;
+          if (buyOrders.length > 0 && sellOrders.length > 0) {
+            const entryPrice = buyOrders[0].average_price;
+            const exitPrice = sellOrders[0].average_price;
+            const quantity = buyOrders[0].quantity;
+            pnl = (exitPrice - entryPrice) * quantity;
+          }
+          
+          results.push({
+            symbol,
+            orders: symbolOrders.map((o: any) => ({
+              orderId: o.order_id,
+              transactionType: o.transaction_type,
+              status: o.status,
+              quantity: o.quantity,
+              price: o.price,
+              averagePrice: o.average_price,
+              timestamp: o.order_timestamp,
+              orderType: o.order_type
+            })),
+            buyOrders: buyOrders.map((o: any) => ({
+              orderId: o.order_id,
+              averagePrice: o.average_price,
+              quantity: o.quantity,
+              timestamp: o.order_timestamp
+            })),
+            sellOrders: sellOrders.map((o: any) => ({
+              orderId: o.order_id,
+              averagePrice: o.average_price,
+              quantity: o.quantity,
+              timestamp: o.order_timestamp
+            })),
+            pnl
+          });
+        });
+        
+        res.json({
+          date: new Date().toISOString().split('T')[0],
+          totalOrders: todaysOrders.length,
+          symbols: results
+        });
+      } catch (error) {
+        this.logger.error('Error fetching today\'s orders:', error);
+        res.status(500).json({ 
+          error: 'Failed to fetch orders',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
     // Test ATM±25 option selection endpoint
     this.app.get('/api/test-atm-selection', async (req: Request, res: Response) => {
       try {
@@ -6405,22 +6499,44 @@ ${JSON.stringify(status.config, null, 2)}
           </div>
           ` : ''}
 
-          <!-- Highest Premium Achieved - NEW DATA -->
+          <!-- Highest Premium Achieved - Display for BOTH -->
           ${status.positionInfo.highestPremium ? `
           <div class="metric-card" style="background: #ffffff; border: 2px solid #8b5cf6; border-left: 6px solid #8b5cf6;">
             <div class="metric-value" style="color: #8b5cf6;">₹${status.positionInfo.highestPremium.toFixed(2)}</div>
             <div style="color: #1f2937; font-weight: 600;">Highest Premium</div>
             <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
-              Peak: ${((status.positionInfo.highestPremium - status.positionInfo.entryPrice) / status.positionInfo.entryPrice * 100).toFixed(2)}%
+              Peak Gain: ${((status.positionInfo.highestPremium - status.positionInfo.entryPrice) / status.positionInfo.entryPrice * 100).toFixed(2)}%
             </div>
           </div>
           ` : ''}
 
-          <!-- Current Trail % - NEW METRIC -->
-          ${status.positionInfo.currentTrailPercent ? `
+          <!-- Current Premium vs SL Cushion - LONG specific -->
+          ${status.positionInfo.type === 'LONG' && status.positionInfo.trailingSL ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #06b6d4; border-left: 6px solid #06b6d4;">
+            <div class="metric-value" style="color: #06b6d4;">₹${(status.positionInfo.currentPrice - status.positionInfo.trailingSL).toFixed(2)}</div>
+            <div style="color: #1f2937; font-weight: 600;">Cushion to SL</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              ${((status.positionInfo.currentPrice - status.positionInfo.trailingSL) / status.positionInfo.trailingSL * 100).toFixed(1)}% buffer
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- Trail % Display - Show 12% constant for LONG, dynamic for SHORT -->
+          ${status.positionInfo.type === 'LONG' ? `
+          <div class="metric-card" style="background: #ffffff; border: 2px solid #10b981; border-left: 6px solid #10b981;">
+            <div class="metric-value" style="color: #10b981;">12%</div>
+            <div style="color: #1f2937; font-weight: 600;">Trailing %</div>
+            <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
+              🎯 Constant (Simple)
+            </div>
+          </div>
+          ` : ''}
+
+          <!-- For SHORT: Show dynamic trail % (existing behavior) -->
+          ${status.positionInfo.type === 'SHORT' && status.positionInfo.currentTrailPercent ? `
           <div class="metric-card" style="background: #ffffff; border: 2px solid #06b6d4; border-left: 6px solid #06b6d4;">
             <div class="metric-value" style="color: #06b6d4;">${status.positionInfo.currentTrailPercent.toFixed(1)}%</div>
-            <div style="color: #1f2937; font-weight: 600;">Current Trail %</div>
+            <div style="color: #1f2937; font-weight: 600;">Trailing %</div>
             <div style="font-size: 0.85em; margin-top: 5px; color: #6b7280;">
               ${status.positionInfo.currentTrailPercent <= 5 ? '🔥 Very Tight' : 
                 status.positionInfo.currentTrailPercent <= 7 ? '⚡ Tight' : 
@@ -6429,8 +6545,8 @@ ${JSON.stringify(status.config, null, 2)}
           </div>
           ` : ''}
 
-          <!-- Minutes Since Entry - NEW METRIC -->
-          ${status.positionInfo.minutesSinceEntry !== undefined ? `
+          <!-- Minutes Since Entry - SHORT only (time-decay schedule) -->
+          ${status.positionInfo.type === 'SHORT' && status.positionInfo.minutesSinceEntry !== undefined ? `
           <div class="metric-card" style="background: #ffffff; border: 2px solid #10b981; border-left: 6px solid #10b981;">
             <div class="metric-value" style="color: #10b981;">${status.positionInfo.minutesSinceEntry.toFixed(1)}</div>
             <div style="color: #1f2937; font-weight: 600;">Minutes Since Entry</div>
@@ -6443,8 +6559,8 @@ ${JSON.stringify(status.config, null, 2)}
           </div>
           ` : ''}
 
-          <!-- Minutes Since Last High - NEW METRIC -->
-          ${status.positionInfo.minutesSinceLastHigh !== undefined ? `
+          <!-- Minutes Since Last High - SHORT only (stagnation detection) -->
+          ${status.positionInfo.type === 'SHORT' && status.positionInfo.minutesSinceLastHigh !== undefined ? `
           <div class="metric-card" style="background: #ffffff; border: 2px solid #f97316; border-left: 6px solid #f97316;">
             <div class="metric-value" style="color: #f97316;">${status.positionInfo.minutesSinceLastHigh.toFixed(1)}</div>
             <div style="color: #1f2937; font-weight: 600;">Minutes Since Last High</div>
@@ -6454,8 +6570,8 @@ ${JSON.stringify(status.config, null, 2)}
           </div>
           ` : ''}
 
-          <!-- Last High Time - NEW METRIC -->
-          ${status.positionInfo.lastHighTime ? `
+          <!-- Last High Time - SHORT only -->
+          ${status.positionInfo.type === 'SHORT' && status.positionInfo.lastHighTime ? `
           <div class="metric-card" style="background: #ffffff; border: 2px solid #8b5cf6; border-left: 6px solid #8b5cf6;">
             <div class="metric-value" style="color: #8b5cf6; font-size: 1.2em;">
               ${new Date(status.positionInfo.lastHighTime).toLocaleTimeString()}
@@ -6543,9 +6659,16 @@ ${JSON.stringify(status.config, null, 2)}
             </div>
           </div>
           <div class="metric-card" style="background: #ffffff; border: 2px solid #6366f1; border-left: 6px solid #6366f1;">
-            <div class="metric-value" style="color: #6366f1;">₹${pivots.pp ? pivots.pp.toFixed(2) : 'N/A'}</div>
+            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 5px;">
+              <div class="metric-value" style="color: #6366f1;">₹${pivots.pp ? pivots.pp.toFixed(2) : 'N/A'}</div>
+              <div style="background: #ef4444; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.7em; font-weight: bold;">
+                SHORT Entry
+              </div>
+            </div>
             <div style="color: #1f2937; font-weight: 600;">PP (Pivot Point)</div>
-            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">Central level</div>
+            <div style="font-size: 0.8em; margin-top: 3px; color: #6b7280;">
+              ${currentNiftyPrice <= (pivots.pp || 0) ? '🟢 Below (SHORT OK)' : '🔴 Above (No SHORT)'}
+            </div>
           </div>
           <div class="metric-card" style="background: #ffffff; border: 2px solid #22c55e; border-left: 6px solid #22c55e;">
             <div class="metric-value" style="color: #22c55e;">₹${pivots.s1 ? pivots.s1.toFixed(2) : 'N/A'}</div>
@@ -6564,6 +6687,39 @@ ${JSON.stringify(status.config, null, 2)}
         </div>
       </div>
 
+      <!-- Exit System Status Section -->
+      ${status.positionInfo ? `
+      <div style="margin-top: 30px;">
+        <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">🎯 Active Exit System</h3>
+        
+        <!-- Exit Status for LONG Positions -->
+        ${status.positionInfo.type === 'LONG' ? `
+        <div style="margin-top: 20px; padding: 15px; background: #f0f9ff; border-left: 4px solid #3b82f6; border-radius: 8px;">
+          <h4 style="color: #1e40af; margin: 0 0 10px 0;">🎯 LONG Exit System (Simple + Safety Net)</h4>
+          <div style="font-size: 0.9em; color: #374151; line-height: 1.6;">
+            <p style="margin: 5px 0;"><strong>Primary:</strong> Simple 12% trailing SL on option premium (real-time, 1-sec polling)</p>
+            <p style="margin: 5px 0;"><strong>Secondary:</strong> Underlying-based safety net (NIFTY close < MAX(entry low, BB mid))</p>
+            <p style="margin: 5px 0;"><strong>Behavior:</strong> SL = highestPremium × 0.88 (constant 12%, no time-decay)</p>
+            <p style="margin: 5px 0;"><strong>Note:</strong> No stagnation detection, no performance checkpoints (kept simple)</p>
+          </div>
+        </div>
+        ` : ''}
+
+        <!-- Exit Status for SHORT Positions -->
+        ${status.positionInfo.type === 'SHORT' ? `
+        <div style="margin-top: 20px; padding: 15px; background: #fef2f2; border-left: 4px solid #ef4444; border-radius: 8px;">
+          <h4 style="color: #991b1b; margin: 0 0 10px 0;">🎯 SHORT Exit System (Complex + Checkpoints)</h4>
+          <div style="font-size: 0.9em; color: #374151; line-height: 1.6;">
+            <p style="margin: 5px 0;"><strong>Primary:</strong> 12% trailing SL with time-decay schedule (12→9→7→6→5%)</p>
+            <p style="margin: 5px 0;"><strong>Secondary:</strong> Entry candle high breach (trend invalidation)</p>
+            <p style="margin: 5px 0;"><strong>Checkpoints:</strong> T+15 min (₹5 min gain), T+20 min (₹10 min gain)</p>
+            <p style="margin: 5px 0;"><strong>Stagnation:</strong> 10 min without new high → 9% trailing cap</p>
+          </div>
+        </div>
+        ` : ''}
+      </div>
+      ` : ''}
+
       <!-- Strategy Rules -->
       <div style="margin-top: 30px;">
         <h3 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">📋 Strategy Rules</h3>
@@ -6576,7 +6732,7 @@ ${JSON.stringify(status.config, null, 2)}
               <li>Supertrend = UP</li>
               <li>Price above R1 or R2</li>
             </ul>
-            <p style="margin: 10px 0 0 0; font-weight: bold; color: #22c55e;">Exit: NIFTY50 < MAX(Entry Candle Low, Mid BB)</p>
+            <p style="margin: 10px 0 0 0; font-weight: bold; color: #22c55e;">Exit: 12% Trailing SL OR NIFTY50 < MAX(Entry Candle Low, Mid BB)</p>
           </div>
           <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #ef4444;">
             <h4 style="color: #ef4444; margin-top: 0;">🔻 SHORT Entry</h4>
@@ -6781,6 +6937,7 @@ ${JSON.stringify(status.config, null, 2)}
     const bbLower = indicators.bollingerBands?.lower || 0;
     const r1 = pivots.r1 || 0;
     const r2 = pivots.r2 || 0;
+    const pp = pivots.pp || 0;
     
     let conditions = [];
     let metCount = 0;
@@ -6807,13 +6964,13 @@ ${JSON.stringify(status.config, null, 2)}
       const priceBelowLower = price < bbLower;
       const rsiInRange = rsi >= 10 && rsi <= 30;
       const supertrendDown = supertrend === 'DOWN';
-      const belowR1 = price <= r1;
+      const belowPP = price <= pp;
       
       conditions = [
         { name: 'Price < BB Lower', met: priceBelowLower, value: `₹${price.toFixed(2)} ${priceBelowLower ? '<' : '>='} ₹${bbLower.toFixed(2)}` },
         { name: 'RSI 10-30', met: rsiInRange, value: `${rsi.toFixed(2)} ${rsiInRange ? 'in' : 'out of'} range` },
         { name: 'Supertrend DOWN', met: supertrendDown, value: supertrend },
-        { name: 'Below R1', met: belowR1, value: `₹${price.toFixed(2)} ${belowR1 ? '<=' : '>'} ₹${r1.toFixed(2)}` }
+        { name: 'Below PP', met: belowPP, value: `₹${price.toFixed(2)} ${belowPP ? '<=' : '>'} ₹${pp.toFixed(2)}` }
       ];
       
       metCount = conditions.filter(c => c.met).length;
