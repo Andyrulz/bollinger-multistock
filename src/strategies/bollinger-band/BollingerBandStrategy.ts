@@ -2388,8 +2388,6 @@ export class BollingerBandStrategy extends StrategyBase {
       
       if (orderResult.success) {
         // Use captured candle data (not current candleHistory which may have updated)
-        const candleLow = entryCandleLow !== undefined ? entryCandleLow : nifty50Price;
-        
         this.currentPosition = {
           type: 'LONG',
           instrument: ceOption,
@@ -2398,7 +2396,8 @@ export class BollingerBandStrategy extends StrategyBase {
           entryTime: new Date(),
           ...(entryCandleLow !== undefined && { entryCandleLow: entryCandleLow }),
           ...(entryCandleHigh !== undefined && { entryCandleHigh: entryCandleHigh }),
-          trailingSL: candleLow * 0.99, // 1% below entry candle low (natural support)
+          // trailingSL is NOT initialized here - will be calculated purely from option premium
+          // in checkLongExitSimple() on first poll (12% below highest premium)
           highestPremium: orderResult.price, // Track maximum premium reached
           entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`,
           timeDecayTrailing: { lastHighTime: new Date() } // Initialize for time-based tracking
@@ -2511,7 +2510,8 @@ export class BollingerBandStrategy extends StrategyBase {
           quantity: lots,
           entryTime: new Date(),
           entryCandleHigh: candleHigh, // Extracted at signal detection
-          trailingSL: candleHigh * 1.12, // 12% above entry candle high (natural resistance)
+          // trailingSL is NOT initialized here - will be calculated purely from option premium
+          // in checkShortExitUnified() on first poll (time-decay: 12% for 0-20 min, tightening over time)
           highestPremium: orderResult.price,
           entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`,
           timeDecayTrailing: { lastHighTime: new Date() } // Initialize at entry for precise stagnation tracking
@@ -2581,26 +2581,6 @@ export class BollingerBandStrategy extends StrategyBase {
       positionType: this.currentPosition.type,
       niftyLTP: nifty50LTP.toFixed(2)
     });
-  }
-
-  /**
-   * Check LONG exit conditions (real-time NIFTY50 vs previous Mid BB)
-   * DEPRECATED: This method should not be used for real-time monitoring
-   * Use checkLongExitOnCandleClose() instead for proper candle-close exits
-   */
-  private async checkLongExitConditions(nifty50LTP: number): Promise<void> {
-    if (!this.currentIndicators || !this.currentPosition) return;
-    
-    const previousMidBB = this.currentIndicators.bollingerBands.middle;
-    
-    if (nifty50LTP < previousMidBB) {
-      this.logger.info('🚪 LONG exit signal: NIFTY50 below Mid BB', {
-        nifty50LTP: nifty50LTP.toFixed(2),
-        midBB: previousMidBB.toFixed(2)
-      });
-      
-      await this.executeExit('LONG_EXIT_SIGNAL');
-    }
   }
 
   /**
@@ -2986,52 +2966,6 @@ export class BollingerBandStrategy extends StrategyBase {
         });
       }
 
-    } finally {
-      this.isProcessingLongExit = false;
-    }
-  }
-
-  /**
-   * @deprecated LONG positions do NOT use real-time trailing SL
-   * LONG exits happen ONLY on 5-minute candle close via checkLongExitOnCandleClose()
-   * This method is kept for reference but should NEVER be called
-   */
-  private async checkLongTrailingSL(currentPremium: number): Promise<void> {
-    if (!this.currentPosition || this.currentPosition.type !== 'LONG') return;
-    
-    // Race condition protection
-    if (this.isProcessingLongExit) {
-      this.logger.debug('? LONG exit already in progress, skipping');
-      return;
-    }
-    
-    this.isProcessingLongExit = true;
-    
-    try {
-      // Update trailing SL (same logic as SHORT)
-      if (currentPremium > (this.currentPosition.highestPremium || 0)) {
-        this.currentPosition.highestPremium = currentPremium;
-        this.currentPosition.trailingSL = currentPremium * 0.88; // 12% below new high
-        
-        this.logger.info(`?? LONG Trailing SL updated`, {
-          newHigh: currentPremium.toFixed(2),
-          newSL: this.currentPosition.trailingSL.toFixed(2),
-          timestamp: new Date().toLocaleTimeString()
-        });
-      }
-      
-      // Check if trailing SL hit
-      if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
-        this.logger.info(`?? LONG exit signal: Trailing SL hit`, {
-          currentPremium: currentPremium.toFixed(2),
-          trailingSL: this.currentPosition.trailingSL.toFixed(2),
-          timestamp: new Date().toLocaleTimeString()
-        });
-        
-        await this.executeExit('LONG_TRAILING_SL');
-      }
-    } catch (error) {
-      this.logger.error('Error in LONG trailing SL check:', error);
     } finally {
       this.isProcessingLongExit = false;
     }
