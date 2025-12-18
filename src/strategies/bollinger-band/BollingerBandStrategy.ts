@@ -1817,7 +1817,12 @@ export class BollingerBandStrategy extends StrategyBase {
           // CRITICAL ORDER: Check exits BEFORE entries (exit existing position before considering new entry)
           const hadPositionBeforeExitCheck = this.currentPosition !== null;
           if (this.currentPosition) {
-            await this.checkPositionExit(newCandle.close);
+            // Only call exit check at exact 5-minute boundaries (X:00, X:05, X:10, X:15, etc.)
+            // Prevents exit checks from running at random times when candles are fetched outside normal cycle
+            const minutes = new Date().getMinutes();
+            if (minutes % 5 === 0) {
+              await this.checkPositionExit(newCandle.close);
+            }
           }
           
           // Check for new entry signals ONLY if we didn't have a position before
@@ -2265,7 +2270,11 @@ export class BollingerBandStrategy extends StrategyBase {
         r2: r2.toFixed(2)
       });
       
-      await this.executeLongEntryWithRetry(close);
+      // Extract entry candle values BEFORE async operations
+      const entryCandleHigh = latestCandle.high;
+      const entryCandleLow = latestCandle.low;
+      
+      await this.executeLongEntryWithRetry(close, entryCandleHigh, entryCandleLow);
     } else {
       // Show why LONG was blocked
       this.logger.info('[BOLLINGER] ❌ LONG conditions not met:', {
@@ -2311,7 +2320,11 @@ export class BollingerBandStrategy extends StrategyBase {
         return;  // Skip SHORT entry
       }
       
-      await this.executeShortEntryWithRetry(close);
+      // Extract entry candle values BEFORE async operations
+      const entryCandleHigh = latestCandle.high;
+      const entryCandleLow = latestCandle.low;
+      
+      await this.executeShortEntryWithRetry(close, entryCandleHigh, entryCandleLow);
     } else {
       // Show why SHORT was blocked
       this.logger.info('[BOLLINGER] ❌ SHORT conditions not met:', {
@@ -2327,7 +2340,7 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Execute LONG entry with CE option selection
    */
-  private async executeLongEntry(nifty50Price: number): Promise<void> {
+  private async executeLongEntry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number): Promise<void> {
     // Position overlap protection - ensure no existing position
     if (this.currentPosition !== null) {
       this.logger.warn('Skipping LONG entry - position already exists', {
@@ -2346,19 +2359,8 @@ export class BollingerBandStrategy extends StrategyBase {
     this.isExecutingLongEntry = true;
 
     try {
-      // 🔒 CRITICAL FIX: Capture entry candle BEFORE any async operations
-      // This prevents race condition where candleHistory updates during order execution
-      const entryCandle = this.candleHistory[this.candleHistory.length - 1];
-      const entryCandleLow = entryCandle?.low;
-      const entryCandleHigh = entryCandle?.high;
-      const entryCandleClose = entryCandle?.close;
-      
-      this.logger.info('📊 Entry candle data captured BEFORE order execution', {
-        entryCandleLow: entryCandleLow?.toFixed(2),
-        entryCandleHigh: entryCandleHigh?.toFixed(2),
-        entryCandleClose: entryCandleClose?.toFixed(2),
-        timestamp: entryCandle?.timestamp.toLocaleTimeString()
-      });
+      // Entry candle high/low are now passed as parameters (captured at signal detection)
+      // This eliminates race condition where candleHistory updates during async operations
       
       // Real-time option selection instead of prediction
       const targetPremium = nifty50Price * 0.01; // 1% of NIFTY
@@ -2386,6 +2388,8 @@ export class BollingerBandStrategy extends StrategyBase {
       
       if (orderResult.success) {
         // Use captured candle data (not current candleHistory which may have updated)
+        const candleLow = entryCandleLow !== undefined ? entryCandleLow : nifty50Price;
+        
         this.currentPosition = {
           type: 'LONG',
           instrument: ceOption,
@@ -2394,7 +2398,7 @@ export class BollingerBandStrategy extends StrategyBase {
           entryTime: new Date(),
           ...(entryCandleLow !== undefined && { entryCandleLow: entryCandleLow }),
           ...(entryCandleHigh !== undefined && { entryCandleHigh: entryCandleHigh }),
-          trailingSL: orderResult.price * 0.88, // 12% below entry (simple trailing SL)
+          trailingSL: candleLow * 0.99, // 1% below entry candle low (natural support)
           highestPremium: orderResult.price, // Track maximum premium reached
           entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`,
           timeDecayTrailing: { lastHighTime: new Date() } // Initialize for time-based tracking
@@ -2405,8 +2409,7 @@ export class BollingerBandStrategy extends StrategyBase {
         
         this.logger.info('✅ LONG position created with pre-captured candle data', {
           entryCandleLow: entryCandleLow?.toFixed(2),
-          entryCandleHigh: entryCandleHigh?.toFixed(2),
-          entryCandleClose: entryCandleClose?.toFixed(2)
+          entryCandleHigh: entryCandleHigh?.toFixed(2)
         });
         
         // Start position monitoring for exit conditions
@@ -2450,7 +2453,7 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Execute SHORT entry with PE option selection
    */
-  private async executeShortEntry(nifty50Price: number): Promise<void> {
+  private async executeShortEntry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number): Promise<void> {
     // Position overlap protection - ensure no existing position
     if (this.currentPosition !== null) {
       this.logger.warn('Skipping SHORT entry - position already exists', {
@@ -2469,17 +2472,11 @@ export class BollingerBandStrategy extends StrategyBase {
     this.isExecutingShortEntry = true;
 
     try {
-      // 🔒 CRITICAL FIX: Capture entry candle BEFORE any async operations
-      // This prevents race condition where candleHistory updates during order execution
-      const entryCandle = this.candleHistory[this.candleHistory.length - 1];
-      const entryCandleHigh = entryCandle?.high || nifty50Price;
-      const entryCandleLow = entryCandle?.low;
+      // Entry candle high/low are now passed as parameters (captured at signal detection)
+      // This eliminates race condition where candleHistory updates during async operations
       
-      this.logger.info('📊 Entry candle data captured BEFORE order execution', {
-        entryCandleHigh: entryCandleHigh.toFixed(2),
-        entryCandleLow: entryCandleLow?.toFixed(2),
-        timestamp: entryCandle?.timestamp.toLocaleTimeString()
-      });
+      // Use passed values, with fallback to current price if not provided
+      const candleHigh = entryCandleHigh !== undefined ? entryCandleHigh : nifty50Price;
       
       // Real-time option selection instead of prediction
       const targetPremium = nifty50Price * 0.01; // 1% of NIFTY
@@ -2504,8 +2501,8 @@ export class BollingerBandStrategy extends StrategyBase {
       const orderResult = await this.executeOrder('BUY', peOption, lots);
       
       if (orderResult.success) {
-        // Use captured candle data (not current candleHistory which may have updated)
-        this.logger.info(`[SHORT ENTRY] Using pre-captured entry candle high: ${entryCandleHigh.toFixed(2)}`);
+        // Use captured candle data (extracted at signal detection)
+        this.logger.info(`[SHORT ENTRY] Using entry candle high: ${candleHigh.toFixed(2)}`);
         
         this.currentPosition = {
           type: 'SHORT',
@@ -2513,8 +2510,8 @@ export class BollingerBandStrategy extends StrategyBase {
           entryPrice: orderResult.price,
           quantity: lots,
           entryTime: new Date(),
-          entryCandleHigh: entryCandleHigh, // Pre-captured value
-          trailingSL: orderResult.price * 0.88, // 12% below entry
+          entryCandleHigh: candleHigh, // Extracted at signal detection
+          trailingSL: candleHigh * 1.12, // 12% above entry candle high (natural resistance)
           highestPremium: orderResult.price,
           entryOrderId: orderResult.orderId || `BB_ENTRY_${Date.now()}`,
           timeDecayTrailing: { lastHighTime: new Date() } // Initialize at entry for precise stagnation tracking
@@ -2705,9 +2702,10 @@ export class BollingerBandStrategy extends StrategyBase {
     
     this.logger.debug(`[SHORT EXIT CHECK] Candle H:${currentCandleHigh.toFixed(2)} C:${currentCandleClose.toFixed(2)}, Entry candle high: ${entryCandleHigh.toFixed(2)}`);
     
-    // CRITICAL: Exit if candle HIGH breaches entry candle high (not just close)
+    // CRITICAL: Exit if candle CLOSE breaches entry candle high (not just high wick)
     // This prevents holding SHORT positions when price action invalidates bearish thesis
-    if (currentCandleHigh > entryCandleHigh) {
+    // Uses CLOSE not HIGH to avoid exiting on temporary intracandle wicks
+    if (currentCandleClose > entryCandleHigh) {
       this.isProcessingShortExit = true; // Set flag BEFORE async executeExit call
       
       try {
@@ -3781,10 +3779,10 @@ export class BollingerBandStrategy extends StrategyBase {
    * LONG entry execution with retry mechanism
    * Critical for trend following - every trade opportunity matters
    */
-  private async executeLongEntryWithRetry(nifty50Price: number): Promise<void> {
+  private async executeLongEntryWithRetry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number): Promise<void> {
     try {
       await this.retryOperation(
-        () => this.executeLongEntry(nifty50Price),
+        () => this.executeLongEntry(nifty50Price, entryCandleHigh, entryCandleLow),
         'LONG Entry Execution',
         3, // Max 3 attempts for trade execution
         this.TRADE_RETRY_DELAYS
@@ -3799,10 +3797,10 @@ export class BollingerBandStrategy extends StrategyBase {
    * SHORT entry execution with retry mechanism  
    * Critical for trend following - every trade opportunity matters
    */
-  private async executeShortEntryWithRetry(nifty50Price: number): Promise<void> {
+  private async executeShortEntryWithRetry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number): Promise<void> {
     try {
       await this.retryOperation(
-        () => this.executeShortEntry(nifty50Price),
+        () => this.executeShortEntry(nifty50Price, entryCandleHigh, entryCandleLow),
         'SHORT Entry Execution',
         3, // Max 3 attempts for trade execution
         this.TRADE_RETRY_DELAYS
