@@ -163,6 +163,17 @@ export class BreakoutPullbackStrategy {
   private isWebSocketCircuitBreakerOpen = false;
   private nextWebSocketRetryTime: Date | null = null;
 
+  // Shutdown flag to prevent fallback handlers during intentional stop
+  private isShuttingDown: boolean = false;
+
+  // WebSocket event listener references for cleanup (prevents unhandled rejections during disconnect)
+  private websocketConnectHandler: (() => void) | null = null;
+  private websocketDisconnectHandler: ((error: any) => void) | null = null;
+  private websocketErrorHandler: ((error: any) => void) | null = null;
+  private websocketReconnectHandler: ((count: number, interval: number) => void) | null = null;
+  private websocketNoreconnectHandler: (() => void) | null = null;
+  private websocketTicksHandler: ((ticks: any[]) => void) | null = null;
+
   // Legacy properties (kept for backward compatibility and fallback)
   private pricePollingInterval: NodeJS.Timeout | null = null;
   private isManualStreamingActive = false;
@@ -823,6 +834,9 @@ export class BreakoutPullbackStrategy {
    */
   public async startManualPriceStreaming(): Promise<void> {
     try {
+      // Reset shutdown flag when starting
+      this.isShuttingDown = false;
+
       if (!this.strategyState.currentContract) {
         throw new Error('No current contract available for price streaming');
       }
@@ -1050,7 +1064,9 @@ export class BreakoutPullbackStrategy {
         });
 
         // Connection opened
-        this.kiteTicker.on('connect', () => {
+        this.websocketConnectHandler = () => {
+          if (!this.kiteTicker) return; // Already disconnected
+          
           this.logger.info('✅ WebSocket connected successfully');
           this.isWebSocketActive = true;
           this.webSocketReconnectAttempts = 0;
@@ -1069,57 +1085,117 @@ export class BreakoutPullbackStrategy {
           }
           
           resolve();
-        });
+        };
+        this.kiteTicker.on('connect', this.websocketConnectHandler);
 
         // Connection closed
-        this.kiteTicker.on('disconnect', (error: any) => {
-          this.logger.warn('🔌 WebSocket disconnected:', error);
-          this.isWebSocketActive = false;
-          
-          // Start REST API fallback when WebSocket disconnects
-          this.logger.warn('🔄 WebSocket disconnected, starting REST API fallback...');
-          this.startRestApiFallback().catch(err => {
-            this.logger.error('❌ Failed to start REST API fallback after WebSocket disconnect:', err);
-          });
-        });
+        this.websocketDisconnectHandler = (error: any) => {
+          try {
+            if (!this.kiteTicker) return; // Already disconnected
+            
+            this.logger.warn('🔌 WebSocket disconnected');
+            this.isWebSocketActive = false;
+            
+            // Only start fallback if not intentionally shutting down
+            if (this.isShuttingDown) {
+              this.logger.info('🛑 WebSocket disconnected during shutdown - skipping fallback');
+              return;
+            }
+            
+            // Start REST API fallback when WebSocket disconnects
+            this.logger.warn('🔄 WebSocket disconnected, starting REST API fallback...');
+            this.startRestApiFallback().catch(err => {
+              this.logger.error('❌ Failed to start REST API fallback after WebSocket disconnect:', err);
+            });
+          } catch (handlerError) {
+            this.logger.error('❌ Error in disconnect handler:', handlerError);
+          }
+        };
+        this.kiteTicker.on('disconnect', this.websocketDisconnectHandler);
 
         // Connection error
-        this.kiteTicker.on('error', (error: any) => {
-          this.logger.error('❌ WebSocket error:', error);
-          this.recordWebSocketFailure(error);
-          this.isWebSocketActive = false;
-          
-          // Start REST API fallback when WebSocket errors
-          this.logger.warn('🔄 WebSocket error, starting REST API fallback...');
-          this.startRestApiFallback().catch(err => {
-            this.logger.error('❌ Failed to start REST API fallback after WebSocket error:', err);
-          });
-          
-          reject(error);
-        });
+        this.websocketErrorHandler = (error: any) => {
+          try {
+            if (!this.kiteTicker) return; // Already disconnected
+            
+            this.logger.error('❌ WebSocket error:', error);
+            this.isWebSocketActive = false;
+            
+            // Only handle errors if not intentionally shutting down
+            if (this.isShuttingDown) {
+              this.logger.info('🛑 WebSocket error during shutdown - ignoring');
+              return;
+            }
+            
+            this.recordWebSocketFailure(error);
+            
+            // Start REST API fallback when WebSocket errors
+            this.logger.warn('🔄 WebSocket error, starting REST API fallback...');
+            this.startRestApiFallback().catch(err => {
+              this.logger.error('❌ Failed to start REST API fallback after WebSocket error:', err);
+            });
+            
+            reject(error);
+          } catch (handlerError) {
+            this.logger.error('❌ Error in error handler:', handlerError);
+            reject(handlerError);
+          }
+        };
+        this.kiteTicker.on('error', this.websocketErrorHandler);
 
         // Reconnection attempt
-        this.kiteTicker.on('reconnect', (reconnect_count: number, reconnect_interval: number) => {
-          this.webSocketReconnectAttempts = reconnect_count;
-          this.logger.info(`🔄 WebSocket reconnecting... Attempt: ${reconnect_count}/${this.maxWebSocketReconnectAttempts}, Interval: ${reconnect_interval}ms`);
-          
-          if (reconnect_count >= this.maxWebSocketReconnectAttempts) {
-            this.logger.error('❌ WebSocket max reconnection attempts reached, falling back to REST API');
-            this.startRestApiFallback();
+        this.websocketReconnectHandler = (reconnect_count: number, reconnect_interval: number) => {
+          try {
+            if (!this.kiteTicker) return; // Already disconnected
+            
+            // Guard: Don't attempt reconnection if intentionally shutting down
+            if (this.isShuttingDown) {
+              this.logger.info('🛑 WebSocket reconnect attempt during shutdown - ignoring');
+              return;
+            }
+            
+            this.webSocketReconnectAttempts = reconnect_count;
+            this.logger.info(`🔄 WebSocket reconnecting... Attempt: ${reconnect_count}/${this.maxWebSocketReconnectAttempts}, Interval: ${reconnect_interval}ms`);
+            
+            if (reconnect_count >= this.maxWebSocketReconnectAttempts) {
+              this.logger.error('❌ WebSocket max reconnection attempts reached, falling back to REST API');
+              this.startRestApiFallback().catch(err => {
+                this.logger.error('❌ Failed to start REST API fallback after max reconnection attempts:', err);
+              });
+            }
+          } catch (handlerError) {
+            this.logger.error('❌ Error in reconnect handler:', handlerError);
           }
-        });
+        };
+        this.kiteTicker.on('reconnect', this.websocketReconnectHandler);
 
         // No reconnection
-        this.kiteTicker.on('noreconnect', () => {
-          this.logger.error('❌ WebSocket unable to reconnect after maximum attempts');
-          this.isWebSocketActive = false;
-          this.startRestApiFallback();
-        });
+        this.websocketNoreconnectHandler = () => {
+          try {
+            if (!this.kiteTicker) return; // Already disconnected
+            
+            this.isWebSocketActive = false;
+            
+            // Only start fallback if not intentionally shutting down
+            if (this.isShuttingDown) {
+              this.logger.info('🛑 WebSocket no reconnect during shutdown - skipping fallback');
+              return;
+            }
+            
+            this.logger.error('❌ WebSocket unable to reconnect after maximum attempts');
+            this.startRestApiFallback();
+          } catch (handlerError) {
+            this.logger.error('❌ Error in noreconnect handler:', handlerError);
+          }
+        };
+        this.kiteTicker.on('noreconnect', this.websocketNoreconnectHandler);
 
         // Tick data received - this is the main event handler
-        this.kiteTicker.on('ticks', (ticks: any[]) => {
+        this.websocketTicksHandler = (ticks: any[]) => {
+          if (!this.kiteTicker) return; // Already disconnected
           this.processWebSocketTicks(ticks);
-        });
+        };
+        this.kiteTicker.on('ticks', this.websocketTicksHandler);
 
         // Connect to WebSocket
         this.kiteTicker.connect();
@@ -1130,6 +1206,8 @@ export class BreakoutPullbackStrategy {
       }
     });
   }
+
+
 
   /**
    * Subscribe to NIFTY futures instrument
@@ -1395,15 +1473,25 @@ export class BreakoutPullbackStrategy {
       
       this.strategyState.priceStreamingActive = false;
       
+      // Set shutdown flag to prevent fallback handlers from firing
+      this.isShuttingDown = true;
+      
       // Stop WebSocket connection
       if (this.kiteTicker) {
         try {
-          this.kiteTicker.disconnect();
-          this.logger.info('🔌 WebSocket disconnected');
+          // CRITICAL FIX: Disable auto-reconnect to prevent reconnection attempts
+          // and nullify BEFORE disconnect so handlers see null and return early
+          this.kiteTicker.autoReconnect(false);
+          
+          // Store reference, nullify first, then disconnect
+          const ticker = this.kiteTicker;
+          this.kiteTicker = null; // Handlers will now see null and return early
+          
+          ticker.disconnect();
+          this.logger.info('🔌 WebSocket disconnected cleanly');
         } catch (error) {
           this.logger.warn('⚠️ Error disconnecting WebSocket:', error);
         }
-        this.kiteTicker = null;
       }
       
       this.isWebSocketActive = false;
