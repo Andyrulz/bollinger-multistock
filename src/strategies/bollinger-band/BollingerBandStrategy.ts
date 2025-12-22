@@ -385,7 +385,7 @@ export class BollingerBandStrategy extends StrategyBase {
       // Step 5: P0 - Recover active position if exists
       await this.recoverActivePosition();
       
-      this.isInitialized = true;
+      this._isInitialized = true;
       this.logger.info('BollingerBandStrategy: Initialization complete', {
         instrumentToken: nifty50Token,
         candleCount: this.candleHistory.length,
@@ -401,7 +401,7 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   public async start(): Promise<void> {
-    if (!this.isInitialized) {
+    if (!this._isInitialized) {
       throw new Error('Strategy must be initialized before starting');
     }
     
@@ -1157,6 +1157,11 @@ export class BollingerBandStrategy extends StrategyBase {
         
       } catch (error) {
         this.logger.error(`Failed to fetch historical data for ${lookbackDays} days:`, error);
+        
+        // Log detailed error info to help debug authentication issues
+        if (error && typeof error === 'object') {
+          this.logger.error(`Error details: ${JSON.stringify(error, null, 2)}`);
+        }
       }
     }
     

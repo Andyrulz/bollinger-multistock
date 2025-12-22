@@ -42,7 +42,7 @@ export abstract class StrategyBase {
   protected kiteConnect: any;
   protected config: StrategyConfig;
   protected metrics: StrategyMetrics;
-  protected isInitialized: boolean = false;
+  protected _isInitialized: boolean = false;
 
   constructor(kiteConnect: any, logger: Logger, config: StrategyConfig) {
     this.kiteConnect = kiteConnect;
@@ -90,6 +90,10 @@ export abstract class StrategyBase {
 
   public isRunning(): boolean {
     return this.metrics.isActive;
+  }
+
+  public get isInitialized(): boolean {
+    return this._isInitialized;
   }
 
   protected updateMetrics(updates: Partial<StrategyMetrics>): void {

@@ -826,15 +826,36 @@ class TradingBot {
         this.logger.info(`Processing request token: ${requestToken.substring(0, 10)}...`);
         const sessionData = await this.authService.generateSession(requestToken);
         
+        // Initialize any pending strategies that were created without auth
+        this.logger.info('🚀 Initializing pending strategies...');
+        let strategiesInitialized = false;
+        let initializationError: string | null = null;
+        
+        try {
+          await StrategyRegistry.initializePendingStrategies();
+          strategiesInitialized = true;
+          this.logger.info('✅ All pending strategies initialized successfully');
+        } catch (error) {
+          this.logger.error('⚠️ Some strategies failed to initialize:', error);
+          initializationError = error instanceof Error ? error.message : 'Unknown error';
+          // Don't block auth success - strategies can be retried from dashboard
+        }
+        
         this.logger.info('Authentication successful, bot is now ready for trading');
         res.json({ 
-          message: 'Authentication successful! Bot is now ready for trading.', 
+          message: strategiesInitialized 
+            ? 'Authentication successful! All strategies initialized and ready for trading.'
+            : 'Authentication successful! Some strategies failed to initialize - check logs.', 
           user: sessionData.user_name,
           loginTime: sessionData.login_time,
+          strategiesInitialized,
+          initializationError,
           nextSteps: [
-            'Visit /portfolio to see your holdings and positions',
-            'Visit /market-data/NSE:RELIANCE to get market data for any symbol',
-            'Check the logs for trading activity'
+            'Visit / to see the multi-strategy dashboard',
+            'All strategies are loaded with historical data and indicators',
+            strategiesInitialized 
+              ? 'You can start trading from the dashboard'
+              : 'Check error logs and retry initialization if needed'
           ]
         });
       } catch (error) {

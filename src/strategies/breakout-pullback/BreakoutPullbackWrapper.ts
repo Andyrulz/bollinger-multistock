@@ -23,7 +23,7 @@ export class BreakoutPullbackWrapper extends StrategyBase {
       // The original strategy doesn't have an explicit initialize method
       // But we can set up any required initialization here
       this.setHealthStatus('healthy');
-      this.isInitialized = true;
+      this._isInitialized = true;
       
       this.logStrategyEvent('info', 'Strategy initialized successfully');
     } catch (error) {
@@ -35,7 +35,7 @@ export class BreakoutPullbackWrapper extends StrategyBase {
 
   async start(): Promise<void> {
     try {
-      if (!this.isInitialized) {
+      if (!this._isInitialized) {
         await this.initialize();
       }
 

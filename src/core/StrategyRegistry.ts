@@ -48,11 +48,21 @@ export class StrategyRegistry {
 
     try {
       const instance = new StrategyClass(kiteConnect, logger, config);
-      await instance.initialize();
+      
+      // Check if we have authentication before initializing
+      // KiteConnect stores access token as a property, not via getter method
+      const hasAuth = !!(kiteConnect.access_token || kiteConnect.accessToken);
+      
+      if (hasAuth) {
+        // Normal flow - initialize immediately with valid token
+        await instance.initialize();
+        this.logger.info(`✅ Created and initialized: ${config.name} (${config.id})`);
+      } else {
+        // Deferred flow - create instance but defer initialization until auth
+        this.logger.warn(`⏸️ Created ${config.name} - initialization pending authentication`);
+      }
       
       this.instances.set(config.id, instance);
-      this.logger.info(`✅ Created strategy instance: ${config.name} (${config.id})`);
-      
       return instance;
     } catch (error) {
       this.logger.error(`❌ Failed to create strategy instance ${config.id}:`, error);
@@ -124,5 +134,40 @@ export class StrategyRegistry {
    */
   public static hasInstance(id: string): boolean {
     return this.instances.has(id);
+  }
+
+  /**
+   * Initialize all strategy instances that were created but not yet initialized
+   * Called after authentication is complete
+   */
+  public static async initializePendingStrategies(): Promise<void> {
+    const pendingStrategies: Array<{ id: string; instance: StrategyBase }> = [];
+    
+    // Find all strategies that exist but aren't initialized yet
+    for (const [id, instance] of this.instances.entries()) {
+      if (!instance.isInitialized) {
+        pendingStrategies.push({ id, instance });
+      }
+    }
+    
+    if (pendingStrategies.length === 0) {
+      this.logger.info('✅ All strategies already initialized');
+      return;
+    }
+    
+    this.logger.info(`🔄 Initializing ${pendingStrategies.length} pending strategies...`);
+    
+    for (const { id, instance } of pendingStrategies) {
+      try {
+        await instance.initialize();
+        this.logger.info(`✅ Initialized strategy: ${instance.getName()}`);
+      } catch (error) {
+        this.logger.error(`❌ Failed to initialize strategy ${id}:`, error);
+        // Continue with other strategies even if one fails
+      }
+    }
+    
+    const successCount = pendingStrategies.filter(({ instance }) => instance.isInitialized).length;
+    this.logger.info(`✅ Strategy initialization complete: ${successCount}/${pendingStrategies.length} successful`);
   }
 }
