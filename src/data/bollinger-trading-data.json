@@ -1652,9 +1652,38 @@
                              "exitReason":  "LONG_CANDLE_CLOSE_SAFETY_NET",
                              "status":  "CLOSED",
                              "strategy":  "BOLLINGER_BAND"
+                         },
+                         {
+                             "tradeId":  "BB_1766564524298",
+                             "entryOrderId":  "251224151096617",
+                             "exitOrderId":  "251224151199602",
+                             "instrument":  {
+                                                "instrument_token":  "16817666",
+                                                "exchange_token":  "65694",
+                                                "tradingsymbol":  "NIFTY25DEC26450PE",
+                                                "name":  "NIFTY",
+                                                "last_price":  259.7,
+                                                "expiry":  "2025-12-30T00:00:00.000Z",
+                                                "strike":  26450,
+                                                "tick_size":  0.05,
+                                                "lot_size":  75,
+                                                "instrument_type":  "PE",
+                                                "segment":  "NFO-OPT",
+                                                "exchange":  "NFO"
+                                            },
+                             "direction":  "SHORT",
+                             "quantity":  300,
+                             "entryPrice":  259.7,
+                             "exitPrice":  264.9625,
+                             "entryTime":  "2025-12-24T07:50:06.446Z",
+                             "exitTime":  "2025-12-24T08:22:04.298Z",
+                             "pnl":  1578.7499999999966,
+                             "exitReason":  "SHORT_TRAILING_SL_POLLING",
+                             "status":  "CLOSED",
+                             "strategy":  "BOLLINGER_BAND"
                          }
                      ],
-    "lastUpdated":  "2025-12-23T09:05:05.803Z",
+    "lastUpdated":  "2025-12-24T08:22:04.299Z",
     "activePosition":  null,
-    "capital":  194547.5
+    "capital":  196126.25
 }
