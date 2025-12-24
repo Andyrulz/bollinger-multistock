@@ -117,6 +117,9 @@ export interface TradeSetupRequest {
   targetLevel: number;
   underlyingPrice: number;
   timestamp: Date;
+  // Trailing stop loss fields (60% of target distance)
+  originalStopLossLevel: number;   // Store initial SL for reference
+  trailingTriggerLevel: number;    // The 60% price level
 }
 
 export interface StrategyState {
@@ -2297,6 +2300,13 @@ export class BreakoutPullbackStrategy {
           // RESTORE STRATEGY STATE to match active position
           this.strategyState.currentTradeId = activePosition.tradeId;
           
+          // Calculate trailing trigger from active position data
+          const targetDistance = Math.abs(activePosition.target - activePosition.entryPrice);
+          const trailingTriggerDistance = targetDistance * 0.60;
+          const trailingTriggerLevel = activePosition.direction === 'LONG'
+            ? activePosition.entryPrice + trailingTriggerDistance
+            : activePosition.entryPrice - trailingTriggerDistance;
+          
           // Reconstruct trade setup request from active position
           this.strategyState.tradeSetupRequest = {
             strategyId: 'breakout-pullback',
@@ -2305,7 +2315,9 @@ export class BreakoutPullbackStrategy {
             stopLossLevel: activePosition.stopLoss,
             targetLevel: activePosition.target,
             underlyingPrice: (activePosition.instrument as any).underlyingPrice || 0,
-            timestamp: activePosition.entryTime
+            timestamp: activePosition.entryTime,
+            originalStopLossLevel: activePosition.originalStopLoss || activePosition.stopLoss,
+            trailingTriggerLevel: trailingTriggerLevel
           };
           
           // Transition to IN_TRADE state to enable price monitoring
@@ -2822,6 +2834,19 @@ export class BreakoutPullbackStrategy {
   private createTradeSetupRequest(direction: 'LONG' | 'SHORT', entryLevel: number, stopLossLevel: number): TradeSetupRequest {
     const targetLevel = this.calculateTargetLevel(entryLevel, direction);
     
+    // Calculate 60% trailing trigger
+    const targetDistance = Math.abs(targetLevel - entryLevel);
+    const trailingTriggerDistance = targetDistance * 0.60; // 60% of target distance
+    
+    let trailingTriggerLevel: number;
+    if (direction === 'LONG') {
+      // LONG: Target above entry, trailing trigger = entry + 60%
+      trailingTriggerLevel = entryLevel + trailingTriggerDistance;
+    } else {
+      // SHORT: Target below entry, trailing trigger = entry - 60%
+      trailingTriggerLevel = entryLevel - trailingTriggerDistance;
+    }
+    
     const tradeRequest: TradeSetupRequest = {
       strategyId: 'nifty-breakout-retracement',
       direction,
@@ -2829,10 +2854,13 @@ export class BreakoutPullbackStrategy {
       stopLossLevel,
       targetLevel,
       underlyingPrice: this.strategyState.livePrice?.last_price || 0,
-      timestamp: new Date()
+      timestamp: new Date(),
+      originalStopLossLevel: stopLossLevel,           // Store original SL
+      trailingTriggerLevel: trailingTriggerLevel      // 60% trigger level
     };
 
-    this.logger.info(`🎯 Trade Setup Created: ${direction} | Entry: ${entryLevel} | SL: ${stopLossLevel} | Target: ${targetLevel}`);
+    this.logger.info(`🎯 Trade Setup Created: ${direction} | Entry: ₹${entryLevel} | SL: ₹${stopLossLevel} | Target: ₹${targetLevel}`);
+    this.logger.info(`   📊 Target Distance: ${targetDistance.toFixed(2)} points | 60% Trailing Trigger: ₹${trailingTriggerLevel.toFixed(2)}`);
     
     return tradeRequest;
   }
@@ -2932,6 +2960,7 @@ export class BreakoutPullbackStrategy {
   /**
    * EXIT TRIGGER DETECTION  
    * Monitors for SL/Target hits in IN_TRADE state
+   * Also monitors 60% trailing trigger to move SL to cost
    */
   private checkExitTriggers(currentPrice: number): void {
     if (!this.strategyState.tradeSetupRequest) {
@@ -2939,22 +2968,61 @@ export class BreakoutPullbackStrategy {
     }
 
     const setup = this.strategyState.tradeSetupRequest;
-    const stopLoss = setup.stopLossLevel;
-    const target = setup.targetLevel;
     const direction = setup.direction;
+    
+    // Get active position to check trailing status
+    const activePosition = this.tradeExecutionService.getActivePosition();
+    if (!activePosition) {
+      return; // No active position
+    }
+
+    // ========================================
+    // CHECK FOR 60% TRAILING TRIGGER
+    // ========================================
+    if (!activePosition.isTrailingActive) {
+      const trailingTrigger = setup.trailingTriggerLevel;
+      let trailingTriggered = false;
+      
+      if (direction === 'LONG' && currentPrice >= trailingTrigger) {
+        trailingTriggered = true;
+        this.logger.info(`✅ LONG 60% Trailing Triggered! Price ₹${currentPrice} >= Trigger ₹${trailingTrigger.toFixed(2)}`);
+      } else if (direction === 'SHORT' && currentPrice <= trailingTrigger) {
+        trailingTriggered = true;
+        this.logger.info(`✅ SHORT 60% Trailing Triggered! Price ₹${currentPrice} <= Trigger ₹${trailingTrigger.toFixed(2)}`);
+      }
+      
+      if (trailingTriggered) {
+        // Move SL to cost (entry price)
+        const entryPrice = activePosition.entryPrice;
+        this.tradeExecutionService.updateStopLossToCost(entryPrice);
+        setup.stopLossLevel = entryPrice; // Update setup SL as well
+        
+        this.logger.info(`🛡️ STOP LOSS MOVED TO COST: ₹${entryPrice.toFixed(2)}`);
+        this.logger.info(`   Original SL: ₹${setup.originalStopLossLevel.toFixed(2)} → New SL: ₹${entryPrice.toFixed(2)}`);
+        this.logger.info(`   Trade now protected - minimum result: BREAKEVEN`);
+        
+        this.markStateAsDirty(); // Trigger persistence save
+      }
+    }
+
+    // ========================================
+    // CHECK STOP LOSS AND TARGET
+    // ========================================
+    const stopLoss = setup.stopLossLevel;  // Now uses updated SL if trailed
+    const target = setup.targetLevel;
 
     let exitTriggered = false;
     let exitReason = '';
 
-    // Check Stop Loss
+    // Check Stop Loss (now using potentially updated SL)
     if (direction === 'LONG' && currentPrice <= stopLoss) {
       exitTriggered = true;
       exitReason = 'STOP_LOSS';
-      this.logger.info(`🛑 LONG SL HIT! Price ${currentPrice} <= SL ${stopLoss}`);
+      this.logger.info(`🛑 LONG SL HIT! Price ₹${currentPrice} <= SL ₹${stopLoss}`);
     } else if (direction === 'SHORT' && currentPrice >= stopLoss) {
       exitTriggered = true;
       exitReason = 'STOP_LOSS';
-      this.logger.info(`🛑 SHORT SL HIT! Price ${currentPrice} >= SL ${stopLoss}`);
+      this.logger.info(`🛑 SHORT SL HIT! Price ₹${currentPrice} >= SL ₹${stopLoss}`);
     }
 
     // Check Target
@@ -2962,11 +3030,11 @@ export class BreakoutPullbackStrategy {
       if (direction === 'LONG' && currentPrice >= target) {
         exitTriggered = true;
         exitReason = 'TARGET';
-        this.logger.info(`🎯 LONG TARGET HIT! Price ${currentPrice} >= Target ${target}`);
+        this.logger.info(`🎯 LONG TARGET HIT! Price ₹${currentPrice} >= Target ₹${target}`);
       } else if (direction === 'SHORT' && currentPrice <= target) {
         exitTriggered = true;
         exitReason = 'TARGET';
-        this.logger.info(`🎯 SHORT TARGET HIT! Price ${currentPrice} <= Target ${target}`);
+        this.logger.info(`🎯 SHORT TARGET HIT! Price ₹${currentPrice} <= Target ₹${target}`);
       }
     }
 

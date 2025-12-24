@@ -29,6 +29,11 @@ export interface ActivePosition {
   entryTime: Date;
   stopLoss: number;
   target: number;
+  // Trailing stop loss fields (60% of target distance)
+  originalStopLoss: number;        // Store initial SL for reference
+  isTrailingActive: boolean;       // Has 60% been reached?
+  trailingTrigger: number;         // The 60% price level
+  trailedAt?: Date;                // Timestamp when SL moved to cost
 }
 
 export interface TradeRecord {
@@ -738,6 +743,13 @@ export class TradeExecutionService {
         this.logger.info('📝 PAPER TRADING MODE - Simulating order placement');
         const simulatedOrderId = `PAPER_${Date.now()}`;
 
+        // Calculate 60% trailing trigger
+        const targetDistance = Math.abs(tradeSetup.targetLevel - optionPrice);
+        const trailingTriggerDistance = targetDistance * 0.60;
+        const trailingTrigger = tradeSetup.direction === 'LONG' 
+          ? optionPrice + trailingTriggerDistance
+          : optionPrice - trailingTriggerDistance;
+
         // Create active position record
         this.persistedData.activePosition = {
           tradeId,
@@ -748,7 +760,10 @@ export class TradeExecutionService {
           entryPrice: optionPrice,
           entryTime: new Date(),
           stopLoss: tradeSetup.stopLossLevel,
-          target: tradeSetup.targetLevel
+          target: tradeSetup.targetLevel,
+          originalStopLoss: tradeSetup.stopLossLevel,
+          isTrailingActive: false,
+          trailingTrigger: trailingTrigger
         };
 
         this.savePersistedData();
@@ -797,6 +812,13 @@ export class TradeExecutionService {
 
         this.logger.info(`💰 Actual entry price: ₹${actualEntryPrice} (vs quote: ₹${optionPrice})`);
 
+        // Calculate 60% trailing trigger based on actual entry price
+        const targetDistance = Math.abs(tradeSetup.targetLevel - actualEntryPrice);
+        const trailingTriggerDistance = targetDistance * 0.60;
+        const trailingTrigger = tradeSetup.direction === 'LONG' 
+          ? actualEntryPrice + trailingTriggerDistance
+          : actualEntryPrice - trailingTriggerDistance;
+
         // Create active position record with actual fill price and quantity
         this.persistedData.activePosition = {
           tradeId,
@@ -807,7 +829,10 @@ export class TradeExecutionService {
           entryPrice: actualEntryPrice, // Using actual fill price for accurate P&L
           entryTime: new Date(),
           stopLoss: tradeSetup.stopLossLevel,
-          target: tradeSetup.targetLevel
+          target: tradeSetup.targetLevel,
+          originalStopLoss: tradeSetup.stopLossLevel,
+          isTrailingActive: false,
+          trailingTrigger: trailingTrigger
         };
 
         this.savePersistedData();
@@ -1122,6 +1147,37 @@ export class TradeExecutionService {
 
   public getActivePosition(): ActivePosition | undefined {
     return this.persistedData.activePosition;
+  }
+
+  /**
+   * Update stop loss to cost (entry price) when 60% of target is reached
+   * This protects the trade from becoming a loss after achieving significant profit
+   */
+  public updateStopLossToCost(entryPrice: number): void {
+    if (!this.persistedData.activePosition) {
+      this.logger.warn('⚠️ Cannot update SL to cost - no active position');
+      return;
+    }
+    
+    const position = this.persistedData.activePosition;
+    
+    // Store original SL if not already stored
+    if (!position.originalStopLoss) {
+      position.originalStopLoss = position.stopLoss;
+    }
+    
+    // Move SL to cost
+    const previousSL = position.stopLoss;
+    position.stopLoss = entryPrice;
+    position.isTrailingActive = true;
+    position.trailedAt = new Date();
+    
+    // Persist immediately
+    this.savePersistedData();
+    
+    this.logger.info(`✅ STOP LOSS MOVED TO COST`);
+    this.logger.info(`   Previous SL: ₹${previousSL.toFixed(2)} → New SL: ₹${entryPrice.toFixed(2)}`);
+    this.logger.info(`   Trade now protected - minimum result: BREAKEVEN`);
   }
 
   public getDetailedPosition(): DetailedPosition | null {
