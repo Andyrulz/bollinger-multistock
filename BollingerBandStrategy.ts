@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { Logger } from '../../utils/Logger';
 import { StrategyBase, StrategyConfig, StrategyStatus } from '../../core/StrategyBase';
 
@@ -170,7 +171,7 @@ export class BollingerBandStrategy extends StrategyBase {
   // Capital and trade management (separate from breakout strategy)
   private currentCapital: number = 200000; // 2 lakh initial capital
   private tradeHistory: any[] = [];
-  private readonly BOLLINGER_DATA_FILE = 'data/bollinger-trading-data.json';
+  private readonly BOLLINGER_DATA_FILE = path.join(__dirname, 'src/data/bollinger-trading-data.json');
 
   // Retry infrastructure for error recovery
   private candleRetryTimer?: NodeJS.Timeout;
