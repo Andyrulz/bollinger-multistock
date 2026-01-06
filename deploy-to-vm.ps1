@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 $VM_IP = "98.70.40.23"
 $VM_USER = "azureuser"
 $SSH_KEY = "C:\Users\aabishek\Downloads\nifty-trading-bot_key.pem"
-$LOCAL_PROJECT = "c:\Users\aabishek\repos\tradebot-kite\tradebot-kite"
+$LOCAL_PROJECT = "c:\Users\aabishek\Documents\repo-local\tradebot-kite"
 $REMOTE_PATH = "~/tradebot-kite"
 $BACKUP_PATH = "~/tradebot-backup-$(Get-Date -Format 'yyyy-MM-dd-HHmmss')"
 
