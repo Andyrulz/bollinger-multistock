@@ -59,7 +59,7 @@ export interface TradingConfig {
   maxRetries: number;          // 3
   orderTimeout: number;        // 5000ms
   paperTradingMode: boolean;   // true for testing
-  niftyLotSize: number;       // 75 for NIFTY
+  niftyLotSize: number;       // 65 for NIFTY (updated Dec 2025)
 }
 
 export interface PersistedData {
@@ -446,7 +446,7 @@ export class TradeExecutionService {
         maxRetries: 3,
         orderTimeout: 5000,
         paperTradingMode: true,   // Start in paper trading mode for safety
-        niftyLotSize: 75
+        niftyLotSize: 65
       },
       tradeHistory: [],
       lastUpdated: new Date()

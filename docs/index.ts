@@ -2340,7 +2340,13 @@ class TradingBot {
     });
 
     // Breakout strategy dashboard page
+    // Redirect old dashboard to v2
     this.app.get('/breakout-strategy', (req: Request, res: Response) => {
+      res.redirect('/breakout-strategy-v2');
+    });
+
+    // Old full dashboard removed - use v2 above
+    this.app.get('/breakout-strategy-old-removed', (req: Request, res: Response) => {
       const isAuthenticated = this.authService.isAuthenticated();
       const sessionData = this.authService.getSessionData();
       const strategyActive = this.breakoutStrategy.isStrategyActive();

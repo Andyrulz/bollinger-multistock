@@ -1186,7 +1186,9 @@ export class BreakoutPullbackStrategy {
             }
             
             this.logger.error('❌ WebSocket unable to reconnect after maximum attempts');
-            this.startRestApiFallback();
+            this.startRestApiFallback().catch(err => {
+              this.logger.error('Failed to start REST API fallback:', err);
+            });
           } catch (handlerError) {
             this.logger.error('❌ Error in noreconnect handler:', handlerError);
           }
@@ -1416,6 +1418,12 @@ export class BreakoutPullbackStrategy {
    */
   private async startRestApiFallback(): Promise<void> {
     try {
+      // CRITICAL: If already running, don't start again
+      if (this.pricePollingInterval && this.isManualStreamingActive) {
+        this.logger.info('⏭️ REST API fallback already running, skipping duplicate start');
+        return;
+      }
+      
       this.logger.warn('🔄 Starting REST API fallback due to WebSocket issues...');
       
       // CRITICAL: Stop any existing REST API polling first to avoid conflicts

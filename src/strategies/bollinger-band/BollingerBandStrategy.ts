@@ -51,9 +51,9 @@ interface CurrentCandle {
 
 interface Position {
   type: 'LONG' | 'SHORT';
-  instrument: any;
+  instrument: any; // Contains lot_size field from Zerodha (e.g., 65 for NIFTY options as of Dec 2025)
   entryPrice: number;
-  quantity: number; // Number of lots (e.g., 4 lots). Total shares = quantity × 75
+  quantity: number; // Number of lots (e.g., 4 lots). Total shares = quantity × instrument.lot_size
   entryTime: Date;
   entryCandleTimestamp?: Date; // FIXED: Timestamp of entry candle for verification
   entryCandleLow?: number;     // NEW: Store entry candle's low for LONG SL logic
@@ -386,6 +386,14 @@ export class BollingerBandStrategy extends StrategyBase {
       // Step 5: P0 - Recover active position if exists
       await this.recoverActivePosition();
       
+      // Step 6: Validate capital consistency on startup
+      const validation = this.validateCapitalConsistency();
+      if (!validation.valid) {
+        this.logger.warn('⚠️ Capital validation failed - manual review recommended', {
+          difference: validation.difference.toFixed(2)
+        });
+      }
+      
       this._isInitialized = true;
       this.logger.info('BollingerBandStrategy: Initialization complete', {
         instrumentToken: nifty50Token,
@@ -529,12 +537,11 @@ export class BollingerBandStrategy extends StrategyBase {
       }
       
       // Calculate P&L
-      const totalQuantity = quantity * 75; // NIFTY lot size × number of lots
+      const totalQuantity = quantity * this.currentPosition.instrument.lot_size; // Use instrument's actual lot size
       const pnl = (exitPrice - entryPrice) * totalQuantity;
       
       // Update capital with P&L
       this.currentCapital += pnl;
-      this.metrics.profitLoss += pnl;
       
       // Create trade record for history
       const tradeRecord = {
@@ -710,6 +717,7 @@ export class BollingerBandStrategy extends StrategyBase {
       config: this.getConfig(),
       metrics: {
         ...this.getMetrics(),
+        profitLoss: this.getTotalPnL(), // Derived from currentCapital (single source of truth)
         isStreaming: false // No real-time streaming needed for 5-minute strategy
       },
       recentTrades: this.tradeHistory.slice(-10), // Last 10 trades for dashboard
@@ -801,7 +809,7 @@ export class BollingerBandStrategy extends StrategyBase {
     // We BUY options at entry and SELL at exit, so profit = (exit/current - entry) * quantity
     // This applies to both LONG (CE) and SHORT (PE) directions
     const priceDiff = currentPrice - this.currentPosition.entryPrice;
-    const totalQuantity = this.currentPosition.quantity * 75; // Convert lots to shares (NIFTY lot size)
+    const totalQuantity = this.currentPosition.quantity * this.currentPosition.instrument.lot_size; // Use instrument's actual lot size
     
     return priceDiff * totalQuantity;
   }
@@ -3019,9 +3027,8 @@ export class BollingerBandStrategy extends StrategyBase {
       
       if (orderResult.success) {
         // Calculate P&L correctly for options trading: (Exit Premium - Entry Premium) × Total Quantity
-        const totalQuantity = this.currentPosition.quantity * 75; // NIFTY lot size × number of lots
+        const totalQuantity = this.currentPosition.quantity * this.currentPosition.instrument.lot_size; // Use instrument's actual lot size
         const pnl = (orderResult.price - this.currentPosition.entryPrice) * totalQuantity;
-        this.metrics.profitLoss += pnl;
         
         // Update capital with P&L
         this.currentCapital += pnl;
@@ -3033,7 +3040,7 @@ export class BollingerBandStrategy extends StrategyBase {
           exitOrderId: orderResult.orderId || `BB_EXIT_${Date.now()}`,
           instrument: this.currentPosition.instrument,
           direction: this.currentPosition.type,
-          quantity: this.currentPosition.quantity * 75, // Total shares
+          quantity: this.currentPosition.quantity * this.currentPosition.instrument.lot_size, // Total shares using actual lot size
           entryPrice: this.currentPosition.entryPrice,
           exitPrice: orderResult.price,
           entryTime: this.currentPosition.entryTime,
@@ -3080,6 +3087,9 @@ export class BollingerBandStrategy extends StrategyBase {
         try {
           this.saveCapitalData();
           this.logger.info("💾 Position cleared from disk after exit");
+          
+          // Validate capital consistency after trade
+          this.validateCapitalConsistency();
         } catch (saveError) {
           this.logger.error("🚨 CRITICAL: Failed to save cleared position, retrying...", saveError);
           // One retry attempt
@@ -3654,6 +3664,47 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
+   * Calculate total P&L from current capital
+   * Single source of truth: currentCapital
+   */
+  private getTotalPnL(): number {
+    return this.currentCapital - 200000; // Initial capital
+  }
+
+  /**
+   * Validate capital consistency against trade history
+   * Ensures currentCapital = 200000 + sum(all trade P&Ls)
+   */
+  private validateCapitalConsistency(): { valid: boolean; difference: number } {
+    try {
+      const calculatedCapital = 200000 + this.tradeHistory.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
+      const diff = Math.abs(this.currentCapital - calculatedCapital);
+      
+      if (diff > 1) { // Allow ₹1 for rounding errors
+        this.logger.error('❌ Capital mismatch detected!', {
+          currentCapital: this.currentCapital.toFixed(2),
+          calculatedFromHistory: calculatedCapital.toFixed(2),
+          difference: diff.toFixed(2),
+          totalTrades: this.tradeHistory.length,
+          initialCapital: 200000,
+          totalPnLFromTrades: this.tradeHistory.reduce((sum, trade) => sum + (trade.pnl || 0), 0).toFixed(2)
+        });
+        return { valid: false, difference: diff };
+      }
+      
+      this.logger.debug('✅ Capital validation passed', {
+        capital: this.currentCapital.toFixed(2),
+        trades: this.tradeHistory.length
+      });
+      
+      return { valid: true, difference: diff };
+    } catch (error) {
+      this.logger.error('Error validating capital:', error);
+      return { valid: false, difference: 0 };
+    }
+  }
+
+  /**
    * Get complete trade history
    */
   public getTradeHistory(): any[] {
@@ -3665,13 +3716,6 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   public getRecentTrades(count: number = 10): any[] {
     return this.tradeHistory.slice(-count);
-  }
-
-  /**
-   * Get total P&L from all completed trades
-   */
-  public getTotalPnL(): number {
-    return this.tradeHistory.reduce((total, trade) => total + (trade.pnl || 0), 0);
   }
 
   /**

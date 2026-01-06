@@ -1,11 +1,11 @@
 {
   "config": {
-    "capital": 149412.50000000003,
+    "capital": 155083.25000000003,
     "riskPerTrade": 0.03,
     "maxRetries": 3,
     "orderTimeout": 5000,
     "paperTradingMode": false,
-    "niftyLotSize": 75
+    "niftyLotSize": 65
   },
   "tradeHistory": [
     {
@@ -844,20 +844,76 @@
       "exitReason": "TARGET",
       "status": "CLOSED",
       "isPaperTrade": false
+    },
+    {
+      "tradeId": "TRADE_1766730718293",
+      "entryOrderId": "251226150803872",
+      "exitOrderId": "251226150832888",
+      "instrument": {
+        "instrument_token": "16816642",
+        "tradingsymbol": "NIFTY25DEC26350PE",
+        "name": "NIFTY",
+        "exchange": "NFO",
+        "strike": 26350,
+        "expiry": "2025-12-30T00:00:00.000Z",
+        "instrument_type": "PE",
+        "lot_size": 75,
+        "selectedAt": "2025-12-26T06:15:00.000Z",
+        "direction": "SHORT",
+        "underlyingPrice": 26079.4
+      },
+      "direction": "SHORT",
+      "quantity": 375,
+      "entryPrice": 276.11,
+      "exitPrice": 271.68,
+      "entryTime": "2025-12-26T06:31:58.731Z",
+      "exitTime": "2025-12-26T06:44:22.481Z",
+      "pnl": -1661.2500000000025,
+      "exitReason": "STOP_LOSS",
+      "status": "CLOSED",
+      "isPaperTrade": false
+    },
+    {
+      "tradeId": "TRADE_1767327008613",
+      "entryOrderId": "260102150298987",
+      "exitOrderId": "260102150319435",
+      "instrument": {
+        "instrument_token": "10359042",
+        "tradingsymbol": "NIFTY2610626000CE",
+        "name": "NIFTY",
+        "exchange": "NFO",
+        "strike": 26000,
+        "expiry": "2026-01-06T00:00:00.000Z",
+        "instrument_type": "CE",
+        "lot_size": 65,
+        "selectedAt": "2026-01-02T03:55:00.000Z",
+        "direction": "LONG",
+        "underlyingPrice": 26348.5
+      },
+      "direction": "LONG",
+      "quantity": 390,
+      "entryPrice": 253.3,
+      "exitPrice": 272.1,
+      "entryTime": "2026-01-02T04:10:09.041Z",
+      "exitTime": "2026-01-02T04:12:35.800Z",
+      "pnl": 7332.000000000005,
+      "exitReason": "TARGET",
+      "status": "CLOSED",
+      "isPaperTrade": false
     }
   ],
-  "lastUpdated": "2025-12-24T08:56:33.077Z",
+  "lastUpdated": "2026-01-06T05:50:06.750Z",
   "activeInstrument": {
-    "instrument_token": "16817666",
-    "tradingsymbol": "NIFTY25DEC26450PE",
+    "instrument_token": "11828738",
+    "tradingsymbol": "NIFTY2611326450PE",
     "name": "NIFTY",
     "exchange": "NFO",
     "strike": 26450,
-    "expiry": "2025-12-30T00:00:00.000Z",
+    "expiry": "2026-01-13T00:00:00.000Z",
     "instrument_type": "PE",
-    "lot_size": 75,
-    "selectedAt": "2025-12-24T08:00:00.000Z",
+    "lot_size": 65,
+    "selectedAt": "2026-01-06T05:45:00.000Z",
     "direction": "SHORT",
-    "underlyingPrice": 26185
+    "underlyingPrice": 26281
   }
 }
