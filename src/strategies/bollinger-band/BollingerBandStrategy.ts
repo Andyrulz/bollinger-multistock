@@ -128,6 +128,9 @@ export class BollingerBandStrategy extends StrategyBase {
   private isExecutingLongEntry: boolean = false;
   private isExecutingShortEntry: boolean = false;
   
+  // Shared InstrumentCache for efficient NFO data access
+  private instrumentCache: any;
+  
   // Race condition protection for polling operations
   private isPollingInProgress: boolean = false;
   private lastPollingTime: Date | null = null;
@@ -193,7 +196,8 @@ export class BollingerBandStrategy extends StrategyBase {
 
   constructor(kiteConnect: any, logger: Logger, quoteManager: any, instrumentCache: any, config: StrategyConfig) {
     super(kiteConnect, logger, config);
-    // QuoteManager and InstrumentCache passed but not used in this version (for compatibility)
+    // Store InstrumentCache for efficient NFO data access (avoids repeated 15MB API calls)
+    this.instrumentCache = instrumentCache;
     
     // SLOT-BASED DATA FILE: Use strategyIndex from scanner config (0-indexed)
     // Scanner passes strategyIndex: 0, 1, 2 for first 3 stocks
@@ -3456,8 +3460,8 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   private async selectOptionInstrument(optionType: 'CE' | 'PE', targetPremium: number): Promise<any> {
     try {
-      // Get NIFTY options instruments
-      const instruments = await this.kiteConnect.getInstruments('NFO');
+      // Get NIFTY options instruments from cache (avoids 15MB API call on each entry)
+      const instruments = await this.instrumentCache.getNFOInstruments();
       
       // Filter for NIFTY options of specified type
       const niftyOptions = instruments.filter((inst: any) => 
