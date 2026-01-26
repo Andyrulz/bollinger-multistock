@@ -1,6 +1,7 @@
 # 🚀 Local Testing Guide - January 27, 2026
 
 ## Current Status
+
 - **Expiry Blocking**: DISABLED (for Jan 27 expiry day testing)
 - **Capital per Slot**: ₹65,000 × 3 slots = ₹1,95,000 total
 - **Scanner Time**: 09:30:05 AM IST
@@ -10,12 +11,14 @@
 ## 🌙 TONIGHT (Before Sleep)
 
 ### Step 1: Clean Local Test Data
+
 ```powershell
 cd C:\Users\aabishek\Documents\repo-local\tradebot-bollinger-multistock
 Remove-Item src\data\bollinger-slot*.json -ErrorAction SilentlyContinue
 ```
 
 ### Step 2: Verify Build
+
 ```powershell
 npx tsc --noEmit
 ```
@@ -25,12 +28,14 @@ npx tsc --noEmit
 ## ☀️ MORNING (Before 9:00 AM)
 
 ### Step 3: Start the Bot
+
 ```powershell
 cd C:\Users\aabishek\Documents\repo-local\tradebot-bollinger-multistock
 npm run dev
 ```
 
 ### Step 4: Authenticate with Zerodha (CRITICAL - Before 9:15 AM)
+
 1. Open browser: **http://localhost:3000/auth/login**
 2. Complete Zerodha 2FA login
 3. Verify: Dashboard shows "Authenticated ✅"
@@ -40,15 +45,19 @@ npm run dev
 ## 📊 MARKET HOURS (9:15 AM - 3:30 PM)
 
 ### Step 5: Monitor Pre-Market Data Fetch (9:00-9:15 AM)
+
 Watch terminal for: `✅ Pre-market data cached successfully`
 
 ### Step 6: Watch Scanner Run (9:30:05 AM)
+
 Watch terminal for:
+
 - `🔍 Running market scanner...`
 - `✅ {STOCK}: Strategy deployed`
 - `📁 Slot 1: Using data file...`
 
 ### Step 7: Monitor Dashboard
+
 - **URL**: http://localhost:3000/
 - Check: Strategy status, positions, capital
 
@@ -56,12 +65,12 @@ Watch terminal for:
 
 ## 🔧 Quick Reference
 
-| Item | Value |
-|------|-------|
-| Dashboard | http://localhost:3000/ |
-| Auth URL | http://localhost:3000/auth/login |
-| Capital/Slot | ₹65,000 |
-| Scanner Time | 09:30:05 AM |
+| Item         | Value                            |
+| ------------ | -------------------------------- |
+| Dashboard    | http://localhost:3000/           |
+| Auth URL     | http://localhost:3000/auth/login |
+| Capital/Slot | ₹65,000                          |
+| Scanner Time | 09:30:05 AM                      |
 
 ---
 
@@ -87,9 +96,11 @@ Watch terminal for:
 ## 🆘 Emergency Commands
 
 ### Stop the Bot
+
 Press `Ctrl+C` in the terminal
 
 ### Check for Open Positions
+
 ```powershell
 Get-Content src\data\bollinger-slot1.json
 Get-Content src\data\bollinger-slot2.json
@@ -97,6 +108,7 @@ Get-Content src\data\bollinger-slot3.json
 ```
 
 ### Manual Position Check
+
 Go to Zerodha Kite: https://kite.zerodha.com/positions
 
 ---
