@@ -106,12 +106,12 @@ export class MarketScanner {
     try {
       // Step 1: Expiry day blackout check (Monthly expiry - from actual instrument data)
       // Blocks trading on expiry day and day before due to physical settlement margins
-      // TEMPORARILY COMMENTED FOR TESTING - uncomment before production
+      // TODO: Uncomment after Jan 27 expiry testing
       // if (await this.isStockTradingBlocked()) {
       //   this.logger.error("🚫 Stock options blocked (expiry week)");
       //   return this.emptyResult();
       // }
-      this.logger.warn("⚠️ TESTING MODE: Expiry blocking disabled - DO NOT USE IN PRODUCTION");
+      this.logger.warn("⚠️ Expiry blocking disabled for Jan 27 testing - re-enable after expiry");
 
       // Step 2: Sector filtering
       const sectorStatus = await this.analyzeSectors();
@@ -353,13 +353,12 @@ export class MarketScanner {
    * Filter stocks based on sector direction
    */
   private filterBySector(sectorStatus: SectorStatus): UniverseStock[] {
-    // TESTING MODE: If market is closed (all sectors 0%), skip sector filter
+    // Filter stocks based on sector momentum direction
     const allSectorsFlat = sectorStatus.green.length === 0 && sectorStatus.red.length === 0;
     
     if (allSectorsFlat) {
-      this.logger.warn("⚠️ TESTING MODE: Market closed (all sectors 0%) - bypassing sector filter");
-      this.logger.warn("⚠️ In live trading, this will filter properly based on sector momentum");
-      return this.universe; // Return all stocks for testing
+      this.logger.warn("⚠️ All sectors flat (0% change) - market may be closed or pre-market");
+      return []; // No trading when market has no direction
     }
     
     return this.universe.filter((stock) => {
@@ -441,15 +440,10 @@ export class MarketScanner {
           bias = "LONG";
         } else if (sectorStatus.red.includes(stock.sector)) {
           bias = "SHORT";
-        } else if (sectorStatus.flat.includes(stock.sector)) {
-          // TESTING MODE: If all sectors are flat (market closed), assign LONG bias for testing
-          const allSectorsFlat = sectorStatus.green.length === 0 && sectorStatus.red.length === 0;
-          if (allSectorsFlat) {
-            bias = "LONG"; // Default to LONG for testing when market is closed
-          }
         }
+        // Flat sectors are skipped - no bias assignment
 
-        if (!bias) continue; // Flat sector in live market, skip
+        if (!bias) continue; // Flat sector, skip
 
         // Fetch live quote for circuit limits and today's change
         let upperCircuitLimit = 0;
@@ -642,9 +636,6 @@ export class MarketScanner {
     // Take top N
     const topStocks = sorted.slice(0, this.config.topCount);
 
-    // TESTING MODE: Check if market is closed
-    const allSectorsFlat = sectorStatus.green.length === 0 && sectorStatus.red.length === 0;
-
     // Find ATM options for each
     for (const stock of topStocks) {
       try {
@@ -654,13 +645,10 @@ export class MarketScanner {
           stock.bias,
         );
 
-        // Premium floor check
-        // TESTING MODE: Lower threshold when market is closed
-        const minPremium = allSectorsFlat ? 1 : this.config.minPremium; // ₹1 for testing, ₹10 for live
-        
-        if (atmOption.premium < minPremium) {
+        // Premium floor check - minimum ₹10 to ensure liquidity
+        if (atmOption.premium < this.config.minPremium) {
           this.logger.warn(
-            `${stock.symbol}: Premium too low (₹${atmOption.premium}, min: ₹${minPremium}) - DISCARD`,
+            `${stock.symbol}: Premium too low (₹${atmOption.premium}, min: ₹${this.config.minPremium}) - DISCARD`,
           );
           stock.valid = false;
           continue;
