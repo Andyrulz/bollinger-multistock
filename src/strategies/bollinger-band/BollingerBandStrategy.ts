@@ -170,9 +170,11 @@ export class BollingerBandStrategy extends StrategyBase {
   };
 
   // Capital and trade management (separate from breakout strategy)
-  private currentCapital: number = 200000; // 2 lakh initial capital
+  // SLOT-BASED: Capital persists at SLOT level, not stock level
+  // Same slot can hold different stocks each day, but capital carries forward
+  private currentCapital: number = 65000; // Default capital per slot
   private tradeHistory: any[] = [];
-  private readonly BOLLINGER_DATA_FILE = path.join(__dirname, '../../data/bollinger-trading-data.json');
+  private BOLLINGER_DATA_FILE: string; // Set in constructor based on slot number
 
   // Retry infrastructure for error recovery
   private candleRetryTimer?: NodeJS.Timeout;
@@ -192,6 +194,14 @@ export class BollingerBandStrategy extends StrategyBase {
   constructor(kiteConnect: any, logger: Logger, quoteManager: any, instrumentCache: any, config: StrategyConfig) {
     super(kiteConnect, logger, config);
     // QuoteManager and InstrumentCache passed but not used in this version (for compatibility)
+    
+    // SLOT-BASED DATA FILE: Extract slot number from config.id (e.g., "bollinger-band-1" -> slot 1)
+    // Default to slot 1 if no number suffix found
+    const idMatch = config.id.match(/-(\d+)$/);
+    const slotNumber = idMatch && idMatch[1] ? parseInt(idMatch[1], 10) : 1;
+    this.BOLLINGER_DATA_FILE = path.join(__dirname, `../../data/bollinger-slot${slotNumber}.json`);
+    this.logger.info(`📁 Slot ${slotNumber}: Using data file ${this.BOLLINGER_DATA_FILE}`);
+    
     // 🔒 CRITICAL FIX: Moved loadCapitalData() to initialize() to avoid blocking sync I/O in constructor
   }
 
