@@ -71,8 +71,8 @@ interface Position {
 
 export class BollingerBandStrategy extends StrategyBase {
   
-  // Configuration constants
-  private readonly CAPITAL_ALLOCATION = 200000;
+  // Configuration constants - Default capital per slot
+  private readonly INITIAL_CAPITAL = 65000;
   
   /**
    * Calculate dynamic lot size based on current capital
@@ -195,10 +195,11 @@ export class BollingerBandStrategy extends StrategyBase {
     super(kiteConnect, logger, config);
     // QuoteManager and InstrumentCache passed but not used in this version (for compatibility)
     
-    // SLOT-BASED DATA FILE: Extract slot number from config.id (e.g., "bollinger-band-1" -> slot 1)
-    // Default to slot 1 if no number suffix found
-    const idMatch = config.id.match(/-(\d+)$/);
-    const slotNumber = idMatch && idMatch[1] ? parseInt(idMatch[1], 10) : 1;
+    // SLOT-BASED DATA FILE: Use strategyIndex from scanner config (0-indexed)
+    // Scanner passes strategyIndex: 0, 1, 2 for first 3 stocks
+    // Slot numbers are 1-indexed: slot1, slot2, slot3
+    const strategyIndex = (config as any).config?.strategyIndex ?? 0;
+    const slotNumber = strategyIndex + 1;
     this.BOLLINGER_DATA_FILE = path.join(__dirname, `../../data/bollinger-slot${slotNumber}.json`);
     this.logger.info(`📁 Slot ${slotNumber}: Using data file ${this.BOLLINGER_DATA_FILE}`);
     
@@ -215,7 +216,7 @@ export class BollingerBandStrategy extends StrategyBase {
       
       if (fs.existsSync(this.BOLLINGER_DATA_FILE)) {
         const data = JSON.parse(fs.readFileSync(this.BOLLINGER_DATA_FILE, 'utf8'));
-        this.currentCapital = data.capital || 200000;
+        this.currentCapital = data.capital || this.INITIAL_CAPITAL;
         this.tradeHistory = data.tradeHistory || [];
         
         // P0: Check for persisted active position and recover it
@@ -236,7 +237,7 @@ export class BollingerBandStrategy extends StrategyBase {
       }
     } catch (error) {
       this.logger.error('Error loading Bollinger Band capital data:', error);
-      this.currentCapital = 200000; // Fallback to initial capital
+      this.currentCapital = this.INITIAL_CAPITAL; // Fallback to initial capital
     }
   }
 
@@ -736,7 +737,7 @@ export class BollingerBandStrategy extends StrategyBase {
       tradeStats: this.getTradingStats(), // Pre-calculated comprehensive stats
       // Custom strategy status
       currentLots: this.calculateLots(), // Dynamic lot size based on current capital
-      capitalAllocation: this.CAPITAL_ALLOCATION,
+      capitalAllocation: this.INITIAL_CAPITAL,
       currentCapital: this.currentCapital, // Current capital amount
       totalTrades: this.tradeHistory.length, // Total completed trades
       indicators: this.currentIndicators,
@@ -3679,7 +3680,7 @@ export class BollingerBandStrategy extends StrategyBase {
    * Single source of truth: currentCapital
    */
   private getTotalPnL(): number {
-    return this.currentCapital - 200000; // Initial capital
+    return this.currentCapital - this.INITIAL_CAPITAL;
   }
 
   /**
@@ -3688,7 +3689,7 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   private validateCapitalConsistency(): { valid: boolean; difference: number } {
     try {
-      const calculatedCapital = 200000 + this.tradeHistory.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
+      const calculatedCapital = this.INITIAL_CAPITAL + this.tradeHistory.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
       const diff = Math.abs(this.currentCapital - calculatedCapital);
       
       if (diff > 1) { // Allow ₹1 for rounding errors
@@ -3697,7 +3698,7 @@ export class BollingerBandStrategy extends StrategyBase {
           calculatedFromHistory: calculatedCapital.toFixed(2),
           difference: diff.toFixed(2),
           totalTrades: this.tradeHistory.length,
-          initialCapital: 200000,
+          initialCapital: this.INITIAL_CAPITAL,
           totalPnLFromTrades: this.tradeHistory.reduce((sum, trade) => sum + (trade.pnl || 0), 0).toFixed(2)
         });
         return { valid: false, difference: diff };
@@ -3746,7 +3747,7 @@ export class BollingerBandStrategy extends StrategyBase {
     const profitFactor = Math.abs(avgLoss) > 0 ? 
       Math.abs(avgWin * winningTrades.length) / Math.abs(avgLoss * losingTrades.length) : 0;
     
-    const initialCapital = this.CAPITAL_ALLOCATION;
+    const initialCapital = this.INITIAL_CAPITAL;
     const roi = initialCapital > 0 ? ((totalPnL / initialCapital) * 100) : 0;
     
     return {
@@ -3761,8 +3762,8 @@ export class BollingerBandStrategy extends StrategyBase {
       profitFactor: profitFactor.toFixed(2),
       roi: roi.toFixed(2),
       currentCapital: this.currentCapital.toFixed(2),
-      capitalChange: (this.currentCapital - 200000).toFixed(2),
-      capitalChangePercent: ((this.currentCapital - 200000) / 200000 * 100).toFixed(2)
+      capitalChange: (this.currentCapital - this.INITIAL_CAPITAL).toFixed(2),
+      capitalChangePercent: ((this.currentCapital - this.INITIAL_CAPITAL) / this.INITIAL_CAPITAL * 100).toFixed(2)
     };
   }
 
