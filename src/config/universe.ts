@@ -1,6 +1,6 @@
 /**
  * AUTO-GENERATED UNIVERSE CONFIG
- * Generated on: 2026-01-26T10:54:18.851Z
+ * Generated on: 2026-01-26T19:10:01.917Z
  * Source: Zerodha Public Instruments List
  * 
  * ⚠️ DO NOT EDIT MANUALLY

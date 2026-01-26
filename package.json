@@ -10,6 +10,7 @@
     "watch": "tsc -w",
     "clean": "rimraf dist",
     "generate-universe": "ts-node scripts/generate-universe.ts",
+    "update-data": "ts-node scripts/create-instruments-cache.ts",
     "test": "jest",
     "test:watch": "jest --watch"
   },
