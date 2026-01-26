@@ -1,67 +1,57 @@
-# NIFTY Futures Trading Bot 🚀
+# Multi-Stock Trading Bot 🚀
 
-> **🎉 PRODUCTION READY**: Enterprise-grade Node.js TypeScript trading bot for automated NIFTY futures trading. Comprehensive QC validated with all critical systems operational.
+> **🎯 MULTI-STRATEGY SYSTEM**: Professional Node.js TypeScript trading bot for automated trading using Zerodha's KiteConnect API with Bollinger Band strategy and multi-stock support.
 
-A professional algorithmic trading system using Zerodha's KiteConnect API with real-time breakout detection, enterprise-grade state persistence, and comprehensive risk management.
+A professional algorithmic trading system built with clean architecture, comprehensive state persistence, and ready for multi-stock momentum-based trading.
 
-## Callback URL:https://98.70.40.23/auth/callback
+## Callback URL: https://98.70.40.23/auth/callback
 
 ## Local URL: http://localhost:3000/auth/callback
 
 ## ✨ Production Features
 
-- **🎯 Professional Strategy**: NIFTY Breakout-Retracement with 15,15 pivot detection algorithm
-- **⚡ Real-Time Processing**: 1-second manual polling with circuit breaker protection
+- **📊 Bollinger Band Strategy**: 5-minute timeframe with 20-period bands and 2.0 standard deviation
+- **🎯 Multi-Stock Ready**: Architecture supports trading multiple instruments simultaneously
 - **🔒 Enterprise Security**: AES-256 encrypted session and state persistence
-- **📊 Volume Analytics**: Accurate per-minute volume calculation with SMA50 confirmation
-- **🛡️ Risk Management**: Atomic state transitions prevent race conditions
-- **🎮 Beautiful Dashboard**: Professional web UI with real-time monitoring
+- **🏗️ Strategy Manager**: Clean architecture with StrategyBase inheritance pattern
+- **🎮 Beautiful Dashboard**: Professional multi-strategy web UI with real-time monitoring
 - **📈 Trade Execution**: Full integration with paper and live trading modes
 - **🔍 Production Monitoring**: Winston logging with health metrics and alerting
 - **💾 State Persistence**: Zero-downtime restarts with complete state recovery
-- **🏗️ Professional Architecture**: Clean separation of concerns with enterprise patterns
+- **🏢 Professional Architecture**: Clean separation of concerns with enterprise patterns
 
 ## 📊 Strategy Overview
 
-### NIFTY Breakout Retracement Strategy
+### Bollinger Band Strategy
 
-The bot implements a professional momentum-based trading system:
+The bot implements a momentum-based mean-reversion trading system:
 
-- **Market**: NIFTY futures (current month contract auto-detection)
-- **Signal Generation**: Breakouts above pivot highs or below pivot lows
-- **Volume Confirmation**: Accurate per-minute volume calculation with SMA50 validation
-- **Memory Optimized**: Maintains exactly 50 latest 1-minute candles with automatic cleanup
-- **Real-time Processing**: 1-second price updates with professional breakout detection
+- **Market**: NIFTY futures and Bank NIFTY (expandable to any instruments)
+- **Timeframe**: 5-minute candles
+- **Signal Generation**: Price breakouts beyond Bollinger Bands
+- **Parameters**: 20-period SMA with 2.0 standard deviation bands
+- **Position Management**: Trailing stop-loss with configurable risk-reward ratios
+- **Risk Management**: Per-trade risk limits and position sizing
 
-## 🎉 **PRODUCTION STATUS**
+## 🎯 **PROJECT STATUS**
 
-> **✅ READY FOR LIVE TRADING**: Comprehensive end-to-end QC completed on October 3, 2025
+> **✅ READY FOR EXPANSION**: Clean codebase with Bollinger strategy operational, prepared for multi-stock momentum scanner
 
-### **Key Bug Fixes Completed**:
+### **Recent Cleanup**:
 
-- ✅ **Volume Calculation**: Fixed incremental vs cumulative volume bug
-- ✅ **State Persistence**: Enterprise-grade encrypted persistence system
-- ✅ **Memory Management**: Proper candle cleanup prevents memory leaks
-- ✅ **Race Conditions**: Atomic state transitions with proper locking
-- ✅ **Error Recovery**: Circuit breakers and comprehensive error handling
-- ✅ **Capital Constraint**: Fixed "Trade cost exceeds available capital" errors with dual-constraint position sizing
+- ✅ **Removed Breakout Strategy**: Cleaned up all breakout-pullback strategy code
+- ✅ **Streamlined Architecture**: Focused on Bollinger Band strategy only
+- ✅ **Multi-Strategy Framework**: StrategyManager ready for additional strategies
+- ✅ **Clean Documentation**: Updated all references to reflect current system
 
-**📚 For detailed strategy implementation, algorithm specifics, and debugging guide, see [STRATEGY-DOCUMENTATION.md](./STRATEGY-DOCUMENTATION.md)**
+## 🚀 **FUTURE ROADMAP**
 
-## 🚀 **RECENT ENHANCEMENTS** (October 2025)
+### **Planned Enhancements**:
 
-### **Strategy Improvements**:
-
-- ✅ **Premium-Based Option Selection**: Changed from ATM to 1% of NIFTY futures price for better liquidity
-- ✅ **Optimized Marking Candle System**: Reduced maximum updates from 3 to 2 for faster execution
-- ✅ **Enhanced UI Dashboard**: New V2 dashboard with clean, focused layout and removed redundancy
-- ✅ **Capital-Constrained Position Sizing**: Dual-constraint algorithm prevents trade cost exceeding capital errors
-
-### **UI/UX Improvements**:
-
-- 🎨 **Modern Dashboard**: New breakout-strategy-v2 with streamlined sections
-- 📊 **Better Information Architecture**: Consolidated redundant sections, improved flow
-- 🧹 **Clean Layout**: Removed duplicate market data, trading mode, and position displays
+- 🔜 **Momentum Scanner**: Market-open stock scanning for high-momentum opportunities
+- 🔜 **Multi-Stock Trading**: Run Bollinger strategy on multiple stocks simultaneously
+- 🔜 **Advanced Risk Management**: Per-strategy and global risk controls
+- 🔜 **Performance Analytics**: Comprehensive P&L tracking and reporting
 
 ## Prerequisites
 
@@ -268,18 +258,15 @@ npm start
 **Common Issues:**
 
 1. **"Invalid api_key or access_token" Error**
-
    - **Cause**: Not authenticated or token expired
    - **Solution**: Re-authenticate via `/auth/login`
 
 2. **Strategy Not Starting**
-
    - **Cause**: Bot not authenticated with Zerodha
    - **Solution**: Complete daily authentication first
    - **Check**: Verify auth status at `/auth/status`
 
 3. **No Pivot Detection**
-
    - **Cause**: Insufficient historical data
    - **Solution**: Wait for 31+ candles (2.5+ hours of data)
    - **Note**: Pivot detection requires 15,15 lookback (31 candles minimum)

@@ -185,10 +185,6 @@ class TradingBot {
       const isValidAuthentication = await this.authService.isAuthenticatedAndValid();
       const sessionData = this.authService.getSessionData();
       
-      // Get active strategies from StrategyRegistry
-      const activeStrategies = Array.from(StrategyRegistry.getAllInstances().values());
-      const scannerResult = await this.strategyManager.getLastScannerResults();
-      
       const htmlResponse = `
 <!DOCTYPE html>
 <html lang="en">
@@ -205,8 +201,8 @@ class TradingBot {
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', sans-serif;
-            background: #f5f7fa;
-            color: #1a202c;
+            background: #0f172a;
+            color: #e2e8f0;
             min-height: 100vh;
             padding: 20px;
         }
@@ -218,13 +214,12 @@ class TradingBot {
         
         /* Header */
         .header {
-            background: white;
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
             border-radius: 16px;
             padding: 32px;
             margin-bottom: 24px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-            border: 1px solid #e2e8f0;
-            border-left: 4px solid #3b82f6;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border: 1px solid #334155;
         }
         
         .header-top {
@@ -247,12 +242,12 @@ class TradingBot {
         h1 {
             font-size: 2rem;
             font-weight: 700;
-            color: #1a202c;
+            color: #f1f5f9;
             margin-bottom: 4px;
         }
         
         .subtitle {
-            color: #64748b;
+            color: #94a3b8;
             font-size: 0.95rem;
         }
         
@@ -309,7 +304,7 @@ class TradingBot {
         }
         
         .auth-info strong {
-            color: #1a202c;
+            color: #f1f5f9;
             font-weight: 600;
         }
         
@@ -322,8 +317,8 @@ class TradingBot {
         }
         
         .stat-card {
-            background: white;
-            border: 1px solid #e2e8f0;
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            border: 1px solid #334155;
             border-radius: 12px;
             padding: 20px;
             transition: transform 0.2s, box-shadow 0.2s;
@@ -331,7 +326,7 @@ class TradingBot {
         
         .stat-card:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
         }
         
         .stat-header {
@@ -346,7 +341,7 @@ class TradingBot {
         }
         
         .stat-label {
-            color: #64748b;
+            color: #94a3b8;
             font-size: 0.85rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
@@ -355,7 +350,7 @@ class TradingBot {
         .stat-value {
             font-size: 2rem;
             font-weight: 700;
-            color: #1a202c;
+            color: #f1f5f9;
             margin-bottom: 4px;
         }
         
@@ -366,8 +361,8 @@ class TradingBot {
         
         /* Scanner Section */
         .scanner-section {
-            background: white;
-            border: 1px solid #e2e8f0;
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            border: 1px solid #334155;
             border-radius: 12px;
             padding: 24px;
             margin-bottom: 24px;
@@ -379,13 +374,13 @@ class TradingBot {
             align-items: center;
             margin-bottom: 20px;
             padding-bottom: 16px;
-            border-bottom: 1px solid #e2e8f0;
+            border-bottom: 1px solid #334155;
         }
         
         .section-title {
             font-size: 1.25rem;
             font-weight: 600;
-            color: #1a202c;
+            color: #f1f5f9;
             display: flex;
             align-items: center;
             gap: 10px;
@@ -417,7 +412,7 @@ class TradingBot {
         
         .timeline-item {
             padding: 16px;
-            background: #f8fafc;
+            background: rgba(15, 23, 42, 0.6);
             border-radius: 8px;
             border-left: 3px solid;
         }
@@ -433,12 +428,12 @@ class TradingBot {
         .timeline-time {
             font-size: 1.1rem;
             font-weight: 600;
-            color: #1a202c;
+            color: #f1f5f9;
             margin-bottom: 4px;
         }
         
         .timeline-label {
-            color: #64748b;
+            color: #94a3b8;
             font-size: 0.85rem;
         }
         
@@ -454,8 +449,8 @@ class TradingBot {
         }
         
         .strategy-card {
-            background: white;
-            border: 1px solid #e2e8f0;
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            border: 1px solid #334155;
             border-radius: 12px;
             padding: 20px;
             transition: transform 0.2s, box-shadow 0.2s;
@@ -463,7 +458,7 @@ class TradingBot {
         
         .strategy-card:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
         }
         
         .strategy-header {
@@ -476,7 +471,7 @@ class TradingBot {
         .strategy-title {
             font-size: 1.1rem;
             font-weight: 600;
-            color: #1a202c;
+            color: #f1f5f9;
             margin-bottom: 4px;
         }
         
@@ -511,12 +506,12 @@ class TradingBot {
         
         .metric {
             padding: 12px;
-            background: #f8fafc;
+            background: rgba(15, 23, 42, 0.6);
             border-radius: 8px;
         }
         
         .metric-label {
-            color: #64748b;
+            color: #94a3b8;
             font-size: 0.75rem;
             margin-bottom: 4px;
         }
@@ -524,7 +519,7 @@ class TradingBot {
         .metric-value {
             font-size: 1.1rem;
             font-weight: 600;
-            color: #1a202c;
+            color: #f1f5f9;
         }
         
         .metric-value.positive {
@@ -565,14 +560,14 @@ class TradingBot {
         }
         
         .btn-secondary {
-            background: #f8fafc;
-            color: #475569;
-            border: 1px solid #e2e8f0;
+            background: rgba(100, 116, 139, 0.2);
+            color: #94a3b8;
+            border: 1px solid #334155;
         }
         
         .btn-secondary:hover {
-            background: #f1f5f9;
-            color: #334155;
+            background: rgba(100, 116, 139, 0.3);
+            color: #cbd5e1;
         }
         
         .btn-success {
@@ -583,95 +578,6 @@ class TradingBot {
         .btn-danger {
             background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
             color: white;
-        }
-        
-        /* Scanner Results Cards */
-        .scanner-results {
-            margin: 24px 0;
-            padding: 24px;
-            background: white;
-            border-radius: 12px;
-            border: 2px solid #10b981;
-        }
-        
-        .scanner-results-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 16px;
-            margin-top: 16px;
-        }
-        
-        .result-card {
-            position: relative;
-            padding: 20px;
-            background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%);
-            border: 2px solid #86efac;
-            border-radius: 12px;
-            transition: all 0.3s;
-        }
-        
-        .result-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(16, 185, 129, 0.2);
-        }
-        
-        .rank-badge {
-            position: absolute;
-            top: -10px;
-            right: -10px;
-            background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
-            color: white;
-            font-weight: 700;
-            font-size: 1.1rem;
-            padding: 8px 16px;
-            border-radius: 20px;
-            box-shadow: 0 4px 12px rgba(251, 191, 36, 0.4);
-        }
-        
-        .result-symbol {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #1a202c;
-            margin-bottom: 8px;
-        }
-        
-        .result-score {
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: #10b981;
-            margin-bottom: 8px;
-        }
-        
-        .result-bias {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: 0.875rem;
-            margin-bottom: 8px;
-        }
-        
-        .bias-long {
-            background: #dcfce7;
-            color: #166534;
-        }
-        
-        .bias-short {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-        
-        .result-sector {
-            font-size: 0.875rem;
-            color: #6366f1;
-            margin-bottom: 8px;
-            font-weight: 500;
-        }
-        
-        .result-breakdown {
-            font-size: 0.75rem;
-            color: #64748b;
-            font-family: 'Courier New', monospace;
         }
         
         /* Footer */
@@ -736,19 +642,11 @@ class TradingBot {
             <div class="stat-card">
                 <div class="stat-header">
                     <span class="stat-icon">🎯</span>
-                    <span class="badge ${scannerResult ? 'active' : 'scheduled'}">
-                        ${scannerResult ? 'Complete' : '09:30 AM'}
-                    </span>
+                    <span class="badge scheduled">09:30 AM</span>
                 </div>
                 <div class="stat-label">Scanner Status</div>
-                <div class="stat-value" id="scannerStatus">
-                    ${scannerResult ? `${scannerResult.selected.length}/3 Selected` : 'Scheduled'}
-                </div>
-                <div class="stat-subtext">
-                    ${scannerResult 
-                        ? `Last scan: ${new Date(scannerResult.scanTime).toLocaleTimeString()}` 
-                        : 'Daily market-open execution'}
-                </div>
+                <div class="stat-value" id="scannerStatus">Scheduled</div>
+                <div class="stat-subtext">Daily market-open execution</div>
             </div>
             
             <div class="stat-card">
@@ -776,35 +674,7 @@ class TradingBot {
                 <div class="section-title">
                     <span>⏰</span> Daily Scanner Timeline
                 </div>
-                <div class="scanner-actions">
-                    <button onclick="runScanner()" class="btn btn-primary">🔍 Run Scanner Now</button>
-                    <a href="/scanner-results" class="btn btn-secondary">📊 View Detailed Results</a>
-                </div>
             </div>
-            
-            ${scannerResult && scannerResult.selected.length > 0 ? `
-            <div class="scanner-results">
-                <h3 style="margin-bottom: 16px; color: #1a202c;">🏆 Top 3 Selected Stocks</h3>
-                <div class="scanner-results-grid">
-                    ${scannerResult.selected.map((stock: any, index: number) => `
-                    <div class="result-card">
-                        <div class="rank-badge">#${index + 1}</div>
-                        <div class="result-symbol">${stock.symbol}</div>
-                        <div class="result-score">Score: ${stock.score.toFixed(1)}/10</div>
-                        <div class="result-bias ${stock.bias === 'LONG' ? 'bias-long' : 'bias-short'}">${stock.bias}</div>
-                        <div class="result-sector">${stock.sector}</div>
-                        <div class="result-breakdown">
-                            T:${stock.breakdown.trend.toFixed(1)} | 
-                            M:${stock.breakdown.momentum.toFixed(1)} | 
-                            V:${stock.breakdown.volume.toFixed(1)} | 
-                            S:${stock.breakdown.sector.toFixed(1)}
-                        </div>
-                    </div>
-                    `).join('')}
-                </div>
-            </div>
-            ` : ''}
-            
             <div class="scanner-timeline">
                 <div class="timeline-item upcoming">
                     <div class="timeline-time">09:00 AM</div>
@@ -824,7 +694,7 @@ class TradingBot {
         <div class="strategies-section">
             <div class="section-header">
                 <div class="section-title">
-                    <span>📈</span> Active Strategies ${activeStrategies.length > 0 ? `(${activeStrategies.length})` : ''}
+                    <span>📈</span> Active Strategies
                 </div>
                 <div>
                     <a href="/strategies" class="btn btn-primary" style="flex: 0 0 auto;">View All Strategies</a>
@@ -832,43 +702,36 @@ class TradingBot {
             </div>
             
             <div class="strategies-grid">
-                ${activeStrategies.length > 0 ? activeStrategies.map((strategy: any) => `
-                <div class="strategy-card" style="border: 2px solid #10b981; background: white;">
+                <div class="strategy-card">
                     <div class="strategy-header">
                         <div>
-                            <div class="strategy-title">🎯 ${strategy.config?.instruments?.[0] || strategy.config?.symbol || 'Unknown'}</div>
-                            <div class="strategy-subtitle">${strategy.config?.name || strategy.config?.id || 'Strategy'}</div>
-                            ${scannerResult && scannerResult.selected ? 
-                                scannerResult.selected.find((s: any) => s.symbol === (strategy.config?.instruments?.[0] || strategy.config?.symbol)) ? 
-                                `<div style="margin-top: 4px; color: #6366f1; font-size: 0.875rem;">
-                                    Score: ${scannerResult.selected.find((s: any) => s.symbol === (strategy.config?.instruments?.[0] || strategy.config?.symbol))?.score.toFixed(1)} | 
-                                    ${scannerResult.selected.find((s: any) => s.symbol === (strategy.config?.instruments?.[0] || strategy.config?.symbol))?.bias}
-                                </div>` : '' : ''}
+                            <div class="strategy-title">Manual NIFTY Strategy</div>
+                            <div class="strategy-subtitle">Bollinger Band • 5min timeframe</div>
                         </div>
-                        <span class="status-badge active">Active</span>
+                        <span class="status-badge stopped">IDLE</span>
                     </div>
                     <div class="strategy-metrics">
                         <div class="metric">
-                            <div class="metric-label">Status</div>
-                            <div class="metric-value">${(strategy as any).currentPosition ? '📊 In Position' : '🔍 Monitoring'}</div>
+                            <div class="metric-label">Instrument</div>
+                            <div class="metric-value">NIFTY50</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-label">Capital</div>
-                            <div class="metric-value">₹${(strategy.config?.config?.capitalAllocation || strategy.config?.capital || 65000).toLocaleString()}</div>
+                            <div class="metric-label">Mode</div>
+                            <div class="metric-value">Manual</div>
                         </div>
                     </div>
                     <div class="strategy-actions">
-                        <a href="/strategy/${strategy.config?.id}" class="btn btn-secondary">View Details</a>
+                        <a href="/strategy/bollinger-band-01" class="btn btn-primary">View Details</a>
                     </div>
                 </div>
-                `).join('') : `
-                <div class="strategy-card" style="border: 2px solid #3b82f6; background: white;">
+
+                <div class="strategy-card" style="border: 2px solid rgba(59, 130, 246, 0.5);">
                     <div class="strategy-header">
                         <div>
                             <div class="strategy-title">🤖 Scanner-Deployed Strategies</div>
                             <div class="strategy-subtitle">Auto-deployed at 09:30 AM daily</div>
                         </div>
-                        <span class="status-badge scheduled">Awaiting Scan</span>
+                        <span class="status-badge scheduled">Scheduled</span>
                     </div>
                     <div class="strategy-metrics">
                         <div class="metric">
@@ -884,7 +747,6 @@ class TradingBot {
                         <button class="btn btn-secondary" disabled>Awaiting Scanner</button>
                     </div>
                 </div>
-                `}
             </div>
         </div>
 
@@ -928,29 +790,6 @@ class TradingBot {
             <p style="margin-top: 8px;">100-Stock Universe • Bollinger Band Strategy • Daily 09:30 AM Execution</p>
         </div>
     </div>
-    <script>
-        async function runScanner() {
-            const btn = event.target;
-            btn.disabled = true;
-            btn.textContent = '⏳ Running Scanner...';
-            
-            try {
-                const response = await fetch('/api/scanner/run', { method: 'POST' });
-                if (response.ok) {
-                    window.location.href = '/scanner-results';
-                } else {
-                    const data = await response.json();
-                    alert('Scanner Error: ' + (data.message || 'Failed to run scanner'));
-                    btn.disabled = false;
-                    btn.textContent = '🔍 Run Scanner Now';
-                }
-            } catch (error) {
-                alert('Error: ' + error.message);
-                btn.disabled = false;
-                btn.textContent = '🔍 Run Scanner Now';
-            }
-        }
-    </script>
 </body>
 </html>
       `;

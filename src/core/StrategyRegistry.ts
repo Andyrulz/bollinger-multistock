@@ -1,8 +1,10 @@
 import { StrategyBase, StrategyConfig } from './StrategyBase';
 import { Logger } from '../utils/Logger';
+import { QuoteManager } from '../services/QuoteManager';
+import { InstrumentCache } from '../utils/InstrumentCache';
 
 export interface StrategyConstructor {
-  new (kiteConnect: any, logger: Logger, config: StrategyConfig): StrategyBase;
+  new (kiteConnect: any, logger: Logger, quoteManager: QuoteManager, instrumentCache: InstrumentCache, config: StrategyConfig): StrategyBase;
 }
 
 /**
@@ -33,7 +35,9 @@ export class StrategyRegistry {
   public static async createInstance(
     id: string, 
     kiteConnect: any, 
-    logger: Logger, 
+    logger: Logger,
+    quoteManager: QuoteManager,
+    instrumentCache: InstrumentCache,
     config: StrategyConfig
   ): Promise<StrategyBase> {
     const StrategyClass = this.strategies.get(id);
@@ -47,7 +51,7 @@ export class StrategyRegistry {
     }
 
     try {
-      const instance = new StrategyClass(kiteConnect, logger, config);
+      const instance = new StrategyClass(kiteConnect, logger, quoteManager, instrumentCache, config);
       
       // Check if we have authentication before initializing
       // KiteConnect stores access token as a property, not via getter method

@@ -1,5 +1,7 @@
 import * as path from 'path';
 import { Logger } from '../../utils/Logger';
+import { InstrumentCache } from '../../utils/InstrumentCache';
+import { QuoteManager } from '../../services/QuoteManager';
 import { StrategyBase, StrategyConfig, StrategyStatus } from '../../core/StrategyBase';
 
 /**
@@ -71,27 +73,99 @@ interface Position {
 
 export class BollingerBandStrategy extends StrategyBase {
   
-  // Configuration constants
-  private readonly CAPITAL_ALLOCATION = 200000;
+  // Quote Manager for centralized polling
+  private quoteManager: QuoteManager;
+  
+  // Instrument Cache for NFO instruments
+  private instrumentCache: InstrumentCache;
+  
+  // Configuration constants - NOTE: This is a fallback default, actual value comes from scanner's capitalAllocation
+  private readonly CAPITAL_ALLOCATION = 65000;
   
   /**
-   * Calculate dynamic lot size based on current capital
-   * Formula: 1 lot per 40,000 of capital (rounded down)
-   * Minimum: 1 lot (even if capital < 40,000)
+   * Calculate quantity with a conservative "Drawdown Buffer".
+   * Never uses 100% of capital to ensure longevity during losing streaks.
    * 
-   * @returns Number of lots to trade
+   * Formula: lots = floor((capital × 0.75) / (premium × lotSize))
+   * - Uses only 75% of capital (25% buffer for drawdowns)
+   * - Hard cap of 10 lots for liquidity protection
+   * 
+   * @param premium - Current option premium price
+   * @param lotSize - Lot size for the instrument (from NFO)
+   * @returns Number of lots to trade (0 if insufficient capital)
    */
-  private calculateLots(): number {
-    const lotsPerCapital = Math.floor(this.currentCapital / 40000);
-    const lots = Math.max(1, lotsPerCapital); // Minimum 1 lot
+  private calculateQuantity(premium: number, lotSize: number): number {
+    // 1. Get allocated capital (e.g., ₹65,000)
+    const availableCapital = this.currentCapital;
+
+    // 2. Define Conservative Utilization (Adjustable)
+    //    0.75 means we keep 25% cash free for drawdowns/emergencies
+    const UTILIZATION_FACTOR = 0.75;
+    const usableCapital = availableCapital * UTILIZATION_FACTOR;
+
+    // 3. Calculate Cost Per Lot
+    const costPerLot = premium * lotSize;
+
+    // 4. Safety Checks
+    if (costPerLot === 0 || premium === 0 || lotSize === 0) {
+      this.logger.error('[Risk Manager] Invalid premium or lot size', { premium, lotSize });
+      return 0;
+    }
     
-    this.logger.debug('[LOT CALCULATION]', {
-      currentCapital: this.currentCapital.toFixed(2),
-      calculatedLots: lotsPerCapital,
-      finalLots: lots
-    });
-    
+    if (usableCapital < costPerLot) {
+      // NEW: Minimum 1 lot override - if full capital can afford 1 lot, allow it
+      if (availableCapital >= costPerLot) {
+        this.logger.warn(
+          `[Risk Manager] Usable capital (₹${usableCapital.toFixed(0)}) < cost per lot (₹${costPerLot.toFixed(0)}), ` +
+          `but full capital (₹${availableCapital.toFixed(0)}) can afford 1 lot. Using minimum 1 lot override.`
+        );
+        return 1; // Override to allow minimum 1 lot trade
+      }
+      
+      this.logger.warn(
+        `[Risk Manager] Capital (₹${availableCapital.toFixed(0)}) too low for 1 lot (₹${costPerLot.toFixed(0)}). ` +
+        `Need minimum ₹${costPerLot.toFixed(0)} to trade. Trading paused.`
+      );
+      return 0; // Truly insufficient capital
+    }
+
+    // 5. Calculate Lots (Round down)
+    let lots = Math.floor(usableCapital / costPerLot);
+
+    // 6. Hard Cap (Liquidity Protection)
+    const MAX_LOT_CAP = 10;
+    if (lots > MAX_LOT_CAP) {
+      this.logger.info(`[Risk Manager] Capping lots from ${lots} to ${MAX_LOT_CAP} (liquidity protection)`);
+      lots = MAX_LOT_CAP;
+    }
+
+    const utilizedAmount = lots * costPerLot;
+    const bufferAmount = availableCapital - utilizedAmount;
+
+    this.logger.info(
+      `[Risk Manager] Position Sizing:\n` +
+      `  • Capital: ₹${availableCapital.toLocaleString()}\n` +
+      `  • Usable (75%): ₹${usableCapital.toFixed(0)}\n` +
+      `  • Premium: ₹${premium.toFixed(2)} × Lot Size: ${lotSize} = ₹${costPerLot.toFixed(0)}/lot\n` +
+      `  • Decision: BUY ${lots} lots\n` +
+      `  • Utilized: ₹${utilizedAmount.toFixed(0)}\n` +
+      `  • Drawdown Buffer: ₹${bufferAmount.toFixed(0)} (25% safe)`
+    );
+
     return lots;
+  }
+
+  /**
+   * Legacy method for status display - estimates lots based on typical premium
+   * Used only for dashboard display, not for actual trading
+   */
+  private calculateLotsForDisplay(): number {
+    // Estimate based on typical option premium of ₹100-150
+    const typicalPremium = 125;
+    const typicalLotSize = 500; // Average lot size
+    const usableCapital = this.currentCapital * 0.75;
+    const costPerLot = typicalPremium * typicalLotSize;
+    return Math.max(1, Math.floor(usableCapital / costPerLot));
   }
   
   // Historical data and indicators
@@ -170,9 +244,10 @@ export class BollingerBandStrategy extends StrategyBase {
   };
 
   // Capital and trade management (separate from breakout strategy)
-  private currentCapital: number = 200000; // 2 lakh initial capital
+  private currentCapital: number = 65000; // Default capital (scanner provides actual)
+  private initialCapital: number = 65000; // Track initial capital for P&L calculation
   private tradeHistory: any[] = [];
-  private readonly BOLLINGER_DATA_FILE = path.join(__dirname, '../../data/bollinger-trading-data.json');
+  private BOLLINGER_DATA_FILE: string = ''; // Set dynamically per-stock in constructor
 
   // Retry infrastructure for error recovery
   private candleRetryTimer?: NodeJS.Timeout;
@@ -188,40 +263,81 @@ export class BollingerBandStrategy extends StrategyBase {
   
   // 🔒 CRITICAL FIX: Add timeout for candle fetch operations
   private readonly CANDLE_FETCH_TIMEOUT = 45000; // 45 seconds max for API calls
+  
+  // Staggered polling offset (0, 1, 2 for multiple strategies)
+  private readonly strategyIndex: number;
 
-  constructor(kiteConnect: any, logger: Logger, config: StrategyConfig) {
+  constructor(kiteConnect: any, logger: Logger, quoteManager: QuoteManager, instrumentCache: InstrumentCache, config: StrategyConfig) {
     super(kiteConnect, logger, config);
+    this.quoteManager = quoteManager;
+    this.instrumentCache = instrumentCache;
+    this.strategyIndex = config.config?.strategyIndex ?? 0; // Default to 0 if not provided
+    
+    // Set per-SLOT data file path (slot1, slot2, slot3 based on score ranking)
+    // Capital is tracked at SLOT level, not STOCK level - so drawdowns persist across different stocks
+    const slotNumber = this.strategyIndex + 1; // 0-indexed to 1-indexed
+    this.BOLLINGER_DATA_FILE = path.join(__dirname, `../../data/bollinger-slot${slotNumber}.json`);
+    this.logger.info(`📁 Slot ${slotNumber} data file: ${this.BOLLINGER_DATA_FILE}`);
+    
+    // Override capital if scanner provided allocation
+    if (config.config.capitalAllocation) {
+      this.currentCapital = config.config.capitalAllocation;
+      this.initialCapital = config.config.capitalAllocation; // Store for P&L calculation
+      this.logger.info(`💰 Capital allocated: ₹${this.currentCapital.toLocaleString()}`);
+    }
+    
     // 🔒 CRITICAL FIX: Moved loadCapitalData() to initialize() to avoid blocking sync I/O in constructor
   }
 
   /**
    * Load capital and trade history from persistent storage
+   * Capital is tracked at SLOT level (slot1, slot2, slot3) - not per-stock
+   * This ensures drawdowns persist when different stocks are assigned to same slot
    */
   private loadCapitalData(): void {
     try {
       const fs = require('fs');
       const path = require('path');
       
+      const slotNumber = this.strategyIndex + 1;
+      const stockSymbol = this.config.config?.stockSymbol || 'unknown';
+      const scannerProvidedCapital = this.config.config?.capitalAllocation;
+      
       if (fs.existsSync(this.BOLLINGER_DATA_FILE)) {
         const data = JSON.parse(fs.readFileSync(this.BOLLINGER_DATA_FILE, 'utf8'));
-        this.currentCapital = data.capital || 200000;
+        
+        // SLOT-BASED CAPITAL: Use existing slot capital (with P&L), not fresh scanner allocation
+        // This ensures drawdowns persist across different stocks in the same slot
+        if (data.capital !== undefined) {
+          this.currentCapital = data.capital;
+          this.initialCapital = data.initialCapital || scannerProvidedCapital || 65000;
+          this.logger.info(`📊 Slot ${slotNumber}: Loaded capital ₹${this.currentCapital.toLocaleString()} (initial: ₹${this.initialCapital.toLocaleString()})`);
+          this.logger.info(`📊 Slot ${slotNumber}: Previous stock=${data.currentStock || 'none'}, Today's stock=${stockSymbol}`);
+        } else {
+          // First time for this slot - use scanner allocation
+          this.logger.info(`📊 Slot ${slotNumber}: First run, using scanner allocation ₹${this.currentCapital.toLocaleString()}`);
+        }
+        
+        // Load slot's trade history (may include trades from different stocks)
         this.tradeHistory = data.tradeHistory || [];
         
         // P0: Check for persisted active position and recover it
         if (data.activePosition) {
           this.logger.info('🔄 Found persisted active position, will recover after initialization');
-          // Will be recovered in initialize() after all services are ready
         }
         
-        this.logger.info('💰 Bollinger Band capital loaded', {
+        this.logger.info('💰 Slot capital loaded', {
+          slot: slotNumber,
+          currentStock: stockSymbol,
           capital: this.currentCapital,
           totalTrades: this.tradeHistory.length,
           hasActivePosition: !!data.activePosition
         });
       } else {
-        // Create initial data file
+        // No file exists - first time for this slot, use scanner allocation
+        this.logger.info(`💰 Slot ${slotNumber}: New slot, initializing with ₹${this.currentCapital.toLocaleString()}`);
         this.saveCapitalData();
-        this.logger.info('?? Bollinger Band capital initialized at ?2,00,000');
+      }
       }
     } catch (error) {
       this.logger.error('Error loading Bollinger Band capital data:', error);
@@ -243,10 +359,16 @@ export class BollingerBandStrategy extends StrategyBase {
         fs.mkdirSync(dataDir, { recursive: true });
       }
       
+      const slotNumber = this.strategyIndex + 1;
+      const stockSymbol = this.config.config?.stockSymbol || 'unknown';
+      
       const data = {
+        slot: slotNumber,
+        currentStock: stockSymbol, // Track which stock is currently in this slot
         capital: this.currentCapital,
-        tradeHistory: this.tradeHistory,
-        activePosition: this.currentPosition, // P0: Persist active position
+        initialCapital: this.initialCapital,
+        tradeHistory: this.tradeHistory, // Includes trades from different stocks in this slot
+        activePosition: this.currentPosition,
         lastUpdated: new Date().toISOString()
       };
       
@@ -724,8 +846,8 @@ export class BollingerBandStrategy extends StrategyBase {
       allTrades: this.getTradeHistory(), // All trades for history page
       tradeStats: this.getTradingStats(), // Pre-calculated comprehensive stats
       // Custom strategy status
-      currentLots: this.calculateLots(), // Dynamic lot size based on current capital
-      capitalAllocation: this.CAPITAL_ALLOCATION,
+      currentLots: this.calculateLotsForDisplay(), // Estimated lots for display (actual calculated at entry)
+      capitalAllocation: this.initialCapital, // Use tracked initial capital (from scanner)
       currentCapital: this.currentCapital, // Current capital amount
       totalTrades: this.tradeHistory.length, // Total completed trades
       indicators: this.currentIndicators,
@@ -779,11 +901,42 @@ export class BollingerBandStrategy extends StrategyBase {
       const quote = await this.kiteConnect.getQuote([instrumentToken.toString()]);
       const data = quote[instrumentToken.toString()];
       
+      // 🔍 QC CHECK: Log quote data structure and extraction (first 3 fetches per position)
+      if (this.currentPosition && data) {
+        const fetchCount = Math.floor((Date.now() - (this.currentPosition.entryTime?.getTime() || Date.now())) / 1000);
+        if (fetchCount <= 3) {
+          this.logger.info(`📊 [QC] getLiveOptionPremium for ${this.config.instruments[0]}:`, {
+            instrumentToken,
+            receivedKeys: Object.keys(data),
+            last_price: data.last_price,
+            last_price_type: typeof data.last_price,
+            ohlc: data.ohlc,
+            volume: data.volume,
+            timestamp: data.timestamp || data.last_trade_time,
+            positionType: this.currentPosition.type,
+            entryPrice: this.currentPosition.entryPrice,
+          });
+        }
+      }
+      
       if (data && data.last_price && data.last_price > 0) {
+        // 🔍 QC CHECK: Validate price is reasonable (not corrupted)
+        if (data.last_price > 1000) {
+          this.logger.warn(`⚠️ [QC] Unusually high option price detected: ₹${data.last_price} for token ${instrumentToken}`);
+        }
+        if (data.last_price < 0.05) {
+          this.logger.warn(`⚠️ [QC] Unusually low option price detected: ₹${data.last_price} for token ${instrumentToken}`);
+        }
+        
         return data.last_price;
       }
       
-      // No fallback needed - REST API will provide current price
+      // 🔍 QC CHECK: Log when no valid price received
+      this.logger.warn(`[QC] No valid last_price in quote data for token ${instrumentToken}`, {
+        hasData: !!data,
+        last_price: data?.last_price,
+        dataKeys: data ? Object.keys(data) : []
+      });
       
       return 0;
     } catch (error) {
@@ -1184,6 +1337,14 @@ export class BollingerBandStrategy extends StrategyBase {
   private async loadHistoricalDataWithFallback(): Promise<void> {
     this.logger.info('Loading historical data with production fallback...');
     
+    // Check if scanner provided historical data first
+    if (this.config.config.scannerData?.historicalData) {
+      this.logger.info('📊 Using pre-loaded historical data from scanner');
+      this.candleHistory = this.config.config.scannerData.historicalData;
+      this.logger.info(`✅ Loaded ${this.candleHistory.length} candles from scanner`);
+      return;
+    }
+    
     try {
       // Try normal historical data loading first
       await this.loadHistoricalData();
@@ -1522,7 +1683,7 @@ export class BollingerBandStrategy extends StrategyBase {
    * FIXED: Ensures immediate fetch at alignment + proper interval timing
    */
   private startRealTimeMonitoring(): void {
-    this.logger.info('🔄 Starting simplified 5-minute monitoring (5th minute entry only - no prediction)...');
+    this.logger.info(`🔄 Starting simplified 5-minute monitoring (polling at ${4 + this.strategyIndex}s offset for load distribution)...`);
     
     // Clear any existing timer first
     this.stopRealTimeMonitoring();
@@ -1537,8 +1698,9 @@ export class BollingerBandStrategy extends StrategyBase {
     const nextInterval = Math.ceil(currentMinutes / 5) * 5;
     const minutesUntilNext = (nextInterval === 60) ? (60 - currentMinutes) : (nextInterval - currentMinutes);
     
-    // Calculate milliseconds until X:X0:05 (5 seconds after candle close for API buffer)
-    const targetSecond = 5; // 5 seconds after candle close
+    // Calculate milliseconds until X:X0:04/05/06 (staggered by strategy index)
+    // Strategy 0: 4 seconds, Strategy 1: 5 seconds, Strategy 2: 6 seconds
+    const targetSecond = 4 + this.strategyIndex; // Staggered API load distribution
     let millisecondsUntilAlignment: number;
     
     if (minutesUntilNext === 0) {
@@ -1724,29 +1886,34 @@ export class BollingerBandStrategy extends StrategyBase {
    * Start health monitoring with periodic status reports
    */
   private startHealthMonitoring(): void {
-    // Report health status every 5 minutes
-    setInterval(() => {
-      this.healthStatus.lastHeartbeat = new Date();
-      const healthReport = this.getHealthReport();
+    // Add strategy-specific offset (20 seconds per strategy index) for staggered health reports
+    const healthOffset = this.strategyIndex * 20 * 1000; // 0s, 20s, 40s for 3 strategies
+    
+    setTimeout(() => {
+      // Report health status every 5 minutes
+      setInterval(() => {
+        this.healthStatus.lastHeartbeat = new Date();
+        const healthReport = this.getHealthReport();
+        
+        if (!healthReport.overall) {
+          this.logger.warn('💊 STRATEGY HEALTH REPORT (UNHEALTHY):', healthReport);
+        } else {
+          this.logger.info('💚 Strategy health: OK', {
+            consecutiveErrors: healthReport.consecutiveErrors,
+            timeSinceHeartbeat: healthReport.timeSinceHeartbeat,
+            candleCount: healthReport.candleHistoryLength
+          });
+        }
       
-      if (!healthReport.overall) {
-        this.logger.warn('💊 STRATEGY HEALTH REPORT (UNHEALTHY):', healthReport);
-      } else {
-        this.logger.info('💚 Strategy health: OK', {
-          consecutiveErrors: healthReport.consecutiveErrors,
-          timeSinceHeartbeat: healthReport.timeSinceHeartbeat,
-          candleCount: healthReport.candleHistoryLength
-        });
-      }
-      
-      // Reset daily error counts at market open (9:15 AM)
-      const now = new Date();
-      if (now.getHours() === 9 && now.getMinutes() === 15) {
-        this.healthStatus.criticalErrorsToday = 0;
-        this.errorCounts.clear();
-        this.logger.info('🔄 Daily error counts reset');
-      }
-    }, 5 * 60 * 1000); // Every 5 minutes
+        // Reset daily error counts at market open (9:15 AM)
+        const now = new Date();
+        if (now.getHours() === 9 && now.getMinutes() === 15) {
+          this.healthStatus.criticalErrorsToday = 0;
+          this.errorCounts.clear();
+          this.logger.info('🔄 Daily error counts reset');
+        }
+      }, 5 * 60 * 1000); // Every 5 minutes
+    }, healthOffset);
   }
 
   /**
@@ -1959,6 +2126,12 @@ export class BollingerBandStrategy extends StrategyBase {
         // Get current premium via REST API
         const currentPremium = await this.getLiveOptionPremium(instrumentToken);
         
+        // 🔍 QC CHECK: Log price data usage for exit logic (every 10th poll)
+        const pollsSinceEntry = Math.floor((Date.now() - (this.currentPosition?.entryTime?.getTime() || Date.now())) / 1000);
+        if (pollsSinceEntry % 10 === 0 && this.currentPosition) {
+          this.logger.debug(`[QC] Poll #${pollsSinceEntry}: Current=₹${currentPremium.toFixed(2)}, Entry=₹${this.currentPosition.entryPrice.toFixed(2)}, Diff=${(currentPremium - this.currentPosition.entryPrice).toFixed(2)}, SL=${this.currentPosition.trailingSL?.toFixed(2) || 'N/A'}`);
+        }
+        
         if (currentPremium > 0) {
           // Update cached position state for dashboard display
           this.cachedCurrentPrice = currentPremium;
@@ -1967,7 +2140,7 @@ export class BollingerBandStrategy extends StrategyBase {
           // Since we always BUY options (CE or PE), profit when price goes up
           if (this.currentPosition) {
             const priceDiff = currentPremium - this.currentPosition.entryPrice;
-            this.cachedUnrealizedPnL = priceDiff * this.currentPosition.quantity;
+            this.cachedUnrealizedPnL = priceDiff * this.currentPosition.quantity * this.currentPosition.instrument.lot_size;
             this.lastPriceUpdateTime = new Date();
             
             // ✅ Log recovery details if disruption was detected
@@ -2331,15 +2504,16 @@ export class BollingerBandStrategy extends StrategyBase {
         pp: pp.toFixed(2)
       });
       
-      // Block SHORT entries after 2:55 PM (except Fridays)
-      const shortCutoffTime = 14 * 60 + 55;  // 2:55 PM in minutes
+      // Block SHORT entries after 3:10 PM (except Fridays)
+      // Extended from 2:55 PM to capture "3 PM Move" phenomenon
+      const shortCutoffTime = 15 * 60 + 10;  // 3:10 PM in minutes
       const isFriday = now.getDay() === 5;   // Friday = 5 (0=Sunday, 1=Monday, ..., 5=Friday)
       
       if (currentMinutes > shortCutoffTime && !isFriday) {
-        this.logger.warn('[BOLLINGER] 🚫 SHORT entry blocked - After 2:55 PM (non-Friday)', {
+        this.logger.warn('[BOLLINGER] 🚫 SHORT entry blocked - After 3:10 PM (non-Friday)', {
           currentTime: now.toLocaleTimeString(),
           dayOfWeek: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()],
-          cutoffTime: '2:55 PM',
+          cutoffTime: '3:10 PM',
           reason: 'Late-day SHORT restriction active'
         });
         return;  // Skip SHORT entry
@@ -2367,6 +2541,12 @@ export class BollingerBandStrategy extends StrategyBase {
    * Execute LONG entry with CE option selection
    */
   private async executeLongEntry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+    // Scanner bias enforcement - check if scanner enforced SHORT-only
+    if (this.config.config.scannerData?.bias === 'SHORT') {
+      this.logger.debug('🚫 LONG entry blocked: Scanner bias is SHORT');
+      return;
+    }
+    
     // Position overlap protection - ensure no existing position
     if (this.currentPosition !== null) {
       this.logger.warn('Skipping LONG entry - position already exists', {
@@ -2397,16 +2577,23 @@ export class BollingerBandStrategy extends StrategyBase {
         return;
       }
 
-      this.logger.info('?? CE Option selected for LONG entry', {
+      this.logger.info('📊 CE Option selected for LONG entry', {
         symbol: ceOption.tradingsymbol,
         premium: ceOption.last_price,
+        lotSize: ceOption.lot_size,
         target: targetPremium.toFixed(2),
         niftyPrice: nifty50Price.toFixed(2),
         timestamp: new Date().toLocaleTimeString()
       });
       
-      // Calculate dynamic lot size based on current capital
-      const lots = this.calculateLots();
+      // Calculate quantity using conservative position sizing (75% capital utilization)
+      const lots = this.calculateQuantity(ceOption.last_price, ceOption.lot_size);
+      
+      // Safety check: Abort if insufficient capital
+      if (lots === 0) {
+        this.logger.error('❌ LONG entry aborted: Insufficient capital for even 1 lot');
+        return;
+      }
       
       // Option already validated above - proceed with entry
       this.logger.info(`🚀 Executing LONG entry with real-time selected option: ${ceOption.tradingsymbol}`);
@@ -2480,6 +2667,12 @@ export class BollingerBandStrategy extends StrategyBase {
    * Execute SHORT entry with PE option selection
    */
   private async executeShortEntry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+    // Scanner bias enforcement - check if scanner enforced LONG-only
+    if (this.config.config.scannerData?.bias === 'LONG') {
+      this.logger.debug('🚫 SHORT entry blocked: Scanner bias is LONG');
+      return;
+    }
+    
     // Position overlap protection - ensure no existing position
     if (this.currentPosition !== null) {
       this.logger.warn('Skipping SHORT entry - position already exists', {
@@ -2513,17 +2706,26 @@ export class BollingerBandStrategy extends StrategyBase {
         return;
       }
 
-      this.logger.info('?? PE Option selected for SHORT entry', {
+      this.logger.info('📊 PE Option selected for SHORT entry', {
         symbol: peOption.tradingsymbol,
         premium: peOption.last_price,
+        lotSize: peOption.lot_size,
         target: targetPremium.toFixed(2),
         niftyPrice: nifty50Price.toFixed(2),
         timestamp: new Date().toLocaleTimeString()
       });
       
+      // Calculate quantity using conservative position sizing (75% capital utilization)
+      const lots = this.calculateQuantity(peOption.last_price, peOption.lot_size);
+      
+      // Safety check: Abort if insufficient capital
+      if (lots === 0) {
+        this.logger.error('❌ SHORT entry aborted: Insufficient capital for even 1 lot');
+        return;
+      }
+      
       // Option already validated - proceed with entry
-      this.logger.info(`?? Executing SHORT entry with real-time selected option: ${peOption.tradingsymbol}`);
-      const lots = this.calculateLots();
+      this.logger.info(`📉 Executing SHORT entry with real-time selected option: ${peOption.tradingsymbol}`);
       const orderResult = await this.executeOrder('BUY', peOption, lots);
       
       if (orderResult.success) {
@@ -2959,6 +3161,14 @@ export class BollingerBandStrategy extends StrategyBase {
       // STEP 2: Calculate 12% trailing SL from highest premium
       if (this.currentPosition.highestPremium) {
         const simpleSL = this.currentPosition.highestPremium * 0.88; // 12% below highest
+        
+        // 🔍 QC CHECK: Log trailing SL calculation details
+        const premiumDrop = this.currentPosition.highestPremium - currentPremium;
+        const dropPct = (premiumDrop / this.currentPosition.highestPremium) * 100;
+        const slCushion = currentPremium - simpleSL;
+        const slCushionPct = (slCushion / currentPremium) * 100;
+        
+        this.logger.debug(`[QC] LONG Trailing SL Calc: High=₹${this.currentPosition.highestPremium.toFixed(2)}, Current=₹${currentPremium.toFixed(2)}, Drop=${dropPct.toFixed(2)}%, SL=₹${simpleSL.toFixed(2)}, Cushion=₹${slCushion.toFixed(2)} (${slCushionPct.toFixed(1)}%)`);
 
         // Only update if tighter (higher SL = tighter protection for LONG)
         if (!this.currentPosition.trailingSL || simpleSL > this.currentPosition.trailingSL) {
@@ -2981,6 +3191,24 @@ export class BollingerBandStrategy extends StrategyBase {
 
       // STEP 3: Check if trailing SL is hit
       if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
+        // 🔍 QC CHECK: Log complete exit trigger analysis
+        const slViolation = this.currentPosition.trailingSL - currentPremium;
+        const totalDrop = this.currentPosition.highestPremium! - currentPremium;
+        const totalDropPct = (totalDrop / this.currentPosition.highestPremium!) * 100;
+        const pnl = (currentPremium - this.currentPosition.entryPrice) * this.currentPosition.quantity * this.currentPosition.instrument.lot_size;
+        
+        this.logger.info('[QC] LONG EXIT TRIGGERED - Complete Analysis:', {
+          entryPrice: `₹${this.currentPosition.entryPrice.toFixed(2)}`,
+          highestPremium: `₹${(this.currentPosition.highestPremium || 0).toFixed(2)}`,
+          trailingSL: `₹${this.currentPosition.trailingSL.toFixed(2)}`,
+          currentPrice: `₹${currentPremium.toFixed(2)}`,
+          slViolation: `₹${slViolation.toFixed(2)}`,
+          totalDrop: `₹${totalDrop.toFixed(2)} (${totalDropPct.toFixed(2)}%)`,
+          estimatedPnL: `₹${pnl.toFixed(2)}`,
+          lots: this.currentPosition.quantity,
+          source: source
+        });
+        
         this.logger.info(`🔴 LONG exit signal: Trailing SL hit (${source})`, {
           currentPremium: currentPremium.toFixed(2),
           trailingSL: this.currentPosition.trailingSL.toFixed(2),
@@ -3145,13 +3373,18 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * P0: Schedule EOD safety exit at 3:28 PM
+   * P0: Schedule EOD safety exit at 3:25 PM
    * Critical fix to prevent relying on broker's MIS auto-squareoff
+   * Changed from 3:28 PM to 3:25 PM to avoid broker auto-squareoff charges
    */
   private scheduleEODExit(): void {
     const now = new Date();
     const eodTime = new Date();
-    eodTime.setHours(15, 28, 0, 0); // 3:28 PM
+    eodTime.setHours(15, 25, 0, 0); // 3:25 PM - before broker auto-squareoff
+    
+    // Add strategy-specific offset (5 seconds per strategy) to prevent simultaneous force-close API bursts
+    const strategyOffsetSeconds = this.strategyIndex * 5; // 0s, 5s, 10s for 3 strategies
+    eodTime.setSeconds(strategyOffsetSeconds);
     
     // Clear any existing timer first
     if (this.eodExitTimer) {
@@ -3159,21 +3392,22 @@ export class BollingerBandStrategy extends StrategyBase {
       delete this.eodExitTimer;
     }
     
-    // Only schedule if we haven't passed 3:28 PM today
+    // Only schedule if we haven't passed the offset EOD time today
     if (now < eodTime) {
       const delay = eodTime.getTime() - now.getTime();
-      this.logger.info(`📅 EOD safety exit scheduled for 3:28 PM (in ${Math.round(delay / 60000)} minutes)`);
+      const eodTimeStr = eodTime.toLocaleTimeString();
+      this.logger.info(`📅 EOD safety exit scheduled for ${eodTimeStr} (in ${Math.round(delay / 60000)} minutes)`);
       
       this.eodExitTimer = setTimeout(async () => {
         if (this.currentPosition) {
-          this.logger.warn('🕒 EOD safety exit triggered at 3:28 PM');
-          await this.forceClosePosition('EOD_SAFETY_EXIT_3:28PM');
+          this.logger.warn(`🕒 EOD safety exit triggered at ${eodTimeStr}`);
+          await this.forceClosePosition('EOD_SAFETY_EXIT_3:25PM');
         } else {
-          this.logger.info('✅ No active position at 3:28 PM, no EOD exit needed');
+          this.logger.info(`✅ No active position at ${eodTimeStr}, no EOD exit needed`);
         }
       }, delay);
     } else {
-      this.logger.info('⏰ Already past 3:28 PM today, no EOD exit scheduled');
+      this.logger.info('⏰ Already past EOD exit window today, no exit scheduled');
     }
   }
 
@@ -3197,14 +3431,29 @@ export class BollingerBandStrategy extends StrategyBase {
     // Clear any existing interval first
     this.stopPositionReconciliation();
     
-    // Run reconciliation every 5 minutes
-    this.positionReconciliationInterval = setInterval(async () => {
-      if (this.currentPosition) {
-        await this.reconcilePositions();
-      }
-    }, 5 * 60 * 1000); // Every 5 minutes
+    // Add strategy-specific offset (30 seconds per strategy index) + random jitter (0-10s)
+    const strategyOffset = this.strategyIndex * 30 * 1000; // 0s, 30s, 60s for 3 strategies
+    const randomJitter = Math.floor(Math.random() * 10000); // 0-10 seconds
+    const totalOffset = strategyOffset + randomJitter;
     
-    this.logger.info('✅ Position reconciliation started (checks every 5 minutes)');
+    // Start reconciliation after initial offset, then run every 5 minutes
+    setTimeout(() => {
+      // First reconciliation
+      if (this.currentPosition) {
+        this.reconcilePositions().catch(err => 
+          this.logger.error('Position reconciliation error:', err)
+        );
+      }
+      
+      // Run reconciliation every 5 minutes
+      this.positionReconciliationInterval = setInterval(async () => {
+        if (this.currentPosition) {
+          await this.reconcilePositions();
+        }
+      }, 5 * 60 * 1000); // Every 5 minutes
+    }, totalOffset);
+    
+    this.logger.info(`✅ Position reconciliation started (offset: ${Math.floor(totalOffset/1000)}s, interval: 5min)`);
   }
 
   /**
@@ -3419,11 +3668,39 @@ export class BollingerBandStrategy extends StrategyBase {
 
   /**
    * Select option instrument based on target premium
+   * Routes to stock or index option selection based on strategy configuration
    */
   private async selectOptionInstrument(optionType: 'CE' | 'PE', targetPremium: number): Promise<any> {
     try {
-      // Get NIFTY options instruments
-      const instruments = await this.kiteConnect.getInstruments('NFO');
+      // Check if this is a stock or index strategy
+      const symbol = this.config.instruments[0];
+      
+      if (!symbol) {
+        throw new Error('No instrument symbol configured');
+      }
+      
+      const isIndex = symbol === 'NIFTY' || symbol === 'BANKNIFTY';
+
+      if (isIndex) {
+        // Use existing NIFTY logic
+        return await this.selectIndexOption(optionType, targetPremium);
+      } else {
+        // Use new stock option logic
+        return await this.selectStockOption(optionType, symbol);
+      }
+    } catch (error) {
+      this.logger.error('Failed to select option:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Select NIFTY index option (original logic)
+   */
+  private async selectIndexOption(optionType: 'CE' | 'PE', targetPremium: number): Promise<any> {
+    try {
+      // Get NIFTY options instruments from cache
+      const instruments = await this.instrumentCache.getNFOInstruments();
       
       // Filter for NIFTY options of specified type
       const niftyOptions = instruments.filter((inst: any) => 
@@ -3505,6 +3782,119 @@ export class BollingerBandStrategy extends StrategyBase {
       this.logger.error('Error selecting option instrument:', error);
       return null;
     }
+  }
+
+  /**
+   * Select stock option - ALWAYS uses real-time spot price at entry signal
+   * Uses cached instruments and actual expiry from instrument data (handles holidays)
+   */
+  private async selectStockOption(optionType: 'CE' | 'PE', symbol: string): Promise<any> {
+    try {
+      // ALWAYS select ATM based on current spot price at entry signal time
+      this.logger.info(`🔍 Selecting ${symbol} ${optionType} option based on CURRENT spot price`);
+      
+      // Get current stock price from NSE
+      const nseInstruments = await this.kiteConnect.getInstruments('NSE');
+      const stockInstrument = nseInstruments.find((i: any) => i.tradingsymbol === symbol);
+      
+      if (!stockInstrument) {
+        throw new Error(`Stock instrument not found: ${symbol}`);
+      }
+
+      const stockQuote = await this.kiteConnect.getQuote([`NSE:${symbol}`]);
+      const spotPrice = stockQuote[`NSE:${symbol}`].last_price;
+      
+      this.logger.info(`📊 Current ${symbol} spot price: ₹${spotPrice.toFixed(2)}`);
+
+      // Fetch all NFO instruments from cache
+      const allInstruments = await this.instrumentCache.getNFOInstruments();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Get all options for this symbol and type expiring today or later
+      const symbolOptions = allInstruments.filter((i: any) =>
+        i.name === symbol &&
+        i.segment === 'NFO-OPT' &&
+        i.instrument_type === optionType &&
+        new Date(i.expiry) >= today
+      );
+
+      if (symbolOptions.length === 0) {
+        throw new Error(`No ${optionType} options found for ${symbol}`);
+      }
+
+      // Find nearest expiry from actual instrument data (handles holidays)
+      const sortedExpiries = symbolOptions
+        .map((o: any) => new Date(o.expiry).getTime())
+        .sort((a, b) => a - b);
+      const nearestExpiryTime = sortedExpiries[0];
+      
+      if (nearestExpiryTime === undefined) {
+        throw new Error(`No expiry dates found for ${symbol}`);
+      }
+      
+      const expiry = new Date(nearestExpiryTime);
+      this.logger.info(`📅 Using expiry: ${expiry.toDateString()} (from instrument data)`);
+
+      // Filter for this specific expiry
+      const options = symbolOptions.filter((i: any) =>
+        new Date(i.expiry).getTime() === nearestExpiryTime
+      );
+
+      if (options.length === 0) {
+        throw new Error(`No options found for ${symbol} ${optionType} expiring ${expiry.toDateString()}`);
+      }
+
+      // Find ATM strike based on CURRENT spot price
+      const atmStrike = this.findATMStrike(options, spotPrice);
+      const atmOption = options.find((o: any) => o.strike === atmStrike);
+
+      if (!atmOption) {
+        throw new Error(`ATM option not found: ${symbol} ${atmStrike}${optionType}`);
+      }
+
+      // Get current premium
+      const quote = await this.kiteConnect.getQuote([`NFO:${atmOption.tradingsymbol}`]);
+      const premium = quote[`NFO:${atmOption.tradingsymbol}`].last_price;
+
+      atmOption.last_price = premium;
+
+      this.logger.info(`✅ Real-time ATM: ${atmOption.tradingsymbol} @ ₹${premium.toFixed(2)} (Spot: ₹${spotPrice.toFixed(2)}, Strike: ₹${atmStrike})`);
+      return atmOption;
+
+    } catch (error) {
+      this.logger.error(`Failed to select stock option for ${symbol}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Get current month's last Tuesday for stock options
+   */
+  private getCurrentMonthLastTuesday(): Date {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = today.getMonth();
+
+    // Get last day of current month
+    const lastDay = new Date(year, month + 1, 0);
+
+    // Find last Tuesday (2 = Tuesday)
+    let lastTuesday = lastDay;
+    while (lastTuesday.getDay() !== 2) {
+      lastTuesday.setDate(lastTuesday.getDate() - 1);
+    }
+
+    // If today > last Tuesday, move to next month
+    if (today > lastTuesday) {
+      const nextMonth = new Date(year, month + 2, 0);
+      while (nextMonth.getDay() !== 2) {
+        nextMonth.setDate(nextMonth.getDate() - 1);
+      }
+      return nextMonth;
+    }
+
+    return lastTuesday;
   }
 
   /**
@@ -3668,16 +4058,16 @@ export class BollingerBandStrategy extends StrategyBase {
    * Single source of truth: currentCapital
    */
   private getTotalPnL(): number {
-    return this.currentCapital - 200000; // Initial capital
+    return this.currentCapital - this.initialCapital; // Use tracked initial capital
   }
 
   /**
    * Validate capital consistency against trade history
-   * Ensures currentCapital = 200000 + sum(all trade P&Ls)
+   * Ensures currentCapital = initialCapital + sum(all trade P&Ls)
    */
   private validateCapitalConsistency(): { valid: boolean; difference: number } {
     try {
-      const calculatedCapital = 200000 + this.tradeHistory.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
+      const calculatedCapital = this.initialCapital + this.tradeHistory.reduce((sum, trade) => sum + (trade.pnl || 0), 0);
       const diff = Math.abs(this.currentCapital - calculatedCapital);
       
       if (diff > 1) { // Allow ₹1 for rounding errors
@@ -3686,7 +4076,7 @@ export class BollingerBandStrategy extends StrategyBase {
           calculatedFromHistory: calculatedCapital.toFixed(2),
           difference: diff.toFixed(2),
           totalTrades: this.tradeHistory.length,
-          initialCapital: 200000,
+          initialCapital: this.initialCapital,
           totalPnLFromTrades: this.tradeHistory.reduce((sum, trade) => sum + (trade.pnl || 0), 0).toFixed(2)
         });
         return { valid: false, difference: diff };
@@ -3735,8 +4125,8 @@ export class BollingerBandStrategy extends StrategyBase {
     const profitFactor = Math.abs(avgLoss) > 0 ? 
       Math.abs(avgWin * winningTrades.length) / Math.abs(avgLoss * losingTrades.length) : 0;
     
-    const initialCapital = this.CAPITAL_ALLOCATION;
-    const roi = initialCapital > 0 ? ((totalPnL / initialCapital) * 100) : 0;
+    // Use tracked initial capital (from scanner) for ROI calculation
+    const roi = this.initialCapital > 0 ? ((totalPnL / this.initialCapital) * 100) : 0;
     
     return {
       totalTrades,
@@ -3750,8 +4140,8 @@ export class BollingerBandStrategy extends StrategyBase {
       profitFactor: profitFactor.toFixed(2),
       roi: roi.toFixed(2),
       currentCapital: this.currentCapital.toFixed(2),
-      capitalChange: (this.currentCapital - 200000).toFixed(2),
-      capitalChangePercent: ((this.currentCapital - 200000) / 200000 * 100).toFixed(2)
+      capitalChange: (this.currentCapital - this.initialCapital).toFixed(2),
+      capitalChangePercent: this.initialCapital > 0 ? ((this.currentCapital - this.initialCapital) / this.initialCapital * 100).toFixed(2) : '0.00'
     };
   }
 

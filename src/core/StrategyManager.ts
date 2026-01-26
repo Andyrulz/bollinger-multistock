@@ -1,6 +1,10 @@
 import { StrategyBase, StrategyConfig, StrategyStatus } from './StrategyBase';
 import { StrategyRegistry } from './StrategyRegistry';
 import { Logger } from '../utils/Logger';
+import { InstrumentCache } from '../utils/InstrumentCache';
+import { MarketScanner, ScoredStock } from '../services/MarketScanner';
+import { QuoteManager } from '../services/QuoteManager';
+import { AuthService } from '../services/AuthService';
 import fs from 'fs';
 import path from 'path';
 
@@ -28,11 +32,42 @@ export class StrategyManager {
   private config: StrategyManagerConfig;
   private healthCheckTimer?: NodeJS.Timeout;
   private isInitialized: boolean = false;
+  private marketScanner: MarketScanner;
+  private quoteManager: QuoteManager;
+  private instrumentCache: InstrumentCache;
+  private authService: AuthService;
+  private preMarketCheckInterval: NodeJS.Timeout | null = null;
+  private needsPreMarketFetch: boolean = false;
+  private isDataCached: boolean = false;
 
-  constructor(kiteConnect: any, logger: Logger, config: StrategyManagerConfig) {
+  constructor(
+    kiteConnect: any,
+    authService: AuthService,
+    logger: Logger,
+    quoteManager: QuoteManager,
+    config: StrategyManagerConfig
+  ) {
     this.kiteConnect = kiteConnect;
+    this.authService = authService;
     this.logger = logger;
+    this.quoteManager = quoteManager;
     this.config = config;
+
+    // Initialize InstrumentCache (shared across scanner and strategies)
+    this.instrumentCache = new InstrumentCache(this.kiteConnect, this.logger);
+
+    // Initialize MarketScanner with InstrumentCache
+    this.marketScanner = new MarketScanner(
+      this.kiteConnect,
+      this.logger,
+      this.instrumentCache,
+      {
+        minScore: 7.0,
+        topCount: 3,
+        minPremium: 10,
+        sectorChangeThreshold: { green: 0.25, red: -0.25 },
+      }
+    );
   }
 
   /**
@@ -59,6 +94,10 @@ export class StrategyManager {
       // Start health monitoring
       this.startHealthMonitoring();
       
+      // NEW: Schedule pre-market checks and scanner
+      this.schedulePreMarketCheck();
+      this.scheduleScanner();
+      
       this.isInitialized = true;
       this.logger.info('✅ Strategy Manager initialized successfully');
       
@@ -75,10 +114,6 @@ export class StrategyManager {
     this.logger.info('📋 Registering strategy classes...');
     
     try {
-      // Import and register Breakout Pullback Strategy
-      const { BreakoutPullbackWrapper } = await import('../strategies/breakout-pullback/BreakoutPullbackWrapper');
-      StrategyRegistry.registerStrategy('breakout-pullback', BreakoutPullbackWrapper);
-      
       // Import and register Bollinger Band Strategy
       const { BollingerBandStrategy } = await import('../strategies/bollinger-band/BollingerBandStrategy');
       StrategyRegistry.registerStrategy('bollinger-band', BollingerBandStrategy);
@@ -129,7 +164,7 @@ export class StrategyManager {
   private async createStrategyInstance(config: StrategyConfig): Promise<void> {
     try {
       const strategyClass = config.id.replace(/-\d+$/, ''); // Remove instance number if present
-      await StrategyRegistry.createInstance(strategyClass, this.kiteConnect, this.logger, config);
+      await StrategyRegistry.createInstance(strategyClass, this.kiteConnect, this.logger, this.quoteManager, this.instrumentCache, config);
       
       if (this.config.autoStart) {
         const instance = StrategyRegistry.getInstance(config.id);
@@ -279,27 +314,10 @@ export class StrategyManager {
     const defaultConfig = {
       strategies: [
         {
-          id: "breakout-pullback-01",
-          name: "1min breakout pullback option buy: Selling into strength scalp",
-          enabled: true,
-          description: "Breakout and retracement strategy with 15,15 pivot detection",
-          timeframe: "1min",
-          instruments: ["NIFTY"],
-          riskPerTrade: 1.0,
-          maxPositions: 1,
-          config: {
-            pivotLookback: 15,
-            retracement: {
-              enabled: true,
-              percentage: 0.2
-            }
-          }
-        },
-        {
           id: "bollinger-band-01", 
           name: "5m option Buy: bollinger band entry and trail",
-          enabled: false,
-          description: "Bollinger Band breakout with trailing stop",
+          enabled: true,
+          description: "Bollinger Band strategy with trailing stop",
           timeframe: "5min",
           instruments: ["NIFTY", "BANKNIFTY"],
           riskPerTrade: 0.8,
@@ -308,10 +326,31 @@ export class StrategyManager {
             period: 20,
             stdDev: 2.0,
             trailType: "percentage",
-            trailValue: 1.5
+            trailValue: 1.5,
+            riskReward: {
+              stopLoss: 2.0,
+              target: 4.0
+            },
+            positionSizing: {
+              riskAmount: 10000,
+              riskPercentage: 2.0
+            }
           }
         }
-      ]
+      ],
+      global: {
+        autoStart: true,
+        healthCheckInterval: 30000,
+        logging: {
+          level: "info",
+          separateFiles: true
+        },
+        riskManagement: {
+          maxDailyLoss: 50000,
+          maxDrawdown: 100000,
+          emergencyStop: true
+        }
+      }
     };
 
     // Ensure config directory exists
@@ -388,4 +427,197 @@ export class StrategyManager {
     
     this.logger.info('✅ Strategy Manager shutdown complete');
   }
+
+  /**
+   * Schedule pre-market data fetch checks
+   */
+  private schedulePreMarketCheck(): void {
+    this.logger.info('📅 Scheduling pre-market data fetch checks');
+
+    this.preMarketCheckInterval = setInterval(async () => {
+      const now = new Date();
+      const currentTime = now.getHours() * 60 + now.getMinutes();
+
+      if (currentTime === 540 && !this.isDataCached) {
+        if (await this.authService.isAuthenticatedAndValid()) {
+          this.logger.info('🕘 09:00 AM: Auth valid, fetching pre-market data');
+          await this.fetchPreMarketData();
+        } else {
+          this.logger.info('⏳ 09:00 AM: Waiting for login...');
+          this.needsPreMarketFetch = true;
+        }
+      }
+
+      if (currentTime > 540 && currentTime < 570 && this.needsPreMarketFetch) {
+        if (await this.authService.isAuthenticatedAndValid()) {
+          this.logger.info('✅ Login detected, fetching pre-market data now');
+          await this.fetchPreMarketData();
+          this.needsPreMarketFetch = false;
+        }
+      }
+
+      if (currentTime >= 570 && !this.isDataCached) {
+        this.logger.error('🚫 Login after 09:30 - Scanner aborted');
+        this.needsPreMarketFetch = false;
+        if (this.preMarketCheckInterval) {
+          clearInterval(this.preMarketCheckInterval);
+        }
+      }
+
+      if (currentTime === 935) {
+        this.logger.info('🧹 Post-market cleanup: Resetting cache for next day');
+        this.isDataCached = false;
+        this.needsPreMarketFetch = false;
+        this.marketScanner.clearCache();
+        if (global.gc) {
+          global.gc();
+        }
+      }
+    }, 60000);
+  }
+
+  private async fetchPreMarketData(): Promise<void> {
+    try {
+      this.logger.info('📊 Fetching pre-market historical data...');
+      const result = await this.marketScanner.cacheHistoricalData();
+      if (result.success) {
+        this.isDataCached = true;
+        this.logger.info(`✅ Pre-market data cached: ${result.count} stocks ready`);
+      } else {
+        this.isDataCached = false;
+      }
+    } catch (error) {
+      this.logger.error('Failed to fetch pre-market data:', error);
+      this.isDataCached = false;
+    }
+  }
+
+  private scheduleScanner(): void {
+    this.logger.info('📅 Scheduling market scanner for 09:30 AM');
+    const scheduleNextScan = () => {
+      const now = new Date();
+      const scanTime = new Date(now);
+      scanTime.setHours(9, 30, 5, 0);
+      if (now >= scanTime) {
+        scanTime.setDate(scanTime.getDate() + 1);
+      }
+      const delay = scanTime.getTime() - now.getTime();
+      setTimeout(async () => {
+        await this.runScanner();
+        scheduleNextScan();
+      }, delay);
+    };
+    scheduleNextScan();
+  }
+
+  private async runScanner(): Promise<void> {
+    try {
+      this.logger.info('🔍 09:30 AM: Running market scanner...');
+      if (!this.isDataCached) {
+        await this.sleep(5000);
+        if (!this.isDataCached) {
+          this.logger.error('❌ Scanner aborted: Data not available');
+          return;
+        }
+      }
+      const result = await this.marketScanner.scanUniverse();
+      this.logger.info(`Scanner: ${result.scannedCount} scanned, ${result.selected.length} selected`);
+      if (result.selected.length === 0) {
+        this.logger.info('📭 No stocks qualified today');
+        return;
+      }
+      await this.deployMultipleStrategies(result.selected);
+    } catch (error) {
+      this.logger.error('Failed to run scanner:', error);
+    }
+  }
+
+  private async deployMultipleStrategies(stocks: ScoredStock[]): Promise<void> {
+    for (let i = 0; i < stocks.length; i++) {
+      const stock = stocks[i];
+      if (!stock) continue; // Skip if undefined
+      
+      try {
+        const config: StrategyConfig = {
+          id: `bollinger-${stock.symbol.toLowerCase()}`,
+          name: `Bollinger Band - ${stock.symbol}`,
+          enabled: true,
+          description: `Scanner: ${stock.score.toFixed(2)} | Bias: ${stock.bias}`,
+          timeframe: '5min',
+          instruments: [stock.symbol],
+          riskPerTrade: 0.8,
+          maxPositions: 1,
+          config: {
+            period: 20,
+            stdDev: 2.0,
+            scannerData: {
+              score: stock.score,
+              bias: stock.bias,
+              sector: stock.sector,
+              atmOption: stock.atmOption,
+              historicalData: stock.historicalData,
+            },
+            capitalAllocation: 65000,
+            strategyIndex: i, // For staggered polling (0, 1, 2 -> 4th, 5th, 6th second)
+          },
+        };
+        const strategy = await StrategyRegistry.createInstance(
+          'bollinger-band',
+          this.kiteConnect,
+          this.logger,
+          this.quoteManager,
+          this.instrumentCache,
+          config,
+        );
+        
+        await strategy.start();
+        this.logger.info(`✅ ${stock.symbol}: Strategy deployed`);
+      } catch (error) {
+        this.logger.error(`❌ ${stock.symbol}: Deployment failed`);
+      }
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Manual scanner trigger for API endpoint
+   */
+  public async runManualScanner(): Promise<any> {
+    this.logger.info('🔍 Manual scanner triggered');
+    
+    // Check if data is cached
+    if (!this.isDataCached) {
+      this.logger.warn('⚠️ Data not cached, fetching now...');
+      const result = await this.marketScanner.cacheHistoricalData();
+      if (!result.success) {
+        throw new Error('Failed to cache historical data');
+      }
+      this.isDataCached = true;
+    }
+    
+    // Run scanner
+    const scannerResult = await this.marketScanner.scanUniverse();
+    
+    // Store results
+    this.lastScannerResults = scannerResult;
+    
+    // Deploy strategies if stocks selected
+    if (scannerResult.selected.length > 0) {
+      await this.deployMultipleStrategies(scannerResult.selected);
+    }
+    
+    return scannerResult;
+  }
+
+  /**
+   * Get last scanner results
+   */
+  public async getLastScannerResults(): Promise<any> {
+    return this.lastScannerResults || null;
+  }
+
+  private lastScannerResults: any = null;
 }

@@ -88,7 +88,8 @@ try {
         Invoke-SSHCommand "if [ -d $REMOTE_PATH/logs ]; then cp -r $REMOTE_PATH/logs $BACKUP_PATH/; echo '  ✅ Logs backed up'; else echo '  ℹ️  No logs found'; fi"
         
         Write-Host "  ✅ Backup completed: $BACKUP_PATH" -ForegroundColor Green
-    } else {
+    }
+    else {
         Write-Host "[3/8] Skipping backup (SkipBackup flag set)" -ForegroundColor Yellow
     }
     Write-Host ""
@@ -107,7 +108,8 @@ try {
         Invoke-SSHCommand "rm -rf $REMOTE_PATH"
         Invoke-SSHCommand "mkdir -p $REMOTE_PATH"
         Write-Host "  ✅ Old deployment cleaned" -ForegroundColor Green
-    } else {
+    }
+    else {
         Write-Host "[5/8] Skipping clean (SkipClean flag set)" -ForegroundColor Yellow
     }
     Write-Host ""
@@ -123,7 +125,8 @@ try {
         npm run build
         
         Write-Host "  ✅ Project built successfully" -ForegroundColor Green
-    } finally {
+    }
+    finally {
         Pop-Location
     }
     Write-Host ""
@@ -216,7 +219,8 @@ try {
         Write-Host ""
     }
 
-} catch {
+}
+catch {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Red
     Write-Host "❌ DEPLOYMENT FAILED" -ForegroundColor Red

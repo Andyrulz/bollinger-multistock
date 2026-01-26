@@ -219,8 +219,7 @@ http://98.70.40.23:3000/
 
 ### Strategy-Specific Dashboards
 
-- Bollinger Band: `http://98.70.40.23:3000/bollinger-band-strategy`
-- Breakout Pullback: `http://98.70.40.23:3000/breakout-strategy-v2`
+- Bollinger Band: `http://98.70.40.23:3000/strategy/bollinger-band-01`
 
 ### PM2 Web Monitoring (Optional)
 

@@ -2,7 +2,11 @@
 
 **VM**: `98.70.40.23` | **Timezone**: IST (Asia/Kolkata) | **Auto-Shutdown**: 4:30 PM Daily
 
-**Latest Deployment**: October 17, 2025 - AutoStart Enabled, PM2 Auto-Recovery Configured
+Zerodha Login: https://98.70.40.23/
+
+**Latest Deployment**: January 6, 2026 - Multi-Strategy System, AutoStart Enabled, PM2 Auto-Recovery Configured
+
+**HTTPS Status**: Requires nginx reverse proxy setup for Zerodha OAuth (see HTTPS Setup section below)
 
 ## Connection
 
@@ -69,13 +73,19 @@ curl http://localhost:3000/auth/status       # Auth status
 ## Strategy Control
 
 ```bash
-# Start/Stop Strategy
-curl -X POST http://localhost:3000/breakout-strategy/start
-curl -X POST http://localhost:3000/breakout-strategy/stop
-curl http://localhost:3000/breakout-strategy/status
+# Multi-Strategy Dashboard (Main)
+http://98.70.40.23:3000/
 
-# Dashboard Access
-http://98.70.40.23:3000/breakout-strategy-v2
+# View all strategies status
+curl -s http://localhost:3000/strategies
+
+# Individual strategy control (via dashboard or API)
+# Current strategies:
+# - 1min Breakout Pullback Option Buy
+# - 5m Bollinger Band Strategy
+
+# Check specific strategy health
+curl -s http://localhost:3000/strategies | grep -A 10 "name"
 ```
 
 ## Common Issues
@@ -145,6 +155,32 @@ pm2 logs trading-bot-multi-strategy --lines 5 | tail -3
 ```
 
 ## Auto-Recovery & Monitoring
+
+### HTTPS Setup (Required for Zerodha OAuth)
+
+Zerodha requires HTTPS callback URLs. Set up nginx as a reverse proxy:
+
+```bash
+# On VM: Upload and run the setup script
+scp -i "C:\Users\aabishek\Downloads\nifty-trading-bot_key.pem" setup-https-proxy.sh azureuser@98.70.40.23:~/
+ssh -i "C:\Users\aabishek\Downloads\nifty-trading-bot_key.pem" azureuser@98.70.40.23
+chmod +x setup-https-proxy.sh
+./setup-https-proxy.sh
+
+# After setup:
+# 1. Update Zerodha API app redirect URL to: https://98.70.40.23/auth/callback
+#    Go to: https://developers.kite.trade/apps
+# 2. Update .env file:
+echo 'REDIRECT_URL=https://98.70.40.23/auth/callback' >> ~/tradebot-kite/.env
+# 3. Restart PM2:
+pm2 restart ecosystem.config.js
+
+# Access via HTTPS:
+https://98.70.40.23/
+https://98.70.40.23/auth/login
+```
+
+**Note**: Self-signed certificate will show browser warning - click "Advanced" → "Proceed" to continue.
 
 ### PM2 Auto-Start (Configured)
 
