@@ -296,6 +296,22 @@ export class BollingerBandStrategy extends StrategyBase {
         return;
       }
       
+      // 🛡️ SYMBOL MISMATCH GUARD: Prevent "Zombie Position" from different stock
+      // Scenario: Slot had INFY yesterday (crashed before EOD exit), today has TCS
+      // The old INFY position should NOT be recovered for TCS strategy
+      const expectedSymbol = this.config.instruments?.[0]; // e.g., "INFY"
+      const positionSymbol = position.instrument?.name || position.instrument?.tradingsymbol?.match(/^[A-Z]+/)?.[0];
+      
+      if (expectedSymbol && positionSymbol && positionSymbol !== expectedSymbol) {
+        this.logger.warn(`⚠️ SLOT CONFLICT DETECTED!`);
+        this.logger.warn(`   Found position for: ${positionSymbol}`);
+        this.logger.warn(`   Current slot expects: ${expectedSymbol}`);
+        this.logger.warn(`   ⚠️ IGNORING old position. Please verify broker terminal manually!`);
+        this.logger.warn(`   Capital (₹${data.capital}) is retained for P&L continuity.`);
+        // DO NOT restore the mismatched position
+        return;
+      }
+      
       // Restore position state
       this.currentPosition = position;
       
