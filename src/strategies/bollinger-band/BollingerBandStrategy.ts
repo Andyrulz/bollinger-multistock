@@ -296,19 +296,25 @@ export class BollingerBandStrategy extends StrategyBase {
         return;
       }
       
-      // 🛡️ SYMBOL MISMATCH GUARD: Prevent "Zombie Position" from different stock
-      // Scenario: Slot had INFY yesterday (crashed before EOD exit), today has TCS
-      // The old INFY position should NOT be recovered for TCS strategy
-      const expectedSymbol = this.config.instruments?.[0]; // e.g., "INFY"
-      const positionSymbol = position.instrument?.name || position.instrument?.tradingsymbol?.match(/^[A-Z]+/)?.[0];
+      // 🛡️ ZOMBIE POSITION GUARD: Prevent position recovery from different stock
+      // Scenario: Slot 1 had INFY yesterday (crashed before EOD exit), Scanner assigns TCS today
+      // The old INFY position MUST NOT be recovered into the TCS strategy instance
+      const savedTradingsymbol = position.instrument?.tradingsymbol || '';
+      // Extract underlying (e.g. "INFY" from "INFY26JAN1800CE" or "TCS27JAN2500PE")
+      const savedBaseSymbol = savedTradingsymbol.match(/^([A-Z]+)/)?.[1];
+      const currentConfigSymbol = this.config.instruments?.[0]; // e.g., "INFY" or "TCS"
       
-      if (expectedSymbol && positionSymbol && positionSymbol !== expectedSymbol) {
-        this.logger.warn(`⚠️ SLOT CONFLICT DETECTED!`);
-        this.logger.warn(`   Found position for: ${positionSymbol}`);
-        this.logger.warn(`   Current slot expects: ${expectedSymbol}`);
-        this.logger.warn(`   ⚠️ IGNORING old position. Please verify broker terminal manually!`);
-        this.logger.warn(`   Capital (₹${data.capital}) is retained for P&L continuity.`);
-        // DO NOT restore the mismatched position
+      if (savedBaseSymbol && currentConfigSymbol && savedBaseSymbol !== currentConfigSymbol) {
+        this.logger.warn(`⚠️ ZOMBIE POSITION DETECTED in Slot!`);
+        this.logger.warn(`   Saved Position Symbol: ${savedTradingsymbol} (Base: ${savedBaseSymbol})`);
+        this.logger.warn(`   Current Slot Expects: ${currentConfigSymbol}`);
+        this.logger.warn(`   ⚠️ PURGING ghost position from memory. Capital preserved.`);
+        this.logger.warn(`   ⚠️ ACTION REQUIRED: Manually verify/close ${savedTradingsymbol} in broker terminal!`);
+        this.logger.warn(`   Capital (₹${data.capital}) retained for P&L continuity.`);
+        
+        // Purge the ghost position from disk to prevent repeated warnings
+        this.currentPosition = null;
+        this.saveCapitalData(); // This saves capital but clears activePosition
         return;
       }
       
