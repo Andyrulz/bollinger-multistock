@@ -106,12 +106,10 @@ export class MarketScanner {
     try {
       // Step 1: Expiry day blackout check (Monthly expiry - from actual instrument data)
       // Blocks trading on expiry day and day before due to physical settlement margins
-      // TODO: Uncomment after Jan 27 expiry testing
-      // if (await this.isStockTradingBlocked()) {
-      //   this.logger.error("🚫 Stock options blocked (expiry week)");
-      //   return this.emptyResult();
-      // }
-      this.logger.warn("⚠️ Expiry blocking disabled for Jan 27 testing - re-enable after expiry");
+      if (await this.isStockTradingBlocked()) {
+        this.logger.error("🚫 Stock options blocked (expiry week)");
+        return this.emptyResult();
+      }
 
       // Step 2: Sector filtering
       const sectorStatus = await this.analyzeSectors();
@@ -507,25 +505,40 @@ export class MarketScanner {
           if (spotPrice < ema50) breakdown.trend += 0.5;          // Trend stability (EMA50)
         }
 
-        // B. MOMENTUM (Max 3.0) - Per Spec Section 4B
-        // RSI Bull Zone: RSI > 60 → +1.0 (not +2.0)
-        // RSI Rising: RSI5m > RSI15m → +1.0
-        // ADX > 25 → +1.0
+        // B. MOMENTUM (Max 3.5) - Sweet Spot Scoring
+        // Prioritizes "Fresh Breakouts" over "Extended Trends"
+        // Sweet Spot = Higher score, Extended = Lower score (de-prioritized)
         if (bias === "LONG") {
-          if (rsi5m > 60 && rsi5m < 85) breakdown.momentum += 1.0;  // RSI Bull Zone
-          if (rsi5m > rsi15m) breakdown.momentum += 1.0;            // RSI Rising
+          // LONG: RSI Sweet Spot (60-75) vs Extended (75-85)
+          if (rsi5m >= 60 && rsi5m <= 75) {
+            breakdown.momentum += 1.5;  // 🌟 SWEET SPOT (Fresh breakout, room to run)
+          } else if (rsi5m > 75 && rsi5m < 85) {
+            breakdown.momentum += 0.5;  // ⚠️ EXTENDED (Valid but late-stage)
+          }
+          if (rsi5m > rsi15m) breakdown.momentum += 1.0;  // RSI Rising
         } else {
-          // SHORT
-          if (rsi5m < 40 && rsi5m > 15) breakdown.momentum += 1.0;  // RSI Bear Zone
-          if (rsi5m < rsi15m) breakdown.momentum += 1.0;            // RSI Falling
+          // SHORT: RSI Sweet Spot (25-40) vs Extended (15-25)
+          if (rsi5m <= 40 && rsi5m >= 25) {
+            breakdown.momentum += 1.5;  // 🌟 SWEET SPOT (Fresh breakdown)
+          } else if (rsi5m < 25 && rsi5m > 15) {
+            breakdown.momentum += 0.5;  // ⚠️ EXTENDED (Oversold, snap-back risk)
+          }
+          if (rsi5m < rsi15m) breakdown.momentum += 1.0;  // RSI Falling
         }
 
         // ADX (direction agnostic)
         if (adx > 25) breakdown.momentum += 1.0;
 
-        // C. VOLUME (Max 2.0)
-        if (rvol > 3.0) breakdown.volume += 2.0;
-        else if (rvol > 2.0) breakdown.volume += 1.0;
+        // C. VOLUME (Max 2.0) - Climax Penalty Scoring
+        // Extreme volume (>5x) often marks tops/bottoms - penalize it
+        if (rvol > 2.0 && rvol <= 5.0) {
+          breakdown.volume += 2.0;  // 🌟 IDEAL BREAKOUT (Strong institutional participation)
+        } else if (rvol > 5.0) {
+          breakdown.volume += 1.0;  // ⚠️ CLIMAX VOLUME (Reversal risk, de-prioritize)
+        } else if (rvol >= 1.5 && rvol <= 2.0) {
+          breakdown.volume += 1.0;  // DECENT SUPPORT
+        }
+        // rvol < 1.5 = 0 points (insufficient volume)
 
         // D. SECTOR CONFLUENCE (Max 2.0)
         breakdown.sector += 1.0; // Base point for sector direction match
@@ -588,12 +601,22 @@ export class MarketScanner {
         return false;
       }
 
-      // 2. RSI exhaustion check
+      // 2. RSI exhaustion check (both LONG and SHORT)
       const closes = candles.map((c) => c.close);
       const rsi = this.calculateRSI(closes, 14);
+      
+      // LONG exhaustion: RSI > 85 (Blow-off top risk)
       if (rsi > 85) {
         this.logger.warn(
-          `${stock.symbol}: RSI exhaustion (${rsi.toFixed(1)}) - DISCARD`,
+          `${stock.symbol}: RSI overbought exhaustion (${rsi.toFixed(1)} > 85) - DISCARD`,
+        );
+        return false;
+      }
+      
+      // SHORT exhaustion: RSI < 15 (Snap-back/dead cat bounce risk)
+      if (rsi < 15) {
+        this.logger.warn(
+          `${stock.symbol}: RSI oversold exhaustion (${rsi.toFixed(1)} < 15) - DISCARD`,
         );
         return false;
       }

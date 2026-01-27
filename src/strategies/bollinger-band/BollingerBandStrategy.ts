@@ -3726,7 +3726,34 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * Execute order (BUY/SELL)
+   * Calculate LIMIT order price with market protection buffer
+   * Zerodha blocks MARKET orders for stock options - we emulate market orders
+   * using LIMIT orders with a 3% buffer to ensure fills
+   * 
+   * @param ltp - Last Traded Price
+   * @param transaction - 'BUY' or 'SELL'
+   * @returns Limit price rounded to tick size (0.05)
+   */
+  private calculateLimitPrice(ltp: number, transaction: 'BUY' | 'SELL'): number {
+    const BUFFER_PERCENT = 0.03; // 3% market protection buffer
+    const TICK_SIZE = 0.05;
+    
+    // BUY: willing to pay up to 3% more than LTP
+    // SELL: willing to accept up to 3% less than LTP
+    const rawPrice = transaction === 'BUY' 
+      ? ltp * (1 + BUFFER_PERCENT)
+      : ltp * (1 - BUFFER_PERCENT);
+    
+    // Round to tick size (options trade in 0.05 increments)
+    const limitPrice = Math.round(rawPrice / TICK_SIZE) * TICK_SIZE;
+    
+    return Math.max(limitPrice, TICK_SIZE); // Ensure minimum price of 0.05
+  }
+
+  /**
+   * Execute order (BUY/SELL) using LIMIT orders with market protection
+   * Note: Zerodha blocks MARKET orders for stock options due to illiquidity
+   * We use LIMIT orders with a 3% buffer to emulate market order behavior
    */
   private async executeOrder(transaction: 'BUY' | 'SELL', instrument: any, quantity: number): Promise<{ success: boolean; price: number; orderId?: string }> {
     try {
@@ -3736,14 +3763,51 @@ export class BollingerBandStrategy extends StrategyBase {
         quantity
       });
       
-      // Place market order
+      // Step 1: Fetch LIVE LTP for the instrument
+      const quoteKey = `${instrument.exchange}:${instrument.tradingsymbol}`;
+      const quotes = await this.kiteConnect.getQuote([quoteKey]);
+      const ltp = quotes[quoteKey]?.last_price;
+      
+      if (!ltp || ltp <= 0) {
+        this.logger.error('Failed to fetch LTP for limit price calculation', {
+          instrument: instrument.tradingsymbol,
+          quoteKey,
+          quotes
+        });
+        return { success: false, price: 0 };
+      }
+      
+      // Step 1.5: LIQUIDITY GUARD - Reject penny options (high slippage, low liquidity)
+      const MIN_OPTION_PREMIUM = 10; // Minimum ₹10 premium required
+      if (ltp < MIN_OPTION_PREMIUM) {
+        this.logger.error(`❌ LIQUIDITY GUARD: Option premium ₹${ltp.toFixed(2)} is below minimum ₹${MIN_OPTION_PREMIUM}`, {
+          instrument: instrument.tradingsymbol,
+          ltp,
+          minRequired: MIN_OPTION_PREMIUM,
+          reason: 'Penny options have high slippage and low liquidity - trade rejected for safety'
+        });
+        return { success: false, price: 0 };
+      }
+      
+      // Step 2: Calculate limit price with market protection buffer
+      const limitPrice = this.calculateLimitPrice(ltp, transaction);
+      
+      this.logger.info('Calculated limit price with market protection', {
+        ltp,
+        transaction,
+        limitPrice,
+        bufferPercent: '3%'
+      });
+      
+      // Step 3: Place LIMIT order (MARKET orders blocked for stock options)
       const orderParams = {
         exchange: instrument.exchange,
         tradingsymbol: instrument.tradingsymbol,
         transaction_type: transaction,
         quantity: quantity * instrument.lot_size,
         product: 'MIS', // Intraday
-        order_type: 'MARKET',
+        order_type: 'LIMIT',
+        price: limitPrice,
         validity: 'DAY',
         tag: 'BB_TRADE' // Tag to identify bot-placed orders vs manual exits
       };
@@ -3771,9 +3835,11 @@ export class BollingerBandStrategy extends StrategyBase {
 
   /**
    * Wait for order execution and return fill price
+   * Implements "Clean Kill" - auto-cancels orphan orders on timeout
    */
   private async waitForOrderExecution(orderId: string): Promise<number> {
-    const maxAttempts = 120; // Wait up to 2 minutes
+    const maxAttempts = 24; // 5 seconds * 24 = 2 minutes
+    const checkInterval = 5000; // Check every 5 seconds (reduces API calls)
     
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -3781,6 +3847,7 @@ export class BollingerBandStrategy extends StrategyBase {
         const latestOrder = orderHistory[orderHistory.length - 1];
         
         if (latestOrder.status === 'COMPLETE') {
+          this.logger.info(`✅ Order ${orderId} filled at ₹${latestOrder.average_price || latestOrder.price}`);
           return latestOrder.average_price || latestOrder.price;
         }
         
@@ -3788,15 +3855,54 @@ export class BollingerBandStrategy extends StrategyBase {
           throw new Error(`Order ${latestOrder.status}: ${latestOrder.status_message}`);
         }
         
-        // Wait 1 second before next check
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Wait before next check
+        await this.sleep(checkInterval);
         
       } catch (error) {
         this.logger.error(`Error checking order status (attempt ${attempt + 1}):`, error);
       }
     }
     
-    throw new Error('Order execution timeout - status unknown');
+    // === CLEAN KILL: Cancel orphan order to prevent late fills ===
+    this.logger.error(`❌ Order ${orderId} timed out after 2 minutes. Attempting to CANCEL to prevent orphan...`);
+    
+    try {
+      await this.kiteConnect.cancelOrder('regular', orderId);
+      this.logger.info(`🗑️ Cancellation request sent for order ${orderId}`);
+      
+      // Wait for cancellation to process
+      await this.sleep(2000);
+      
+      // Verify final order state (edge case: order may have filled during cancellation)
+      const finalHistory = await this.kiteConnect.getOrderHistory(orderId);
+      const finalStatus = finalHistory[finalHistory.length - 1];
+      
+      if (finalStatus.status === 'COMPLETE') {
+        // Order filled at the last second - return success!
+        this.logger.warn(`⚠️ Order ${orderId} filled during cancellation attempt! Price: ₹${finalStatus.average_price}`);
+        return finalStatus.average_price || finalStatus.price;
+      }
+      
+      if (finalStatus.status === 'CANCELLED') {
+        this.logger.info(`✅ Orphan order ${orderId} cancelled successfully. No position created.`);
+        throw new Error('Order execution timed out and was cancelled to prevent orphan position');
+      }
+      
+      // Still OPEN somehow - critical error
+      this.logger.error(`💀 CRITICAL: Order ${orderId} neither filled nor cancelled! Status: ${finalStatus.status}`);
+      this.logger.error(`💀 MANUAL INTERVENTION REQUIRED - Check broker terminal immediately!`);
+      throw new Error(`Order in unknown state (${finalStatus.status}) - MANUAL CHECK REQUIRED`);
+      
+    } catch (cancelError: any) {
+      // Check if it's our own thrown error (not a cancellation failure)
+      if (cancelError.message?.includes('cancelled') || cancelError.message?.includes('MANUAL CHECK')) {
+        throw cancelError;
+      }
+      
+      this.logger.error(`💀 CRITICAL: Failed to cancel orphan order ${orderId}!`, cancelError);
+      this.logger.error(`💀 MANUAL INTERVENTION REQUIRED - Order may fill later causing unknown position!`);
+      throw new Error(`Order cancellation failed - MANUAL INTERVENTION REQUIRED: ${cancelError.message}`);
+    }
   }
 
   /**
