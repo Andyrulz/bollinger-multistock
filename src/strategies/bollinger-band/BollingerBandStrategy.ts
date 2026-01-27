@@ -4,7 +4,8 @@ import { StrategyBase, StrategyConfig, StrategyStatus } from '../../core/Strateg
 
 /**
  * Bollinger Band Strategy - Complete Implementation
- * Signal Instrument: NIFTY50 Spot
+ * Signal Instrument: Stock Spot (from config.instruments[0], e.g., BRITANNIA, TCS)
+ * Trades stock options based on stock spot price signals
  * Independent Strategy with all functionality built-in
  */
 
@@ -103,8 +104,9 @@ export class BollingerBandStrategy extends StrategyBase {
   } | null = null;
   private dailyPivots: PivotLevels | null = null;
   
-  // NIFTY50 spot instrument token (needs to be set based on instruments list)
-  private NIFTY50_INSTRUMENT_TOKEN: number = 256265; // This will be fetched dynamically
+  // Signal instrument token (stock spot from config.instruments[0], e.g., BRITANNIA, TCS)
+  private signalInstrumentToken: number = 0; // Will be fetched dynamically from stock symbol
+  private signalSymbol: string = ''; // Store the stock symbol for logging
   
   // Position management
   private currentPosition: Position | null = null;
@@ -114,7 +116,7 @@ export class BollingerBandStrategy extends StrategyBase {
   
   // Real-time monitoring
   private ltpPollingInterval: NodeJS.Timeout | null = null;
-  private currentNiftyLTP: number = 0;
+  private currentStockLTP: number = 0; // Current LTP of signal stock
   private candleCheckInterval: NodeJS.Timeout | null = null;
   
   // Race condition protection for position exit processing
@@ -405,11 +407,15 @@ export class BollingerBandStrategy extends StrategyBase {
       // Step 0: Load persisted capital data (moved from constructor to avoid blocking sync I/O)
       this.loadCapitalData();
       
-      // Step 1: Get NIFTY50 instrument token dynamically
-      const nifty50Token = await this.getNifty50InstrumentToken();
-      this.NIFTY50_INSTRUMENT_TOKEN = nifty50Token;
+      // Step 1: Get signal instrument token dynamically from config
+      // This fetches the stock's instrument token (e.g., BRITANNIA, TCS) for signal generation
+      const { token, symbol } = await this.getSignalInstrumentToken();
+      this.signalInstrumentToken = token;
+      this.signalSymbol = symbol;
       
-      // Step 1: Load historical candle data with fallback for pre-market hours
+      this.logger.info(`🎯 Signal Instrument: ${this.signalSymbol} (Token: ${this.signalInstrumentToken})`);
+      
+      // Step 1b: Load historical candle data with fallback for pre-market hours
       await this.loadHistoricalDataWithFallback();
       
       // Step 2: Calculate daily pivots (use fallback if needed)
@@ -434,7 +440,8 @@ export class BollingerBandStrategy extends StrategyBase {
       
       this._isInitialized = true;
       this.logger.info('BollingerBandStrategy: Initialization complete', {
-        instrumentToken: nifty50Token,
+        signalInstrument: this.signalSymbol,
+        instrumentToken: this.signalInstrumentToken,
         candleCount: this.candleHistory.length,
         hasPivots: !!this.dailyPivots,
         hasIndicators: !!this.currentIndicators,
@@ -711,7 +718,7 @@ export class BollingerBandStrategy extends StrategyBase {
       this.currentIndicators = null;
       this.dailyPivots = null;
       this.currentCandle = null;
-      this.currentNiftyLTP = 0;
+      this.currentStockLTP = 0;
       
       // Clear position data
       this.currentPosition = null;
@@ -750,6 +757,143 @@ export class BollingerBandStrategy extends StrategyBase {
     }
   }
 
+  /**
+   * Get real-time entry analysis for dashboard display
+   * Returns current conditions for LONG and SHORT entries
+   */
+  private getEntryAnalysis(): any {
+    const price = this.getLastCompletedCandleClose();
+    const indicators = this.currentIndicators;
+    const pivots = this.dailyPivots;
+    
+    if (!indicators || !pivots || price === 0) {
+      return {
+        long: { conditions: [], metCount: 0, totalCount: 4, strength: 'NO_DATA' },
+        short: { conditions: [], metCount: 0, totalCount: 4, strength: 'NO_DATA' }
+      };
+    }
+    
+    const { rsi, supertrend, bollingerBands } = indicators;
+    const { r1, r2, pp } = pivots;
+    
+    // LONG conditions (4 main conditions - excluding candle direction which is checked at entry time)
+    const longConditions = [
+      {
+        name: 'Price > BB Upper',
+        met: price > bollingerBands.upper,
+        detail: `₹${price.toFixed(2)} ${price > bollingerBands.upper ? '>' : '<='} ₹${bollingerBands.upper.toFixed(2)}`
+      },
+      {
+        name: 'RSI 68-85',
+        met: rsi >= 68 && rsi <= 85,
+        detail: `${rsi.toFixed(2)} ${rsi >= 68 && rsi <= 85 ? 'in range' : 'out of range'}`
+      },
+      {
+        name: 'Supertrend UP',
+        met: supertrend.trend === 'UP',
+        detail: supertrend.trend
+      },
+      {
+        name: 'Above R1 or R2',
+        met: price > r1 || price > r2,
+        detail: `₹${price.toFixed(2)} ${price > r1 ? '> R1' : price > r2 ? '> R2' : '< R1 & R2'}`
+      }
+    ];
+    
+    // SHORT conditions (4 main conditions)
+    const shortConditions = [
+      {
+        name: 'Price < BB Lower',
+        met: price < bollingerBands.lower,
+        detail: `₹${price.toFixed(2)} ${price < bollingerBands.lower ? '<' : '>='} ₹${bollingerBands.lower.toFixed(2)}`
+      },
+      {
+        name: 'RSI 10-30',
+        met: rsi >= 10 && rsi <= 30,
+        detail: `${rsi.toFixed(2)} ${rsi >= 10 && rsi <= 30 ? 'in range' : 'out of range'}`
+      },
+      {
+        name: 'Supertrend DOWN',
+        met: supertrend.trend === 'DOWN',
+        detail: supertrend.trend
+      },
+      {
+        name: 'Below PP',
+        met: price <= pp,
+        detail: `₹${price.toFixed(2)} ${price <= pp ? '<=' : '>'} ₹${pp.toFixed(2)}`
+      }
+    ];
+    
+    const longMetCount = longConditions.filter(c => c.met).length;
+    const shortMetCount = shortConditions.filter(c => c.met).length;
+    
+    const getStrength = (met: number, total: number) => {
+      if (met === total) return 'SIGNAL';
+      if (met >= total - 1) return 'STRONG';
+      if (met >= total / 2) return 'WEAK';
+      return 'NO_SIGNAL';
+    };
+    
+    return {
+      long: {
+        conditions: longConditions,
+        metCount: longMetCount,
+        totalCount: 4,
+        strength: getStrength(longMetCount, 4)
+      },
+      short: {
+        conditions: shortConditions,
+        metCount: shortMetCount,
+        totalCount: 4,
+        strength: getStrength(shortMetCount, 4)
+      }
+    };
+  }
+
+  /**
+   * Get slot-level performance metrics from trade history
+   */
+  private getSlotPerformanceMetrics(): any {
+    const trades = this.tradeHistory;
+    const totalTrades = trades.length;
+    const closedTrades = trades.filter(t => t.pnl !== undefined).length;
+    const openTrades = totalTrades - closedTrades;
+    
+    const wins = trades.filter(t => (t.pnl || 0) > 0).length;
+    const losses = trades.filter(t => (t.pnl || 0) <= 0 && t.pnl !== undefined).length;
+    const winRate = closedTrades > 0 ? (wins / closedTrades) * 100 : 0;
+    
+    const totalPnL = trades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+    
+    const winningTrades = trades.filter(t => (t.pnl || 0) > 0);
+    const losingTrades = trades.filter(t => (t.pnl || 0) < 0);
+    
+    const totalWins = winningTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+    const totalLosses = Math.abs(losingTrades.reduce((sum, t) => sum + (t.pnl || 0), 0));
+    
+    const avgWin = wins > 0 ? totalWins / wins : 0;
+    const avgLoss = losses > 0 ? totalLosses / losses : 0;
+    const profitFactor = totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0;
+    
+    const roi = ((this.currentCapital - this.INITIAL_CAPITAL) / this.INITIAL_CAPITAL) * 100;
+    
+    return {
+      totalTrades,
+      closedTrades,
+      openTrades,
+      wins,
+      losses,
+      winRate,
+      totalPnL,
+      avgWin,
+      avgLoss,
+      profitFactor,
+      roi,
+      initialCapital: this.INITIAL_CAPITAL,
+      currentCapital: this.currentCapital
+    };
+  }
+
   public getStatus(): StrategyStatus {
     return {
       config: this.getConfig(),
@@ -769,8 +913,12 @@ export class BollingerBandStrategy extends StrategyBase {
       indicators: this.currentIndicators,
       pivots: this.dailyPivots,
       candleCount: this.candleHistory.length,
-      currentNiftyPrice: this.getLastCompletedCandleClose(),
+      currentStockPrice: this.getLastCompletedCandleClose(),
+      signalSymbol: this.signalSymbol,
       currentCandle: this.currentCandle,
+      // Enhanced dashboard data
+      entryAnalysis: this.getEntryAnalysis(), // Real-time LONG/SHORT condition analysis
+      slotMetrics: this.getSlotPerformanceMetrics(), // Slot-level performance metrics
       // Current position information for P&L tracking (updated via REST API polling)
       positionInfo: this.currentPosition ? {
         type: this.currentPosition.type,
@@ -1161,11 +1309,11 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * Load 7 days of historical NIFTY50 spot candles
+   * Load 7 days of historical candles for signal stock (e.g., BRITANNIA, TCS)
    * Handle weekends/holidays by extending lookback up to 14 days if needed
    */
   private async loadHistoricalData(): Promise<void> {
-    this.logger.info('Loading historical NIFTY50 candle data...');
+    this.logger.info(`Loading historical ${this.signalSymbol} candle data...`);
     
     const maxLookbackDays = 14;
     const requiredCandles = 25; // Minimum candles needed (20 for BB + buffer)
@@ -1176,10 +1324,10 @@ export class BollingerBandStrategy extends StrategyBase {
         const fromDate = new Date(toDate);
         fromDate.setDate(fromDate.getDate() - lookbackDays);
         
-        this.logger.info(`Fetching historical data: ${fromDate.toISOString().split('T')[0]} to ${toDate.toISOString().split('T')[0]}`);
+        this.logger.info(`Fetching ${this.signalSymbol} historical data: ${fromDate.toISOString().split('T')[0]} to ${toDate.toISOString().split('T')[0]}`);
         
         const historicalData = await this.kiteConnect.getHistoricalData(
-          this.NIFTY50_INSTRUMENT_TOKEN,
+          this.signalInstrumentToken,
           '5minute',
           fromDate,
           toDate
@@ -1196,14 +1344,14 @@ export class BollingerBandStrategy extends StrategyBase {
             volume: kiteCandle.volume || 0
           }));
           
-          this.logger.info(`Historical data loaded successfully: ${this.candleHistory.length} candles`);
+          this.logger.info(`✅ ${this.signalSymbol} historical data loaded: ${this.candleHistory.length} candles`);
           return;
         } else {
-          this.logger.warn(`Insufficient data with ${lookbackDays} days: ${historicalData?.length || 0} candles`);
+          this.logger.warn(`Insufficient ${this.signalSymbol} data with ${lookbackDays} days: ${historicalData?.length || 0} candles`);
         }
         
       } catch (error) {
-        this.logger.error(`Failed to fetch historical data for ${lookbackDays} days:`, error);
+        this.logger.error(`Failed to fetch ${this.signalSymbol} historical data for ${lookbackDays} days:`, error);
         
         // Log detailed error info to help debug authentication issues
         if (error && typeof error === 'object') {
@@ -1212,7 +1360,7 @@ export class BollingerBandStrategy extends StrategyBase {
       }
     }
     
-    throw new Error(`Failed to load sufficient historical data after ${maxLookbackDays} days`);
+    throw new Error(`Failed to load sufficient ${this.signalSymbol} historical data after ${maxLookbackDays} days`);
   }
 
   /**
@@ -1220,7 +1368,7 @@ export class BollingerBandStrategy extends StrategyBase {
    * This allows the bot to start before market hours without failing
    */
   private async loadHistoricalDataWithFallback(): Promise<void> {
-    this.logger.info('Loading historical data with production fallback...');
+    this.logger.info(`Loading ${this.signalSymbol} historical data with production fallback...`);
     
     try {
       // Try normal historical data loading first
@@ -1298,12 +1446,12 @@ export class BollingerBandStrategy extends StrategyBase {
       const cacheData = {
         timestamp: new Date().toISOString(),
         candles: this.candleHistory,
-        symbol: 'NIFTY50',
+        symbol: this.signalSymbol,
         timeframe: '5min'
       };
       
       fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
-      this.logger.info('?? Historical data cached successfully');
+      this.logger.info(`📦 ${this.signalSymbol} historical data cached successfully`);
     } catch (error) {
       this.logger.error('? Failed to cache historical data:', error);
     }
@@ -1358,34 +1506,40 @@ export class BollingerBandStrategy extends StrategyBase {
   private async calculateDailyPivotsWithFallback(): Promise<void> {
     try {
       await this.calculateDailyPivotsFromMarketData();
-      this.logger.info('? Daily pivots calculated from market data');
+      this.logger.info(`✅ ${this.signalSymbol} daily pivots calculated from market data`);
     } catch (error) {
-      this.logger.warn('?? Failed to fetch pivot data, using fallback', error);
+      this.logger.warn(`⚠️ Failed to fetch ${this.signalSymbol} pivot data, using fallback`, error);
       this.calculateFallbackPivots();
     }
   }
 
   /**
    * Calculate fallback pivot levels using approximate values
+   * Note: These are placeholder values - real trading should use actual data
    */
   private calculateFallbackPivots(): void {
-    // Use approximate NIFTY levels for pre-market
+    // Use placeholder values for pre-market when no data is available
+    // These should be replaced with real data when market opens
+    this.logger.warn(`⚠️ Using placeholder pivot levels for ${this.signalSymbol} - will update when market data available`);
+    
+    // For stocks, we can't use a fixed fallback as prices vary widely
+    // Use a generic approach: assume current indicators or mark as unavailable
     const approximateOHLC = {
-      high: 25200,
-      low: 25100, 
-      close: 25150
+      high: 1000,  // Placeholder - will be recalculated
+      low: 990, 
+      close: 995
     };
     
     this.dailyPivots = this.calculateDailyPivots(approximateOHLC);
-    this.logger.info('?? Using fallback pivot levels for pre-market operation', this.dailyPivots);
+    this.logger.info(`⚠️ Using placeholder pivot levels for ${this.signalSymbol} pre-market operation`, this.dailyPivots);
   }
 
   /**
-   * Calculate daily pivots from previous trading day OHLC
+   * Calculate daily pivots from previous trading day OHLC for signal stock
    * Fetch the most recent daily candle to get previous day's data
    */
   private async calculateDailyPivotsFromMarketData(): Promise<void> {
-    this.logger.info('Calculating daily pivot levels...');
+    this.logger.info(`Calculating ${this.signalSymbol} daily pivot levels...`);
     
     try {
       // Extend date range to ensure we get recent trading data
@@ -1396,20 +1550,20 @@ export class BollingerBandStrategy extends StrategyBase {
       const fromDate = new Date(toDate);
       fromDate.setDate(fromDate.getDate() - 10); // Get last 10 days to ensure enough trading days
       
-      this.logger.info('Fetching daily pivot data', {
+      this.logger.info(`Fetching ${this.signalSymbol} daily pivot data`, {
         fromDate: fromDate.toISOString().split('T')[0],
         toDate: toDate.toISOString().split('T')[0]
       });
       
       const dailyData = await this.kiteConnect.getHistoricalData(
-        this.NIFTY50_INSTRUMENT_TOKEN,
+        this.signalInstrumentToken,
         'day',
         fromDate,
         toDate
       );
       
       if (!dailyData || dailyData.length < 1) {
-        throw new Error('No daily data available for pivot calculation');
+        throw new Error(`No daily data available for ${this.signalSymbol} pivot calculation`);
       }
       
       // Get the most recent completed trading day
@@ -1422,7 +1576,7 @@ export class BollingerBandStrategy extends StrategyBase {
       });
       
       // Debug: Show all available dates to verify we're using the right one
-      this.logger.info('Available daily candles:', {
+      this.logger.info(`${this.signalSymbol} daily candles:`, {
         totalCandles: dailyData.length,
         dateRange: dailyData.length > 0 ? {
           oldest: dailyData[0].date,
@@ -1431,7 +1585,8 @@ export class BollingerBandStrategy extends StrategyBase {
         allDates: dailyData.map((d: any) => d.date).slice(-5) // Show last 5 dates
       });
 
-      this.logger.info('Daily pivots calculated', {
+      this.logger.info(`${this.signalSymbol} daily pivots calculated`, {
+        symbol: this.signalSymbol,
         date: previousDay.date,
         forTradingDay: 'Using most recent completed trading day for pivot calculation',
         pp: this.dailyPivots.pp.toFixed(2),
@@ -1440,92 +1595,73 @@ export class BollingerBandStrategy extends StrategyBase {
       });
       
     } catch (error) {
-      this.logger.error('Failed to calculate daily pivots:', error);
+      this.logger.error(`Failed to calculate ${this.signalSymbol} daily pivots:`, error);
       throw error;
     }
   }
 
   /**
-   * Get NIFTY50 instrument token dynamically from instruments list
-   * This method would be called during initialization to get the correct token
+   * Get signal instrument token dynamically from config.instruments[0]
+   * This fetches the stock's instrument token from NSE (e.g., BRITANNIA, TCS, RELIANCE)
+   * for use as the signal generator in the Bollinger Band strategy
    */
-  private async getNifty50InstrumentToken(): Promise<number> {
+  private async getSignalInstrumentToken(): Promise<{ token: number; symbol: string }> {
+    // Get stock symbol from config (e.g., "BRITANNIA", "TCS")
+    const stockSymbol = this.config.instruments?.[0];
+    
+    if (!stockSymbol) {
+      throw new Error('No stock symbol configured in config.instruments[0]. Strategy needs a signal instrument.');
+    }
+    
+    this.logger.info(`🔍 Looking up instrument token for stock: ${stockSymbol}`);
+    
     try {
-      // Try to find NIFTY 50 INDEX in different exchanges and formats
-      let nifty50 = null;
+      // Fetch NSE instruments to find the stock
+      const nseInstruments = await this.kiteConnect.getInstruments('NSE');
       
-      // First try: Look for NIFTY 50 INDEX in NSE
-      try {
-        const nseInstruments = await this.kiteConnect.getInstruments('NSE');
-        nifty50 = nseInstruments.find((inst: any) => 
-          (inst.name === 'NIFTY 50' || inst.name === 'NIFTY50') && 
-          (inst.instrument_type === 'INDEX' || inst.segment === 'INDICES')
-        );
-        
-        if (nifty50) {
-          this.logger.info('NIFTY50 INDEX found in NSE', {
-            token: nifty50.instrument_token,
-            tradingsymbol: nifty50.tradingsymbol,
-            name: nifty50.name,
-            instrument_type: nifty50.instrument_type,
-            segment: nifty50.segment
-          });
-          return nifty50.instrument_token;
-        }
-      } catch (nseError) {
-        this.logger.warn('Could not fetch NSE instruments:', nseError);
+      // Find the stock with matching tradingsymbol (exact match)
+      const stockInstrument = nseInstruments.find((inst: any) => 
+        inst.tradingsymbol === stockSymbol && 
+        inst.instrument_type === 'EQ' // Equity stock
+      );
+      
+      if (stockInstrument) {
+        this.logger.info(`✅ Found stock instrument: ${stockSymbol}`, {
+          token: stockInstrument.instrument_token,
+          tradingsymbol: stockInstrument.tradingsymbol,
+          name: stockInstrument.name,
+          instrument_type: stockInstrument.instrument_type,
+          exchange: stockInstrument.exchange
+        });
+        return { 
+          token: stockInstrument.instrument_token, 
+          symbol: stockSymbol 
+        };
       }
       
-      // Second try: Look for NIFTY 50 INDEX in INDICES exchange
-      try {
-        const indexInstruments = await this.kiteConnect.getInstruments('INDICES');
-        nifty50 = indexInstruments.find((inst: any) => 
-          inst.name === 'NIFTY 50' || inst.name === 'NIFTY50' || inst.tradingsymbol === 'NIFTY 50'
-        );
-        
-        if (nifty50) {
-          this.logger.info('NIFTY50 INDEX found in INDICES', {
-            token: nifty50.instrument_token,
-            tradingsymbol: nifty50.tradingsymbol,
-            name: nifty50.name,
-            instrument_type: nifty50.instrument_type,
-            segment: nifty50.segment
-          });
-          return nifty50.instrument_token;
-        }
-      } catch (indicesError) {
-        this.logger.warn('Could not fetch INDICES instruments:', indicesError);
+      // If exact match fails, try case-insensitive match
+      const stockInstrumentCaseInsensitive = nseInstruments.find((inst: any) => 
+        inst.tradingsymbol.toUpperCase() === stockSymbol.toUpperCase() && 
+        inst.instrument_type === 'EQ'
+      );
+      
+      if (stockInstrumentCaseInsensitive) {
+        this.logger.info(`✅ Found stock instrument (case-insensitive): ${stockSymbol}`, {
+          token: stockInstrumentCaseInsensitive.instrument_token,
+          tradingsymbol: stockInstrumentCaseInsensitive.tradingsymbol,
+          name: stockInstrumentCaseInsensitive.name
+        });
+        return { 
+          token: stockInstrumentCaseInsensitive.instrument_token, 
+          symbol: stockInstrumentCaseInsensitive.tradingsymbol 
+        };
       }
       
-      // Third try: Look for any NIFTY 50 in NSE (including EQ type)
-      try {
-        const nseInstruments = await this.kiteConnect.getInstruments('NSE');
-        nifty50 = nseInstruments.find((inst: any) => 
-          inst.name === 'NIFTY 50'
-        );
-        
-        if (nifty50) {
-          this.logger.warn('Using NIFTY 50 instrument (might not be INDEX)', {
-            token: nifty50.instrument_token,
-            tradingsymbol: nifty50.tradingsymbol,
-            name: nifty50.name,
-            instrument_type: nifty50.instrument_type,
-            segment: nifty50.segment,
-            warning: 'This might be ETF/EQ instead of pure INDEX'
-          });
-          return nifty50.instrument_token;
-        }
-      } catch (fallbackError) {
-        this.logger.warn('Fallback NSE search failed:', fallbackError);
-      }
-      
-      throw new Error('NIFTY50 INDEX instrument not found in any exchange');
+      throw new Error(`Stock ${stockSymbol} not found in NSE instruments`);
       
     } catch (error) {
-      this.logger.error('Failed to get NIFTY50 instrument token:', error);
-      this.logger.info('Using hardcoded fallback token 256265 - please verify this is correct NIFTY 50 INDEX');
-      // Fallback to hardcoded token
-      return 256265;
+      this.logger.error(`Failed to get instrument token for ${stockSymbol}:`, error);
+      throw new Error(`Cannot initialize strategy without signal instrument token for ${stockSymbol}`);
     }
   }
 
@@ -1795,13 +1931,13 @@ export class BollingerBandStrategy extends StrategyBase {
   private async fetchLatest5MinuteCandle(): Promise<void> {
     try {
       const fetchStartTime = new Date();
-      this.logger.info(`📥 Fetching 5-minute candle at ${fetchStartTime.toLocaleTimeString()}.${fetchStartTime.getMilliseconds()}`);
+      this.logger.info(`📥 Fetching ${this.signalSymbol} 5-minute candle at ${fetchStartTime.toLocaleTimeString()}.${fetchStartTime.getMilliseconds()}`);
       
       const toDate = new Date();
       const fromDate = new Date(toDate.getTime() - 10 * 60 * 1000); // Last 10 minutes to get latest candle
       
       const historicalData = await this.kiteConnect.getHistoricalData(
-        this.NIFTY50_INSTRUMENT_TOKEN,
+        this.signalInstrumentToken,
         '5minute',
         fromDate,
         toDate
@@ -1823,18 +1959,18 @@ export class BollingerBandStrategy extends StrategyBase {
         const candleAgeMinutes = Math.floor(candleAge / 60);
         const candleAgeSeconds = Math.floor(candleAge % 60);
         
-        this.logger.info(`📊 Received candle: ${newCandle.timestamp.toLocaleTimeString()} | Age: ${candleAgeMinutes}m ${candleAgeSeconds}s | OHLC: ${newCandle.open}/${newCandle.high}/${newCandle.low}/${newCandle.close} V:${newCandle.volume}`);
+        this.logger.info(`📊 ${this.signalSymbol} candle: ${newCandle.timestamp.toLocaleTimeString()} | Age: ${candleAgeMinutes}m ${candleAgeSeconds}s | OHLC: ${newCandle.open}/${newCandle.high}/${newCandle.low}/${newCandle.close} V:${newCandle.volume}`);
         
         // ⚠️ Alert if candle is too old (more than 6 minutes)
         // Note: 5-minute candles normally have 5m age since we fetch the just-closed bar
         if (candleAge > 6 * 60) {
-          this.logger.warn(`⚠️ STALE CANDLE WARNING: Candle is ${candleAgeMinutes}m ${candleAgeSeconds}s old! Expected ~5m for 5-minute bars. Candle: ${newCandle.timestamp.toLocaleTimeString()}`);
+          this.logger.warn(`⚠️ STALE CANDLE WARNING: ${this.signalSymbol} candle is ${candleAgeMinutes}m ${candleAgeSeconds}s old! Expected ~5m for 5-minute bars.`);
         } else if (candleAge > 5.5 * 60) {
-          this.logger.info(`ℹ️ Candle age: ${candleAgeMinutes}m ${candleAgeSeconds}s (slightly delayed but acceptable)`);
+          this.logger.info(`ℹ️ ${this.signalSymbol} candle age: ${candleAgeMinutes}m ${candleAgeSeconds}s (slightly delayed but acceptable)`);
         } else if (candleAge >= 4 * 60) {
-          this.logger.info(`✅ Fresh 5-minute candle: ${candleAgeMinutes}m ${candleAgeSeconds}s age (expected ~5m)`);
+          this.logger.info(`✅ Fresh ${this.signalSymbol} 5-minute candle: ${candleAgeMinutes}m ${candleAgeSeconds}s age (expected ~5m)`);
         } else {
-          this.logger.info(`✅ Very fresh candle: ${candleAgeMinutes}m ${candleAgeSeconds}s age`);
+          this.logger.info(`✅ Very fresh ${this.signalSymbol} candle: ${candleAgeMinutes}m ${candleAgeSeconds}s age`);
         }
 
         // Enhanced duplicate prevention: Check both timestamp and all OHLC values
@@ -1852,12 +1988,12 @@ export class BollingerBandStrategy extends StrategyBase {
           
           if (isNewerCandle) {
             this.candleHistory.push(newCandle);
-            this.logger.info(`[BOLLINGER] ✅ Added new 5-minute candle: NIFTY50 ${newCandle.close} (${newCandle.timestamp.toLocaleTimeString()})`);
+            this.logger.info(`[BOLLINGER] ✅ Added new 5-minute candle: ${this.signalSymbol} ${newCandle.close} (${newCandle.timestamp.toLocaleTimeString()})`);
           } else {
             // Same timestamp but different OHLC - update existing candle (live candle update)
             if (lastHistoricalCandle && newCandle.timestamp.getTime() === lastHistoricalCandle.timestamp.getTime()) {
               this.candleHistory[this.candleHistory.length - 1] = newCandle;
-              this.logger.debug(`[BOLLINGER] 🔄 Updated current 5-minute candle: NIFTY50 ${newCandle.close}`);
+              this.logger.debug(`[BOLLINGER] 🔄 Updated current 5-minute candle: ${this.signalSymbol} ${newCandle.close}`);
             }
           }
           
@@ -2081,7 +2217,7 @@ export class BollingerBandStrategy extends StrategyBase {
       if (this.currentPosition.type === 'LONG') {
         // For LONG positions: Use ONLY 5-minute candle close (never real-time LTP)
         if (candleClose !== undefined) {
-          this.currentNiftyLTP = candleClose; // Store for dashboard
+          this.currentStockLTP = candleClose; // Store for dashboard
           await this.checkLongExitOnCandleClose(candleClose);
         } else {
           this.logger.warn('LONG position exit called without candle close price');
@@ -2115,20 +2251,20 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   private async processLTPUpdate(): Promise<void> {
     try {
-      // Get current NIFTY50 spot LTP
-      const quote = await this.kiteConnect.getQuote([this.NIFTY50_INSTRUMENT_TOKEN]);
-      const nifty50Quote = quote[this.NIFTY50_INSTRUMENT_TOKEN];
+      // Get current stock spot LTP
+      const quote = await this.kiteConnect.getQuote([this.signalInstrumentToken]);
+      const stockQuote = quote[this.signalInstrumentToken];
       
-      if (!nifty50Quote) {
-        this.logger.warn('No quote data received for NIFTY50');
+      if (!stockQuote) {
+        this.logger.warn(`No quote data received for ${this.signalSymbol}`);
         return;
       }
       
-      const currentLTP = nifty50Quote.last_price;
+      const currentLTP = stockQuote.last_price;
       const timestamp = new Date();
       
       // Store current LTP for dashboard display
-      this.currentNiftyLTP = currentLTP;
+      this.currentStockLTP = currentLTP;
       
       // Build 5-minute candle
       this.buildFiveMinuteCandle(currentLTP, timestamp);
@@ -2404,7 +2540,7 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Execute LONG entry with CE option selection
    */
-  private async executeLongEntry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+  private async executeLongEntry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
     // Position overlap protection - ensure no existing position
     if (this.currentPosition !== null) {
       this.logger.warn('Skipping LONG entry - position already exists', {
@@ -2427,19 +2563,20 @@ export class BollingerBandStrategy extends StrategyBase {
       // This eliminates race condition where candleHistory updates during async operations
       
       // Real-time option selection instead of prediction
-      const targetPremium = nifty50Price * 0.01; // 1% of NIFTY
+      // Target premium based on stock price (adjust percentage based on stock volatility)
+      const targetPremium = stockPrice * 0.015; // 1.5% of stock price for stock options
       const ceOption = await this.selectOptionInstrument('CE', targetPremium);
       
       if (!ceOption) {
-        this.logger.error('? LONG entry failed: Could not find suitable CE option');
+        this.logger.error(`❌ LONG entry failed: Could not find suitable ${this.signalSymbol} CE option`);
         return;
       }
 
-      this.logger.info('?? CE Option selected for LONG entry', {
+      this.logger.info(`🎯 ${this.signalSymbol} CE Option selected for LONG entry`, {
         symbol: ceOption.tradingsymbol,
         premium: ceOption.last_price,
         target: targetPremium.toFixed(2),
-        niftyPrice: nifty50Price.toFixed(2),
+        stockPrice: stockPrice.toFixed(2),
         timestamp: new Date().toLocaleTimeString()
       });
       
@@ -2517,7 +2654,7 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Execute SHORT entry with PE option selection
    */
-  private async executeShortEntry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+  private async executeShortEntry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
     // Position overlap protection - ensure no existing position
     if (this.currentPosition !== null) {
       this.logger.warn('Skipping SHORT entry - position already exists', {
@@ -2540,27 +2677,28 @@ export class BollingerBandStrategy extends StrategyBase {
       // This eliminates race condition where candleHistory updates during async operations
       
       // Use passed values, with fallback to current price if not provided
-      const candleHigh = entryCandleHigh !== undefined ? entryCandleHigh : nifty50Price;
+      const candleHigh = entryCandleHigh !== undefined ? entryCandleHigh : stockPrice;
       
       // Real-time option selection instead of prediction
-      const targetPremium = nifty50Price * 0.01; // 1% of NIFTY
+      // Target premium based on stock price (adjust percentage based on stock volatility)
+      const targetPremium = stockPrice * 0.015; // 1.5% of stock price for stock options
       const peOption = await this.selectOptionInstrument('PE', targetPremium);
       
       if (!peOption) {
-        this.logger.error('? SHORT entry failed: Could not find suitable PE option');
+        this.logger.error(`❌ SHORT entry failed: Could not find suitable ${this.signalSymbol} PE option`);
         return;
       }
 
-      this.logger.info('?? PE Option selected for SHORT entry', {
+      this.logger.info(`🎯 ${this.signalSymbol} PE Option selected for SHORT entry`, {
         symbol: peOption.tradingsymbol,
         premium: peOption.last_price,
         target: targetPremium.toFixed(2),
-        niftyPrice: nifty50Price.toFixed(2),
+        stockPrice: stockPrice.toFixed(2),
         timestamp: new Date().toLocaleTimeString()
       });
       
       // Option already validated - proceed with entry
-      this.logger.info(`?? Executing SHORT entry with real-time selected option: ${peOption.tradingsymbol}`);
+      this.logger.info(`📉 Executing SHORT entry with real-time selected option: ${peOption.tradingsymbol}`);
       const lots = this.calculateLots();
       const orderResult = await this.executeOrder('BUY', peOption, lots);
       
@@ -2636,29 +2774,29 @@ export class BollingerBandStrategy extends StrategyBase {
    * - SHORT exits: handled by startShortPositionMonitoring() with unified exit logic
    * This method is no longer used and will be removed in future versions
    */
-  private async checkExitConditions(nifty50LTP: number): Promise<void> {
+  private async checkExitConditions(stockLTP: number): Promise<void> {
     if (!this.currentPosition) return;
     
     // All exit processing has been moved to dedicated position-specific systems
     // LONG: checkLongExitOnCandleClose() called from checkPositionExit()
     // SHORT: checkShortExitUnified() called from startShortPositionMonitoring()
     
-    this.logger.debug('?? checkExitConditions() called but all exit logic moved to dedicated systems', {
+    this.logger.debug('⚠️ checkExitConditions() called but all exit logic moved to dedicated systems', {
       positionType: this.currentPosition.type,
-      niftyLTP: nifty50LTP.toFixed(2)
+      stockLTP: stockLTP.toFixed(2)
     });
   }
 
   /**
    * LONG Exit Check - Underlying-Based Safety Net (Secondary Exit)
    *
-   * This is a SECONDARY exit mechanism based on NIFTY spot price.
+   * This is a SECONDARY exit mechanism based on stock spot price.
    * PRIMARY exit is via checkLongExitSimple() with trailing SL.
    *
    * This acts as:
-   * 1. Technical invalidation (NIFTY breaks below key support)
+   * 1. Technical invalidation (stock breaks below key support)
    * 2. Safety net if option premium streaming fails
-   * 3. Additional protection against sharp NIFTY drops
+   * 3. Additional protection against sharp stock drops
    *
    * Exit Threshold: MAX(entry candle low, BB midline)
    * Checked ONLY on 5-minute candle close
@@ -3400,18 +3538,18 @@ export class BollingerBandStrategy extends StrategyBase {
   // ===========================
 
   /**
-   * Get last completed 5-minute candle close price (used as current NIFTY price)
+   * Get last completed 5-minute candle close price (used as current stock price)
    */
   private getLastCompletedCandleClose(): number {
     if (this.candleHistory.length === 0) {
-      return 25170; // Default fallback
+      return 0; // No fallback for stocks - price varies widely
     }
     const lastCandle = this.candleHistory[this.candleHistory.length - 1];
-    return lastCandle ? lastCandle.close : 25170;
+    return lastCandle ? lastCandle.close : 0;
   }
 
   /**
-   * Get next Tuesday expiry date (same logic as Strategy 1)
+   * Get next Tuesday expiry date (for NIFTY weekly options - kept for reference)
    */
   private getNextTuesdayExpiry(): Date {
     const today = new Date();
@@ -3428,6 +3566,37 @@ export class BollingerBandStrategy extends StrategyBase {
     nextTuesday.setHours(15, 30, 0, 0); // Market close time
     
     return nextTuesday;
+  }
+
+  /**
+   * Get next expiry date for stock options
+   * Stock options in India typically have monthly expiry (last Thursday of month)
+   * Some stocks also have weekly expiries - this finds the nearest available expiry
+   */
+  private getNextStockOptionExpiry(stockOptions: any[]): Date {
+    // Get unique expiry dates sorted ascending
+    const uniqueExpiries: Date[] = [...new Set(stockOptions.map((opt: any) => new Date(opt.expiry).getTime()))]
+      .sort((a, b) => a - b)
+      .map(ts => new Date(ts));
+    
+    const now = new Date();
+    
+    // Find the first expiry that's in the future
+    for (const expiry of uniqueExpiries) {
+      if (expiry.getTime() > now.getTime()) {
+        this.logger.info(`📅 Found ${this.signalSymbol} expiry: ${expiry.toDateString()} (${uniqueExpiries.length} total expiries available)`);
+        return expiry;
+      }
+    }
+    
+    // If no future expiry found (shouldn't happen), return the closest one
+    if (uniqueExpiries.length > 0) {
+      const latestExpiry = uniqueExpiries[uniqueExpiries.length - 1] as Date;
+      this.logger.warn(`⚠️ No future ${this.signalSymbol} expiries found, using latest available: ${latestExpiry.toDateString()}`);
+      return latestExpiry;
+    }
+    
+    throw new Error(`No expiry dates found for ${this.signalSymbol} options`);
   }
 
   /**
@@ -3457,54 +3626,65 @@ export class BollingerBandStrategy extends StrategyBase {
 
   /**
    * Select option instrument based on target premium
+   * Selects stock options based on the signal stock (e.g., BRITANNIA, TCS options)
    */
   private async selectOptionInstrument(optionType: 'CE' | 'PE', targetPremium: number): Promise<any> {
     try {
-      // Get NIFTY options instruments from cache (avoids 15MB API call on each entry)
+      // Get NFO instruments from cache (avoids 15MB API call on each entry)
       const instruments = await this.instrumentCache.getNFOInstruments();
       
-      // Filter for NIFTY options of specified type
-      const niftyOptions = instruments.filter((inst: any) => 
-        inst.name === 'NIFTY' && 
+      // Filter for stock options of specified type (using signal stock symbol)
+      // Stock options use the stock symbol as the 'name' field (e.g., BRITANNIA, TCS)
+      const stockOptions = instruments.filter((inst: any) => 
+        inst.name === this.signalSymbol && 
         inst.instrument_type === optionType &&
         new Date(inst.expiry) > new Date() // Not expired
       );
       
-      // Get next Tuesday expiry (same logic as Strategy 1)
-      const nextTuesdayExpiry = this.getNextTuesdayExpiry();
+      if (stockOptions.length === 0) {
+        this.logger.warn(`⚠️ No ${this.signalSymbol} options found. Checking for alternative name formats...`);
+        // Some stocks might have different naming in NFO
+        // Log available names for debugging
+        const availableNames = [...new Set(instruments.map((i: any) => i.name))].sort();
+        this.logger.debug(`Available option names in NFO: ${availableNames.slice(0, 20).join(', ')}...`);
+        throw new Error(`No ${this.signalSymbol} options found in NFO instruments`);
+      }
       
-      this.logger.info(`🎯 Selecting ${optionType} option by PREMIUM for NIFTY price: ₹${targetPremium.toFixed(2)}`);
-      this.logger.info(`📅 Target expiry: ${nextTuesdayExpiry.toDateString()}`);
+      // Get next expiry for stock options (usually monthly for stocks, but check for weeklies)
+      const nextExpiry = this.getNextStockOptionExpiry(stockOptions);
       
-      // Filter for next Tuesday expiry options (exact match within 1 day)
-      const nextTuesdayOptions = niftyOptions.filter((opt: any) => {
-        const isSameExpiry = Math.abs(new Date(opt.expiry).getTime() - nextTuesdayExpiry.getTime()) < 24 * 60 * 60 * 1000; // Within 1 day
+      this.logger.info(`🎯 Selecting ${optionType} option by PREMIUM for ${this.signalSymbol}: ₹${targetPremium.toFixed(2)}`);
+      this.logger.info(`📅 Target expiry: ${nextExpiry.toDateString()}`);
+      
+      // Filter for next expiry options (exact match within 1 day)
+      const expiryOptions = stockOptions.filter((opt: any) => {
+        const isSameExpiry = Math.abs(new Date(opt.expiry).getTime() - nextExpiry.getTime()) < 24 * 60 * 60 * 1000;
         return isSameExpiry;
       });
       
-      if (nextTuesdayOptions.length === 0) {
-        throw new Error('No suitable NIFTY options found');
+      if (expiryOptions.length === 0) {
+        throw new Error(`No suitable ${this.signalSymbol} options found for expiry ${nextExpiry.toDateString()}`);
       }
       
-      // Get current NIFTY50 spot price for ATM calculation
-      const nifty50Quote = await this.kiteConnect.getQuote([this.NIFTY50_INSTRUMENT_TOKEN]);
-      const nifty50Price = nifty50Quote[this.NIFTY50_INSTRUMENT_TOKEN].last_price;
+      // Get current stock spot price for ATM calculation
+      const stockQuote = await this.kiteConnect.getQuote([this.signalInstrumentToken]);
+      const stockPrice = stockQuote[this.signalInstrumentToken].last_price;
       
-      // Find ATM strike and select ±25 options around it
-      const atmStrike = this.findATMStrike(nextTuesdayOptions, nifty50Price);
-      const atmIndex = nextTuesdayOptions.findIndex((opt: any) => opt.strike === atmStrike);
+      // Find ATM strike and select nearby options
+      const atmStrike = this.findATMStrike(expiryOptions, stockPrice);
+      const atmIndex = expiryOptions.findIndex((opt: any) => opt.strike === atmStrike);
       
       if (atmIndex === -1) {
-        throw new Error(`ATM strike ${atmStrike} not found in options array`);
+        throw new Error(`ATM strike ${atmStrike} not found in ${this.signalSymbol} options array`);
       }
       
-      // Calculate range: ATM ± 25 strikes (51 total)
-      const startIndex = Math.max(0, atmIndex - 25);
-      const endIndex = Math.min(nextTuesdayOptions.length - 1, atmIndex + 25);
-      const relevantOptions = nextTuesdayOptions.slice(startIndex, endIndex + 1);
+      // Calculate range: ATM ± 15 strikes (31 total) - less than NIFTY due to fewer strikes typically
+      const startIndex = Math.max(0, atmIndex - 15);
+      const endIndex = Math.min(expiryOptions.length - 1, atmIndex + 15);
+      const relevantOptions = expiryOptions.slice(startIndex, endIndex + 1);
       
-      this.logger.info(`🎯 ATM Strike: ₹${atmStrike} (NIFTY Spot: ₹${nifty50Price.toFixed(2)})`);
-      this.logger.info(`📊 Selecting ${relevantOptions.length} options: Strikes ${relevantOptions[0].strike} to ${relevantOptions[relevantOptions.length-1].strike}`);
+      this.logger.info(`🎯 ATM Strike: ₹${atmStrike} (${this.signalSymbol} Spot: ₹${stockPrice.toFixed(2)})`);
+      this.logger.info(`📊 Selecting from ${relevantOptions.length} ${this.signalSymbol} options: Strikes ${relevantOptions[0].strike} to ${relevantOptions[relevantOptions.length-1].strike}`);
       
       // Get quotes for ATM±25 options (single API call, well under 200 symbol limit)
       const tokens = relevantOptions.map((opt: any) => opt.instrument_token);
@@ -3645,7 +3825,8 @@ export class BollingerBandStrategy extends StrategyBase {
       consecutiveErrors: this.healthStatus.consecutiveErrors,
       strategyStatus: this.getStatus(),
       hasPosition: !!this.currentPosition,
-      currentNiftyLTP: this.currentNiftyLTP,
+      currentStockLTP: this.currentStockLTP,
+      signalSymbol: this.signalSymbol,
       timestamp: now.toISOString()
     };
     
@@ -3685,7 +3866,8 @@ export class BollingerBandStrategy extends StrategyBase {
       errorBreakdown: Object.fromEntries(this.errorCounts),
       candleHistoryLength: this.candleHistory.length,
       hasPosition: !!this.currentPosition,
-      currentNiftyLTP: this.currentNiftyLTP,
+      currentStockLTP: this.currentStockLTP,
+      signalSymbol: this.signalSymbol,
       lastUpdate: now.toISOString()
     };
   }
@@ -3823,16 +4005,16 @@ export class BollingerBandStrategy extends StrategyBase {
    * LONG entry execution with retry mechanism
    * Critical for trend following - every trade opportunity matters
    */
-  private async executeLongEntryWithRetry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+  private async executeLongEntryWithRetry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
     try {
       await this.retryOperation(
-        () => this.executeLongEntry(nifty50Price, entryCandleHigh, entryCandleLow, entryCandleTimestamp),
+        () => this.executeLongEntry(stockPrice, entryCandleHigh, entryCandleLow, entryCandleTimestamp),
         'LONG Entry Execution',
         3, // Max 3 attempts for trade execution
         this.TRADE_RETRY_DELAYS
       );
     } catch (error) {
-      this.logger.error('? LONG entry failed after all retry attempts:', error);
+      this.logger.error('❌ LONG entry failed after all retry attempts:', error);
       this.trackError('execution_long_entry_retry_failed', error, true);
     }
   }
@@ -3841,16 +4023,16 @@ export class BollingerBandStrategy extends StrategyBase {
    * SHORT entry execution with retry mechanism  
    * Critical for trend following - every trade opportunity matters
    */
-  private async executeShortEntryWithRetry(nifty50Price: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+  private async executeShortEntryWithRetry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
     try {
       await this.retryOperation(
-        () => this.executeShortEntry(nifty50Price, entryCandleHigh, entryCandleLow, entryCandleTimestamp),
+        () => this.executeShortEntry(stockPrice, entryCandleHigh, entryCandleLow, entryCandleTimestamp),
         'SHORT Entry Execution',
         3, // Max 3 attempts for trade execution
         this.TRADE_RETRY_DELAYS
       );
     } catch (error) {
-      this.logger.error('? SHORT entry failed after all retry attempts:', error);
+      this.logger.error('❌ SHORT entry failed after all retry attempts:', error);
       this.trackError('execution_short_entry_retry_failed', error, true);
     }
   }

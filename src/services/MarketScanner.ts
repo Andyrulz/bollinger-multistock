@@ -644,6 +644,10 @@ export class MarketScanner {
 
   /**
    * Step 4: Select top N stocks and find ATM options
+   * 
+   * IMPORTANT: Iterates through ALL qualified stocks (by score descending)
+   * until we find N stocks with valid options (premium >= minPremium).
+   * This ensures we don't give up just because the top 3 by score have low premium.
    */
   private async selectTopStocks(stocks: ScoredStock[], sectorStatus: SectorStatus): Promise<ScoredStock[]> {
     // Sort by score descending
@@ -655,11 +659,21 @@ export class MarketScanner {
       this.logger.info(`  ${i + 1}. ${stock.symbol}: Score=${stock.score.toFixed(2)} (${stock.bias}) | T:${stock.breakdown.trend.toFixed(1)} M:${stock.breakdown.momentum.toFixed(1)} V:${stock.breakdown.volume.toFixed(1)} S:${stock.breakdown.sector.toFixed(1)} | Spot=₹${stock.spotPrice.toFixed(2)}`);
     });
 
-    // Take top N
-    const topStocks = sorted.slice(0, this.config.topCount);
+    // Filter to only stocks meeting minimum score
+    const qualifiedStocks = sorted.filter(s => s.score >= this.config.minScore);
+    this.logger.info(`📊 ${qualifiedStocks.length} stocks meet minimum score of ${this.config.minScore}`);
 
-    // Find ATM options for each
-    for (const stock of topStocks) {
+    // Iterate through ALL qualified stocks until we find N with valid options
+    const validStocks: ScoredStock[] = [];
+    let checkedCount = 0;
+
+    for (const stock of qualifiedStocks) {
+      // Stop once we have enough valid stocks
+      if (validStocks.length >= this.config.topCount) {
+        break;
+      }
+
+      checkedCount++;
       try {
         const atmOption = await this.findATMOption(
           stock.symbol,
@@ -670,21 +684,27 @@ export class MarketScanner {
         // Premium floor check - minimum ₹10 to ensure liquidity
         if (atmOption.premium < this.config.minPremium) {
           this.logger.warn(
-            `${stock.symbol}: Premium too low (₹${atmOption.premium}, min: ₹${this.config.minPremium}) - DISCARD`,
+            `${stock.symbol}: Premium too low (₹${atmOption.premium.toFixed(1)}, min: ₹${this.config.minPremium}) - SKIP, trying next...`,
           );
           stock.valid = false;
           continue;
         }
 
+        // Valid stock found!
         stock.atmOption = atmOption;
+        stock.valid = true;
+        validStocks.push(stock);
+        this.logger.info(
+          `✅ ${stock.symbol}: Valid option found - ${atmOption.tradingsymbol} @ ₹${atmOption.premium.toFixed(1)} (${validStocks.length}/${this.config.topCount} slots filled)`,
+        );
       } catch (error) {
         this.logger.error(`Failed to find option for ${stock.symbol}:`, error);
         stock.valid = false;
       }
     }
 
-    // Filter out invalid
-    return topStocks.filter((s) => s.valid);
+    this.logger.info(`📊 Checked ${checkedCount} stocks to find ${validStocks.length} with valid options`);
+    return validStocks;
   }
 
   /**

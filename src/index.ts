@@ -188,6 +188,43 @@ class TradingBot {
       // Get active strategies from StrategyRegistry
       const activeStrategies = Array.from(StrategyRegistry.getAllInstances().values());
       const scannerResult = await this.strategyManager.getLastScannerResults();
+      const slotStates = this.strategyManager.getSlotStates();
+      
+      // Calculate aggregate metrics across all active strategies
+      let aggregateMetrics = {
+        totalPnL: 0,
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        winRate: 0,
+        totalCapital: 0,
+        currentCapital: 0,
+        roi: 0,
+        activeSlots: activeStrategies.length
+      };
+      
+      for (const strategy of activeStrategies) {
+        try {
+          const status = await (strategy as any).getStatus();
+          const slotMetrics = status?.slotMetrics || {};
+          aggregateMetrics.totalPnL += slotMetrics.totalPnL || 0;
+          aggregateMetrics.totalTrades += slotMetrics.totalTrades || 0;
+          aggregateMetrics.wins += slotMetrics.wins || 0;
+          aggregateMetrics.losses += slotMetrics.losses || 0;
+          aggregateMetrics.totalCapital += slotMetrics.initialCapital || 65000;
+          aggregateMetrics.currentCapital += slotMetrics.currentCapital || 65000;
+        } catch (e) {
+          // Strategy may not have getStatus yet
+        }
+      }
+      
+      // Calculate aggregate win rate and ROI
+      if (aggregateMetrics.wins + aggregateMetrics.losses > 0) {
+        aggregateMetrics.winRate = (aggregateMetrics.wins / (aggregateMetrics.wins + aggregateMetrics.losses)) * 100;
+      }
+      if (aggregateMetrics.totalCapital > 0) {
+        aggregateMetrics.roi = ((aggregateMetrics.currentCapital - aggregateMetrics.totalCapital) / aggregateMetrics.totalCapital) * 100;
+      }
       
       const htmlResponse = `
 <!DOCTYPE html>
@@ -362,6 +399,110 @@ class TradingBot {
         .stat-subtext {
             color: #64748b;
             font-size: 0.85rem;
+        }
+        
+        /* Slot States Section */
+        .slot-states-section {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        
+        .slot-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+        
+        .slot-card {
+            padding: 16px;
+            background: #f8fafc;
+            border-radius: 8px;
+            border: 2px solid #e2e8f0;
+            position: relative;
+        }
+        
+        .slot-card.locked {
+            border-color: #f59e0b;
+            background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+        }
+        
+        .slot-card.active {
+            border-color: #10b981;
+            background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+        }
+        
+        .slot-card.empty {
+            border-color: #cbd5e1;
+            background: #f1f5f9;
+        }
+        
+        .slot-number {
+            position: absolute;
+            top: -10px;
+            left: 12px;
+            background: #3b82f6;
+            color: white;
+            padding: 2px 10px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .slot-symbol {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #1a202c;
+            margin-top: 8px;
+            margin-bottom: 8px;
+        }
+        
+        .slot-score {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        
+        .slot-score-value {
+            font-weight: 700;
+            color: #059669;
+        }
+        
+        .slot-bias {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+        
+        .slot-bias.long {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        
+        .slot-bias.short {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        
+        .slot-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: #64748b;
+        }
+        
+        .slot-status-icon {
+            font-size: 1rem;
+        }
+        
+        .slot-deployed {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            margin-top: 8px;
         }
         
         /* Scanner Section */
@@ -771,10 +912,77 @@ class TradingBot {
             </div>
         </div>
 
+        <!-- Aggregate P&L Section -->
+        <div class="scanner-section" style="border: 2px solid ${aggregateMetrics.totalPnL >= 0 ? '#10b981' : '#ef4444'}; background: ${aggregateMetrics.totalPnL >= 0 ? 'rgba(16, 185, 129, 0.05)' : 'rgba(239, 68, 68, 0.05)'};">
+            <div class="section-header" style="border-bottom: 1px solid ${aggregateMetrics.totalPnL >= 0 ? '#10b981' : '#ef4444'};">
+                <div class="section-title">
+                    <span>💹</span> Aggregate Performance (All Slots)
+                </div>
+                <div style="font-size: 0.9rem; color: #64748b;">
+                    ${aggregateMetrics.activeSlots}/3 slots active
+                </div>
+            </div>
+            
+            <div class="stats-grid" style="margin-bottom: 0;">
+                <div class="stat-card" style="border: 2px solid ${aggregateMetrics.totalPnL >= 0 ? '#10b981' : '#ef4444'};">
+                    <div class="stat-header">
+                        <span class="stat-icon">${aggregateMetrics.totalPnL >= 0 ? '📈' : '📉'}</span>
+                        <span class="badge ${aggregateMetrics.totalPnL >= 0 ? 'active' : ''}" style="${aggregateMetrics.totalPnL < 0 ? 'background: rgba(239, 68, 68, 0.2); color: #ef4444;' : ''}">
+                            ${aggregateMetrics.totalPnL >= 0 ? 'Profit' : 'Loss'}
+                        </span>
+                    </div>
+                    <div class="stat-label">Total P&L</div>
+                    <div class="stat-value" style="color: ${aggregateMetrics.totalPnL >= 0 ? '#10b981' : '#ef4444'};">
+                        ₹${aggregateMetrics.totalPnL >= 0 ? '+' : ''}${aggregateMetrics.totalPnL.toFixed(2)}
+                    </div>
+                    <div class="stat-subtext">Combined across all slots</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-icon">📊</span>
+                        <span class="stat-label">Trades</span>
+                    </div>
+                    <div class="stat-label">Total Trades</div>
+                    <div class="stat-value">${aggregateMetrics.totalTrades}</div>
+                    <div class="stat-subtext">${aggregateMetrics.wins}W / ${aggregateMetrics.losses}L</div>
+                </div>
+                
+                <div class="stat-card" style="border: 2px solid ${aggregateMetrics.winRate >= 50 ? '#10b981' : '#f59e0b'};">
+                    <div class="stat-header">
+                        <span class="stat-icon">🎯</span>
+                        <span class="badge ${aggregateMetrics.winRate >= 50 ? 'active' : ''}" style="${aggregateMetrics.winRate < 50 ? 'background: rgba(245, 158, 11, 0.2); color: #f59e0b;' : ''}">
+                            ${aggregateMetrics.winRate >= 50 ? 'Good' : 'Needs Work'}
+                        </span>
+                    </div>
+                    <div class="stat-label">Win Rate</div>
+                    <div class="stat-value" style="color: ${aggregateMetrics.winRate >= 50 ? '#10b981' : '#f59e0b'};">
+                        ${aggregateMetrics.winRate.toFixed(1)}%
+                    </div>
+                    <div class="stat-subtext">Target: 50%+</div>
+                </div>
+                
+                <div class="stat-card" style="border: 2px solid ${aggregateMetrics.roi >= 0 ? '#10b981' : '#ef4444'};">
+                    <div class="stat-header">
+                        <span class="stat-icon">💵</span>
+                        <span class="stat-label">ROI</span>
+                    </div>
+                    <div class="stat-label">Return on Investment</div>
+                    <div class="stat-value" style="color: ${aggregateMetrics.roi >= 0 ? '#10b981' : '#ef4444'};">
+                        ${aggregateMetrics.roi >= 0 ? '+' : ''}${aggregateMetrics.roi.toFixed(2)}%
+                    </div>
+                    <div class="stat-subtext">On ₹${aggregateMetrics.totalCapital.toLocaleString()} deployed</div>
+                </div>
+            </div>
+        </div>
+
         <div class="scanner-section">
             <div class="section-header">
                 <div class="section-title">
-                    <span>⏰</span> Daily Scanner Timeline
+                    <span>🔄</span> Smart Retention Scanner
+                    <span style="font-size: 0.75rem; font-weight: 400; color: #64748b; margin-left: 8px;">
+                        Keep≥6.0 | Deploy≥7.0 | Scans: XX:35
+                    </span>
                 </div>
                 <div class="scanner-actions">
                     <button onclick="runScanner()" class="btn btn-primary">🔍 Run Scanner Now</button>
@@ -807,17 +1015,59 @@ class TradingBot {
             
             <div class="scanner-timeline">
                 <div class="timeline-item upcoming">
-                    <div class="timeline-time">09:00 AM</div>
-                    <div class="timeline-label">Pre-market data caching (100 stocks × 80 candles)</div>
+                    <div class="timeline-time">09:35 AM</div>
+                    <div class="timeline-label">First scan + deployment (initial)</div>
                 </div>
                 <div class="timeline-item upcoming">
-                    <div class="timeline-time">09:30 AM</div>
-                    <div class="timeline-label">Scanner execution + TMV scoring + deployment</div>
+                    <div class="timeline-time">10:35 - 14:35</div>
+                    <div class="timeline-label">Hourly Smart Retention scans</div>
                 </div>
                 <div class="timeline-item upcoming">
-                    <div class="timeline-time">15:35 PM</div>
-                    <div class="timeline-label">EOD cache cleanup + memory optimization</div>
+                    <div class="timeline-time">15:30 PM</div>
+                    <div class="timeline-label">EOD cleanup + data persistence</div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Smart Retention Slot States -->
+        <div class="slot-states-section">
+            <div class="section-header">
+                <div class="section-title">
+                    <span>🎰</span> Smart Retention - Slot States
+                </div>
+                <div style="font-size: 0.85rem; color: #64748b;">
+                    LOCK → Active Position | KEEP → Score ≥6.0 | SWAP → Score dropped | DEPLOY → Empty slot
+                </div>
+            </div>
+            
+            <div class="slot-grid">
+                ${slotStates.map((slot: any, idx: number) => {
+                    const slotClass = slot.locked ? 'locked' : (slot.symbol ? 'active' : 'empty');
+                    return `
+                    <div class="slot-card ${slotClass}">
+                        <div class="slot-number">Slot #${slot.slotNumber + 1}</div>
+                        <div class="slot-symbol">${slot.symbol || '—'}</div>
+                        ${slot.symbol ? `
+                        <div class="slot-score">
+                            <span class="slot-score-value">${slot.lastScanScore !== null ? slot.lastScanScore.toFixed(1) : '—'}/10</span>
+                            <span class="slot-bias ${slot.lastScanBias?.toLowerCase() || ''}">${slot.lastScanBias || '—'}</span>
+                        </div>
+                        <div class="slot-status">
+                            <span class="slot-status-icon">${slot.locked ? '🔒' : '✅'}</span>
+                            <span>${slot.locked ? 'LOCKED (Active Position)' : 'Monitoring'}</span>
+                        </div>
+                        <div class="slot-deployed">
+                            Deployed: ${slot.deployedAt ? new Date(slot.deployedAt).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : '—'}
+                        </div>
+                        ` : `
+                        <div class="slot-status">
+                            <span class="slot-status-icon">⏳</span>
+                            <span>Awaiting deployment</span>
+                        </div>
+                        `}
+                    </div>
+                    `;
+                }).join('')}
             </div>
         </div>
 
@@ -865,8 +1115,8 @@ class TradingBot {
                 <div class="strategy-card" style="border: 2px solid #3b82f6; background: white;">
                     <div class="strategy-header">
                         <div>
-                            <div class="strategy-title">🤖 Scanner-Deployed Strategies</div>
-                            <div class="strategy-subtitle">Auto-deployed at 09:30 AM daily</div>
+                            <div class="strategy-title">🤖 Smart Retention Strategies</div>
+                            <div class="strategy-subtitle">Hourly scans at XX:35 with rebalancing</div>
                         </div>
                         <span class="status-badge scheduled">Awaiting Scan</span>
                     </div>
@@ -877,7 +1127,7 @@ class TradingBot {
                         </div>
                         <div class="metric">
                             <div class="metric-label">Next Scan</div>
-                            <div class="metric-value">09:30 AM</div>
+                            <div class="metric-value">XX:35</div>
                         </div>
                     </div>
                     <div class="strategy-actions">
@@ -972,8 +1222,10 @@ class TradingBot {
           return;
         }
 
-        this.logger.info('🔍 Manual scanner triggered via API');
-        const result = await this.strategyManager.runManualScanner();
+        // Check for force parameter (query string or body)
+        const force = req.query.force === 'true' || req.body?.force === true;
+        this.logger.info(`🔍 Manual scanner triggered via API${force ? ' (FORCED)' : ''}`);
+        const result = await this.strategyManager.runManualScanner(force);
         
         res.json({
           success: true,
@@ -1012,9 +1264,43 @@ class TradingBot {
       }
     });
 
+    // Slot States API endpoint
+    this.app.get('/api/slots', (req: Request, res: Response): void => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const slotStates = this.strategyManager.getSlotStates();
+        
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          slots: slotStates.map(slot => ({
+            slotNumber: slot.slotNumber,
+            symbol: slot.symbol,
+            strategyId: slot.strategyId,
+            deployedAt: slot.deployedAt,
+            lastScanScore: slot.lastScanScore,
+            lastScanBias: slot.lastScanBias,
+            locked: slot.locked,
+            status: slot.locked ? 'LOCKED' : (slot.symbol ? 'ACTIVE' : 'EMPTY')
+          }))
+        });
+      } catch (error) {
+        this.logger.error('Failed to get slot states:', error);
+        res.status(500).json({ error: 'Failed to get slot states' });
+      }
+    });
+
     this.app.get('/scanner-results', async (req: Request, res: Response) => {
       try {
         const results = await this.strategyManager.getLastScannerResults();
+        const slotStates = this.strategyManager.getSlotStates();
         
         const html = `
 <!DOCTYPE html>
@@ -1127,6 +1413,32 @@ class TradingBot {
             <div class="summary-card">
                 <div class="summary-label">Green Sectors</div>
                 <div class="summary-value">${results.greenSectors.length}</div>
+            </div>
+        </div>
+        
+        <!-- Current Slot States -->
+        <div class="header" style="margin-bottom: 20px;">
+            <h2 style="margin-bottom: 16px;">🎰 Current Slot States</h2>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+                ${slotStates.map((slot: any) => `
+                <div style="padding: 16px; background: ${slot.locked ? '#fffbeb' : slot.symbol ? '#ecfdf5' : '#f1f5f9'}; 
+                            border: 2px solid ${slot.locked ? '#f59e0b' : slot.symbol ? '#10b981' : '#cbd5e1'}; 
+                            border-radius: 8px;">
+                    <div style="font-size: 0.75rem; color: #64748b; margin-bottom: 4px;">Slot #${slot.slotNumber + 1}</div>
+                    <div style="font-size: 1.1rem; font-weight: 700;">${slot.symbol || '— Empty —'}</div>
+                    ${slot.symbol ? `
+                    <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center;">
+                        <span style="font-weight: 600; color: #059669;">${slot.lastScanScore !== null ? slot.lastScanScore.toFixed(1) : '—'}/10</span>
+                        <span style="padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600;
+                                     background: ${slot.lastScanBias === 'LONG' ? '#d1fae5' : '#fee2e2'};
+                                     color: ${slot.lastScanBias === 'LONG' ? '#065f46' : '#991b1b'};">
+                            ${slot.lastScanBias || '—'}
+                        </span>
+                        ${slot.locked ? '<span style="font-size: 1rem;">🔒</span>' : ''}
+                    </div>
+                    ` : ''}
+                </div>
+                `).join('')}
             </div>
         </div>
         
@@ -1317,24 +1629,23 @@ class TradingBot {
       try {
         const strategyId = req.params.id;
         
-        if (strategyId !== 'bollinger-band-01') {
-          res.status(400).json({ 
-            error: 'Invalid strategy',
-            message: 'Clear position is only available for bollinger-band-01' 
-          });
+        if (!strategyId) {
+          res.status(400).json({ error: 'Strategy ID is required' });
           return;
         }
         
+        // Allow any strategy that has clearActivePosition method (not just bollinger-band-01)
         const strategy = StrategyRegistry.getInstance(strategyId);
         if (!strategy) {
-          res.status(404).json({ error: 'Strategy not found' });
+          res.status(404).json({ error: 'Strategy not found', message: `Strategy ${strategyId} not found` });
           return;
         }
         
         // Call clearActivePosition() method on Bollinger Band strategy
         if (typeof (strategy as any).clearActivePosition !== 'function') {
           res.status(500).json({ 
-            error: 'Strategy does not support manual position clearing' 
+            error: 'Strategy does not support manual position clearing',
+            message: `Strategy ${strategyId} does not have clearActivePosition method`
           });
           return;
         }
@@ -1427,73 +1738,368 @@ class TradingBot {
         }
 
         // Render simple strategy page
+        // Extract enhanced data
+        const entryAnalysis = (status as any).entryAnalysis || { long: { conditions: [], metCount: 0, totalCount: 4, strength: 'NO_DATA' }, short: { conditions: [], metCount: 0, totalCount: 4, strength: 'NO_DATA' } };
+        const slotMetrics = (status as any).slotMetrics || { totalTrades: 0, wins: 0, losses: 0, winRate: 0, totalPnL: 0, avgWin: 0, avgLoss: 0, profitFactor: 0, roi: 0, initialCapital: 65000, currentCapital: 65000 };
+        const indicators = (status as any).indicators || { rsi: 0, supertrend: { trend: 'N/A', value: 0 }, bollingerBands: { upper: 0, middle: 0, lower: 0 } };
+        const pivots = (status as any).pivots || { pp: 0, r1: 0, r2: 0, s1: 0, s2: 0 };
+        const currentPrice = (status as any).currentStockPrice || (status as any).currentNiftyPrice || 0;
+        const signalSymbol = (status as any).signalSymbol || 'N/A';
+        
+        // Helper functions for styling
+        const getStrengthBadge = (strength: string) => {
+          const colors: any = { 'SIGNAL': '#10b981', 'STRONG': '#3b82f6', 'WEAK': '#f59e0b', 'NO_SIGNAL': '#ef4444', 'NO_DATA': '#6b7280' };
+          return `<span style="background: ${colors[strength] || '#6b7280'}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 0.85rem; font-weight: 600;">${strength}</span>`;
+        };
+        
+        const getConditionIcon = (met: boolean) => met ? '✅' : '❌';
+        
+        const getPriceStatus = (price: number, level: number, above: boolean) => {
+          const isAbove = price > level;
+          return above ? (isAbove ? '🟢 Above' : '🔴 Below') : (isAbove ? '🔴 Above' : '🟢 Below');
+        };
+
         const html = `
 <!DOCTYPE html>
 <html>
 <head>
   <title>${status.config.name} - Trading Bot</title>
   <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="30">
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    .container { max-width: 1000px; margin: 0 auto; }
-    .header { text-align: center; margin-bottom: 30px; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f0f2f5; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { text-align: center; margin-bottom: 30px; padding: 20px; background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .header h1 { margin: 0 0 10px 0; color: #1f2937; }
     .status-badge { 
       display: inline-block; 
-      padding: 8px 16px; 
+      padding: 8px 20px; 
       border-radius: 20px; 
       color: white; 
       font-weight: bold; 
       background: ${status.metrics.isActive ? '#10b981' : '#6b7280'};
     }
-    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 20px 0; }
-    .metric-card { background: #f3f4f6; padding: 20px; border-radius: 10px; }
-    .metric-value { font-size: 2rem; font-weight: bold; color: #1f2937; }
-    .actions { margin: 30px 0; display: flex; gap: 12px; }
-    .btn { padding: 12px 24px; border-radius: 8px; text-decoration: none; display: inline-block; font-weight: 600; }
+    
+    .section { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .section-title { font-size: 1.1rem; font-weight: 600; color: #374151; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+    
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; }
+    
+    @media (max-width: 768px) {
+      .grid-2, .grid-3, .grid-4, .grid-5 { grid-template-columns: 1fr 1fr; }
+    }
+    
+    .card { background: #f9fafb; border-radius: 10px; padding: 16px; border: 1px solid #e5e7eb; }
+    .card-value { font-size: 1.5rem; font-weight: 700; color: #1f2937; margin-bottom: 4px; }
+    .card-label { font-size: 0.85rem; color: #6b7280; }
+    .card-status { font-size: 0.8rem; margin-top: 4px; }
+    
+    .card-green { border-left: 4px solid #10b981; }
+    .card-red { border-left: 4px solid #ef4444; }
+    .card-blue { border-left: 4px solid #3b82f6; }
+    .card-yellow { border-left: 4px solid #f59e0b; }
+    .card-purple { border-left: 4px solid #8b5cf6; }
+    
+    .analysis-box { border: 2px solid #e5e7eb; border-radius: 10px; padding: 16px; }
+    .analysis-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .analysis-title { font-weight: 600; font-size: 1rem; }
+    .condition-list { list-style: none; padding: 0; margin: 0; }
+    .condition-item { padding: 8px 0; border-bottom: 1px solid #f3f4f6; display: flex; align-items: center; gap: 8px; }
+    .condition-item:last-child { border-bottom: none; }
+    .condition-name { font-weight: 500; }
+    .condition-detail { color: #6b7280; font-size: 0.9rem; margin-left: auto; }
+    
+    .text-green { color: #10b981; }
+    .text-red { color: #ef4444; }
+    .text-blue { color: #3b82f6; }
+    
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+    .btn { padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; border: none; cursor: pointer; }
     .btn-primary { background: #3b82f6; color: white; }
     .btn-danger { background: #ef4444; color: white; }
     .btn-secondary { background: #6b7280; color: white; }
+    
+    .rules-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 12px; }
+    .rules-box.short { background: #fef2f2; border-color: #fecaca; }
+    .rules-list { margin: 8px 0 0 0; padding-left: 20px; }
+    .rules-list li { margin: 4px 0; font-size: 0.9rem; color: #374151; }
+    .exit-rule { font-size: 0.85rem; color: #059669; margin-top: 8px; font-weight: 500; }
+    .exit-rule.short { color: #dc2626; }
   </style>
 </head>
 <body>
   <div class="container">
+    <!-- Header -->
     <div class="header">
       <h1>${status.config.name}</h1>
       <span class="status-badge">${status.metrics.isActive ? '🟢 ACTIVE' : '⚫ INACTIVE'}</span>
+      <p style="color: #6b7280; margin: 10px 0 0 0;">Real-time monitoring • Auto-refresh every 30s</p>
     </div>
     
-    <div class="metrics">
-      <div class="metric-card">
-        <div class="metric-value">${status.metrics.totalTrades}</div>
-        <div>Total Trades</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-value">₹${status.metrics.profitLoss.toFixed(2)}</div>
-        <div>Profit & Loss</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-value">${status.metrics.winRate.toFixed(1)}%</div>
-        <div>Win Rate</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-value">${status.config.timeframe}</div>
-        <div>Timeframe</div>
+    <!-- Quick Stats Row -->
+    <div class="section">
+      <div class="grid-4">
+        <div class="card card-blue">
+          <div class="card-value">₹${currentPrice.toFixed(2)}</div>
+          <div class="card-label">${signalSymbol} Spot Price</div>
+        </div>
+        <div class="card card-green">
+          <div class="card-value">${(status as any).currentLots || 1} Lots</div>
+          <div class="card-label">Position Size</div>
+        </div>
+        <div class="card card-purple">
+          <div class="card-value">₹${slotMetrics.currentCapital.toLocaleString()}</div>
+          <div class="card-label">Current Capital</div>
+        </div>
+        <div class="card">
+          <div class="card-value">${status.config.timeframe}</div>
+          <div class="card-label">Timeframe</div>
+        </div>
       </div>
     </div>
     
-    <div class="actions">
-      ${status.metrics.isActive 
-        ? `<a href="/strategies/${strategyId}/stop" class="btn btn-danger" onclick="return confirm('Stop strategy?')">Stop Strategy</a>`
-        : `<a href="/strategies/${strategyId}/start" class="btn btn-primary" onclick="return confirm('Start strategy?')">Start Strategy</a>`
-      }
-      <a href="/strategies/${strategyId}" class="btn btn-secondary">View JSON</a>
-      <a href="/" class="btn btn-secondary">← Back</a>
+    <!-- Entry Analysis -->
+    <div class="section">
+      <div class="section-title">📡 Live Signal Analysis</div>
+      <div class="grid-2">
+        <!-- LONG Analysis -->
+        <div class="analysis-box" style="border-color: #10b981;">
+          <div class="analysis-header">
+            <span class="analysis-title text-green">🚀 LONG Entry Analysis</span>
+            ${getStrengthBadge(entryAnalysis.long.strength)}
+          </div>
+          <div style="color: #6b7280; font-size: 0.85rem; margin-bottom: 12px;">${entryAnalysis.long.metCount}/${entryAnalysis.long.totalCount} conditions met</div>
+          <ul class="condition-list">
+            ${entryAnalysis.long.conditions.map((c: any) => `
+              <li class="condition-item">
+                <span>${getConditionIcon(c.met)}</span>
+                <span class="condition-name">${c.name}:</span>
+                <span class="condition-detail">${c.detail}</span>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+        
+        <!-- SHORT Analysis -->
+        <div class="analysis-box" style="border-color: #ef4444;">
+          <div class="analysis-header">
+            <span class="analysis-title text-red">🔻 SHORT Entry Analysis</span>
+            ${getStrengthBadge(entryAnalysis.short.strength)}
+          </div>
+          <div style="color: #6b7280; font-size: 0.85rem; margin-bottom: 12px;">${entryAnalysis.short.metCount}/${entryAnalysis.short.totalCount} conditions met</div>
+          <ul class="condition-list">
+            ${entryAnalysis.short.conditions.map((c: any) => `
+              <li class="condition-item">
+                <span>${getConditionIcon(c.met)}</span>
+                <span class="condition-name">${c.name}:</span>
+                <span class="condition-detail">${c.detail}</span>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+      </div>
     </div>
     
-    <div style="margin-top: 40px; padding: 20px; background: #f9fafb; border-radius: 10px;">
-      <h3>Configuration</h3>
-      <pre style="white-space: pre-wrap; font-size: 0.9rem;">${JSON.stringify(status.config, null, 2)}</pre>
+    <!-- Technical Indicators -->
+    <div class="section">
+      <div class="section-title">📊 Technical Indicators</div>
+      <div class="grid-5">
+        <div class="card ${indicators.rsi >= 68 ? 'card-green' : indicators.rsi <= 30 ? 'card-red' : ''}">
+          <div class="card-value">${indicators.rsi?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">RSI (10)</div>
+          <div class="card-status">${indicators.rsi >= 68 ? '📈 Overbought' : indicators.rsi <= 30 ? '📉 Oversold' : '⏸️ Neutral'}</div>
+        </div>
+        <div class="card ${indicators.supertrend?.trend === 'UP' ? 'card-green' : 'card-red'}">
+          <div class="card-value">${indicators.supertrend?.trend || 'N/A'}</div>
+          <div class="card-label">Supertrend (10,2)</div>
+          <div class="card-status">Level: ₹${indicators.supertrend?.value?.toFixed(2) || 'N/A'}</div>
+        </div>
+        <div class="card ${currentPrice > indicators.bollingerBands?.upper ? 'card-green' : ''}">
+          <div class="card-value">₹${indicators.bollingerBands?.upper?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">BB Upper</div>
+          <div class="card-status">${currentPrice > (indicators.bollingerBands?.upper || 0) ? '🟢 Above' : '🔴 Below'}</div>
+        </div>
+        <div class="card">
+          <div class="card-value">₹${indicators.bollingerBands?.middle?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">BB Middle</div>
+          <div class="card-status">SMA(20)</div>
+        </div>
+        <div class="card ${currentPrice < indicators.bollingerBands?.lower ? 'card-red' : ''}">
+          <div class="card-value">₹${indicators.bollingerBands?.lower?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">BB Lower</div>
+          <div class="card-status">${currentPrice < (indicators.bollingerBands?.lower || 0) ? '🔴 Below' : '🟢 Above'}</div>
+        </div>
+      </div>
     </div>
+    
+    <!-- Daily Pivot Levels -->
+    <div class="section">
+      <div class="section-title">🎯 Daily Pivot Levels</div>
+      <div class="grid-5">
+        <div class="card">
+          <div class="card-value">₹${pivots.r2?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">R2 (Resistance)</div>
+          <div class="card-status">${currentPrice > (pivots.r2 || 0) ? '🟢 Above' : '🔴 Below'}</div>
+        </div>
+        <div class="card card-green">
+          <div class="card-value">₹${pivots.r1?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">R1 (Resistance)</div>
+          <div class="card-status">${currentPrice > (pivots.r1 || 0) ? '🟢 Above' : '🔴 Below'}</div>
+        </div>
+        <div class="card card-blue">
+          <div class="card-value">₹${pivots.pp?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">PP (Pivot Point)</div>
+          <div class="card-status">${currentPrice > (pivots.pp || 0) ? '🟢 Above' : '🔴 Below'}</div>
+        </div>
+        <div class="card card-red">
+          <div class="card-value">₹${pivots.s1?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">S1 (Support)</div>
+          <div class="card-status">${currentPrice > (pivots.s1 || 0) ? '🟢 Above' : '🔴 Below'}</div>
+        </div>
+        <div class="card">
+          <div class="card-value">₹${pivots.s2?.toFixed(2) || 'N/A'}</div>
+          <div class="card-label">S2 (Support)</div>
+          <div class="card-status">${currentPrice > (pivots.s2 || 0) ? '🟢 Above' : '🔴 Below'}</div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Strategy Rules -->
+    <div class="section">
+      <div class="section-title">📋 Strategy Rules (${signalSymbol} Options)</div>
+      <div class="grid-2">
+        <div class="rules-box">
+          <strong class="text-green">🚀 LONG Entry (Buy ${signalSymbol} CE)</strong>
+          <ul class="rules-list">
+            <li>${signalSymbol} Price > Bollinger Upper Band</li>
+            <li>RSI between 68-85 (overbought momentum)</li>
+            <li>Supertrend = UP</li>
+            <li>${signalSymbol} Price above R1 or R2</li>
+          </ul>
+          <div class="exit-rule">Exit: 12% Trailing SL OR ${signalSymbol} < MAX(Entry Candle Low, Mid BB)</div>
+        </div>
+        <div class="rules-box short">
+          <strong class="text-red">🔻 SHORT Entry (Buy ${signalSymbol} PE)</strong>
+          <ul class="rules-list">
+            <li>${signalSymbol} Price < Bollinger Lower Band</li>
+            <li>RSI between 10-30 (oversold momentum)</li>
+            <li>Supertrend = DOWN</li>
+            <li>${signalSymbol} Price below PP (Pivot Point)</li>
+          </ul>
+          <div class="exit-rule short">Exit: Entry Candle High breach OR 12% Trailing SL</div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Performance Metrics -->
+    <div class="section">
+      <div class="section-title">📈 Slot Performance Metrics</div>
+      <div class="grid-4">
+        <div class="card">
+          <div class="card-value">${slotMetrics.totalTrades}</div>
+          <div class="card-label">Total Trades</div>
+          <div class="card-status">${slotMetrics.closedTrades} closed, ${slotMetrics.openTrades} open</div>
+        </div>
+        <div class="card ${slotMetrics.winRate >= 50 ? 'card-green' : 'card-red'}">
+          <div class="card-value">${slotMetrics.winRate.toFixed(1)}%</div>
+          <div class="card-label">Win Rate</div>
+          <div class="card-status">${slotMetrics.wins}W / ${slotMetrics.losses}L</div>
+        </div>
+        <div class="card ${slotMetrics.totalPnL >= 0 ? 'card-green' : 'card-red'}">
+          <div class="card-value" style="color: ${slotMetrics.totalPnL >= 0 ? '#10b981' : '#ef4444'}">₹${slotMetrics.totalPnL >= 0 ? '+' : ''}${slotMetrics.totalPnL.toFixed(2)}</div>
+          <div class="card-label">Total P&L</div>
+          <div class="card-status">Realized P&L</div>
+        </div>
+        <div class="card">
+          <div class="card-value">${slotMetrics.profitFactor === Infinity ? '∞' : slotMetrics.profitFactor.toFixed(2)}</div>
+          <div class="card-label">Profit Factor</div>
+        </div>
+      </div>
+      <div class="grid-4" style="margin-top: 16px;">
+        <div class="card ${slotMetrics.roi >= 0 ? 'card-green' : 'card-red'}">
+          <div class="card-value" style="color: ${slotMetrics.roi >= 0 ? '#10b981' : '#ef4444'}">${slotMetrics.roi >= 0 ? '+' : ''}${slotMetrics.roi.toFixed(2)}%</div>
+          <div class="card-label">ROI</div>
+          <div class="card-status">On ₹${slotMetrics.initialCapital.toLocaleString()} (Initial)</div>
+        </div>
+        <div class="card card-purple">
+          <div class="card-value">₹${slotMetrics.currentCapital.toLocaleString()}</div>
+          <div class="card-label">Current Capital</div>
+          <div class="card-status">1 lot per ₹40,000</div>
+        </div>
+        <div class="card card-green">
+          <div class="card-value">₹${slotMetrics.avgWin > 0 ? '+' : ''}${slotMetrics.avgWin.toFixed(2)}</div>
+          <div class="card-label">Avg Win</div>
+          <div class="card-status">${slotMetrics.wins} winning trades</div>
+        </div>
+        <div class="card card-red">
+          <div class="card-value">₹-${Math.abs(slotMetrics.avgLoss).toFixed(2)}</div>
+          <div class="card-label">Avg Loss</div>
+          <div class="card-status">${slotMetrics.losses} losing trades</div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Actions -->
+    <div class="section">
+      <div class="section-title">⚡ Actions</div>
+      <div class="actions">
+        ${status.metrics.isActive 
+          ? `<button class="btn btn-danger" onclick="stopStrategy('${strategyId}')">⏹️ Stop Strategy</button>`
+          : `<button class="btn btn-primary" onclick="startStrategy('${strategyId}')">▶️ Start Strategy</button>`
+        }
+        <button class="btn btn-secondary" onclick="clearPosition('${strategyId}')">🧹 Clear Position</button>
+        <a href="/strategies/${strategyId}" class="btn btn-secondary">📄 View JSON</a>
+        <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
+      </div>
+    </div>
+    
+    <script>
+    async function startStrategy(id) {
+      if (!confirm('Start strategy ' + id + '?')) return;
+      try {
+        const res = await fetch('/strategies/' + id + '/start', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          alert('Strategy started successfully!');
+          window.location.reload();
+        } else {
+          alert('Failed: ' + (data.error || 'Unknown error'));
+        }
+      } catch (e) { alert('Error: ' + e.message); }
+    }
+    
+    async function stopStrategy(id) {
+      if (!confirm('Stop strategy ' + id + '?')) return;
+      try {
+        const res = await fetch('/strategies/' + id + '/stop', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          alert('Strategy stopped successfully!');
+          window.location.reload();
+        } else {
+          alert('Failed: ' + (data.error || 'Unknown error'));
+        }
+      } catch (e) { alert('Error: ' + e.message); }
+    }
+    
+    async function clearPosition(id) {
+      if (!confirm('Clear active position for ' + id + '? This will record the P&L.')) return;
+      try {
+        const res = await fetch('/api/strategy/' + id + '/clear-position', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          alert('Position cleared successfully!');
+          window.location.reload();
+        } else {
+          alert('Failed: ' + (data.error || data.message || 'Unknown error'));
+        }
+      } catch (e) { alert('Error: ' + e.message); }
+    }
+    </script>
   </div>
 </body>
 </html>
