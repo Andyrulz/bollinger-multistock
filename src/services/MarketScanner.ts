@@ -303,10 +303,22 @@ export class MarketScanner {
     const sectors = Array.from(
       new Set(this.universe.map((s) => s.sectorToken)),
     );
+    
+    this.logger.info(`📊 Fetching quotes for ${sectors.length} sector indices: ${sectors.slice(0, 3).join(', ')}...`);
 
     // Batch fetch sector quotes (SINGLE API CALL)
     // Use instrument tokens directly (not NSE: prefix for indices)
     const quotes = await this.kiteConnect.getQuote(sectors);
+    
+    // Debug: Log raw quote keys to see what Zerodha returns
+    const quoteKeys = Object.keys(quotes);
+    this.logger.info(`📊 Raw quote response keys (${quoteKeys.length}): ${quoteKeys.slice(0, 5).join(', ')}`);
+    
+    // Log first quote to see structure
+    if (quoteKeys.length > 0 && quoteKeys[0]) {
+      const firstQuote = quotes[quoteKeys[0] as string];
+      this.logger.info(`📊 Sample quote structure: instrument_token=${firstQuote?.instrument_token}, net_change=${firstQuote?.net_change}, ohlc=${JSON.stringify(firstQuote?.ohlc)}`);
+    }
 
     const green: string[] = [];
     const red: string[] = [];
@@ -314,10 +326,20 @@ export class MarketScanner {
     const data = new Map<number, { name: string; changePercent: number }>();
 
     for (const stock of this.universe) {
-      const quote = quotes[stock.sectorToken];
+      // Zerodha returns quotes keyed by numeric token
+      let quote = quotes[stock.sectorToken];
+      if (!quote) {
+        // Try to find by matching instrument_token in values
+        quote = Object.values(quotes).find((q: any) => q.instrument_token === stock.sectorToken);
+      }
       if (!quote) continue;
 
-      const changePercent = quote.net_change_percent || 0;
+      // Calculate percentage change manually: Zerodha provides net_change (absolute), not net_change_percent
+      // Formula: (net_change / previous_close) * 100
+      const previousClose = quote.ohlc?.close || 0;
+      const netChange = quote.net_change || 0;
+      const changePercent = previousClose > 0 ? (netChange / previousClose) * 100 : 0;
+      
       data.set(stock.sectorToken, {
         name: stock.sector,
         changePercent,

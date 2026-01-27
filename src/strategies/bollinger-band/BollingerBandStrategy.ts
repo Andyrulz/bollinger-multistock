@@ -237,7 +237,7 @@ export class BollingerBandStrategy extends StrategyBase {
       } else {
         // Create initial data file
         this.saveCapitalData();
-        this.logger.info('?? Bollinger Band capital initialized at ?2,00,000');
+        this.logger.info(`Bollinger Band capital initialized at Rs.${this.INITIAL_CAPITAL.toLocaleString()}`);
       }
     } catch (error) {
       this.logger.error('Error loading Bollinger Band capital data:', error);
