@@ -1,6 +1,7 @@
 import { Logger } from "../utils/Logger";
 import { InstrumentCache } from "../utils/InstrumentCache";
 import { UNIVERSE, UniverseStock } from "../config/universe";
+import { OIHistoryService, OIAnalysisResult } from "./OIHistoryService";
 
 /**
  * MarketScanner - TMV (Trend, Momentum, Volume) Stock Selection
@@ -30,7 +31,9 @@ export interface ScoredStock {
     momentum: number; // Max 3.0
     volume: number; // Max 2.0
     sector: number; // Max 2.0
+    smartMoney: number; // Max 2.0 (Coiled Spring bonus)
   };
+  smartMoneySignal?: 'ACCUMULATION' | 'DISTRIBUTION' | 'NONE' | 'CONFLICT' | 'EXPIRY_WEEK';
   spotPrice: number;
   upperCircuitLimit: number; // Circuit limit from quote
   lowerCircuitLimit: number; // Circuit limit from quote
@@ -79,6 +82,7 @@ export class MarketScanner {
   private isDataCached: boolean = false;
   private lastScannerRun: number = 0;
   private SCANNER_COOLDOWN_MS = 10000; // 10 seconds between scanner runs
+  private oiHistoryService: OIHistoryService | null = null;
 
   constructor(
     private kiteConnect: any,
@@ -95,6 +99,15 @@ export class MarketScanner {
       };
     },
   ) {}
+
+  /**
+   * Set OI History Service for Smart Money scoring
+   * Called by StrategyManager after OIHistoryService is initialized
+   */
+  setOIHistoryService(service: OIHistoryService): void {
+    this.oiHistoryService = service;
+    this.logger.info('📊 MarketScanner: OI History Service connected for Smart Money scoring');
+  }
 
   /**
    * Main entry point - called by StrategyManager at 09:30 AM
@@ -488,7 +501,7 @@ export class MarketScanner {
         }
 
         // === SCORING LOGIC ===
-        const breakdown = { trend: 0, momentum: 0, volume: 0, sector: 0 };
+        const breakdown = { trend: 0, momentum: 0, volume: 0, sector: 0, smartMoney: 0 };
 
         // A. TREND (Max 3.0) - Per Spec Section 4A
         // Short-Term Trend: Close > 8 EMA AND 8 EMA > 21 EMA → +1.0
@@ -551,12 +564,55 @@ export class MarketScanner {
           breakdown.sector += 1.0; // Underperforming sector
         }
 
-        // Total score
+        // E. SMART MONEY (Max 2.0) - Coiled Spring Detection
+        // Uses OI History Service to detect institutional accumulation/distribution
+        let smartMoneyBonus = 0;
+        let smartMoneySignal: 'ACCUMULATION' | 'DISTRIBUTION' | 'NONE' | 'CONFLICT' | 'EXPIRY_WEEK' = 'NONE';
+        
+        if (this.oiHistoryService) {
+          // Check if it's expiry week (skip Smart Money scoring)
+          if (this.oiHistoryService.isExpiryWeek()) {
+            smartMoneySignal = 'EXPIRY_WEEK';
+            this.logger.debug(`${stock.symbol}: Smart Money skipped (expiry week)`);
+          } else if (this.oiHistoryService.hasValidData()) {
+            try {
+              // Get previous close for OI analysis
+              const prevClose = candles[candles.length - 2]?.close || spotPrice;
+              const oiAnalysis = await this.oiHistoryService.analyzeStock(stock.symbol, spotPrice, prevClose);
+              
+              if (oiAnalysis) {
+                smartMoneyBonus = this.oiHistoryService.calculateSmartMoneyBonus(oiAnalysis, bias);
+                smartMoneySignal = oiAnalysis.smartMoneySignal;
+                
+                if (smartMoneyBonus === 2.0) {
+                  this.logger.info(`💎 ${stock.symbol}: Coiled Spring MATCH (+2.0) - ${smartMoneySignal} aligns with ${bias}`);
+                } else if (smartMoneyBonus === -999) {
+                  this.logger.warn(`⚠️ ${stock.symbol}: Smart Money CONFLICT - ${smartMoneySignal} vs ${bias} bias - DISQUALIFIED`);
+                  smartMoneySignal = 'CONFLICT';
+                }
+              }
+            } catch (oiError) {
+              this.logger.debug(`${stock.symbol}: OI analysis failed - ${oiError}`);
+            }
+          }
+        }
+        
+        // Handle conflict: disqualify by setting score to 0
+        if (smartMoneyBonus === -999) {
+          breakdown.smartMoney = 0;
+          // Skip this stock entirely
+          continue;
+        }
+        
+        breakdown.smartMoney = smartMoneyBonus;
+
+        // Total score (now includes Smart Money)
         const score =
           breakdown.trend +
           breakdown.momentum +
           breakdown.volume +
-          breakdown.sector;
+          breakdown.sector +
+          breakdown.smartMoney;
 
         // Create scored stock object
         results.push({
@@ -566,6 +622,7 @@ export class MarketScanner {
           sector: stock.sector,
           sectorToken: stock.sectorToken,
           breakdown,
+          smartMoneySignal,
           spotPrice,
           upperCircuitLimit,
           lowerCircuitLimit,

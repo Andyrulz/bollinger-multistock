@@ -5,6 +5,7 @@ import { InstrumentCache } from '../utils/InstrumentCache';
 import { MarketScanner, ScoredStock, ScannerResult } from '../services/MarketScanner';
 import { QuoteManager } from '../services/QuoteManager';
 import { AuthService } from '../services/AuthService';
+import { OIHistoryService } from '../services/OIHistoryService';
 import fs from 'fs';
 import path from 'path';
 
@@ -99,6 +100,10 @@ export class StrategyManager {
   // Race condition guard: Prevents concurrent scans
   private isScanInProgress: boolean = false;
 
+  // OI History Service for Smart Money detection
+  private oiHistoryService: OIHistoryService | null = null;
+  private eodOISaverTimer: NodeJS.Timeout | null = null;
+
   constructor(
     kiteConnect: any,
     authService: AuthService,
@@ -166,6 +171,9 @@ export class StrategyManager {
       
       // Schedule hourly scanner with Smart Retention
       this.scheduleHourlyScanner();
+      
+      // Initialize OI History Service for Smart Money detection
+      await this.initializeOIHistoryService();
       
       this.isInitialized = true;
       this.logger.info('✅ Strategy Manager initialized successfully');
@@ -871,6 +879,142 @@ export class StrategyManager {
     
     // Schedule the next scan
     this.scheduleNextScan();
+  }
+
+  /**
+   * Initialize OI History Service for Smart Money detection
+   * Loads yesterday's OI data and schedules EOD saver
+   */
+  private async initializeOIHistoryService(): Promise<void> {
+    this.logger.info('📊 Initializing OI History Service for Smart Money detection...');
+    
+    try {
+      this.oiHistoryService = new OIHistoryService(
+        this.kiteConnect,
+        this.logger,
+        this.instrumentCache
+      );
+      
+      // Load yesterday's OI data
+      const loaded = await this.oiHistoryService.loadYesterdayOI();
+      if (loaded) {
+        this.logger.info('✅ OI History: Ready for Smart Money scoring');
+      } else {
+        this.logger.info('📭 OI History: No prior data - Smart Money scoring disabled until EOD save');
+      }
+      
+      // Connect to MarketScanner for Smart Money scoring
+      this.marketScanner.setOIHistoryService(this.oiHistoryService);
+      
+      // Schedule EOD OI saver at 3:40 PM
+      this.scheduleEODOISaver();
+      
+    } catch (error) {
+      this.logger.error('❌ Failed to initialize OI History Service:', error);
+      this.oiHistoryService = null;
+    }
+  }
+
+  /**
+   * Schedule End-of-Day OI saver at 3:40 PM IST (weekdays only)
+   */
+  private scheduleEODOISaver(): void {
+    this.logger.info('📅 Scheduling EOD OI Saver at 3:40 PM (weekdays only)');
+    
+    const scheduleNextEODSave = () => {
+      const now = new Date();
+      const targetHour = 15;  // 3 PM
+      const targetMinute = 40;
+      
+      // Calculate target time
+      const target = new Date(now);
+      target.setHours(targetHour, targetMinute, 0, 0);
+      
+      // If target time has passed today, move to tomorrow
+      if (now > target) {
+        target.setDate(target.getDate() + 1);
+      }
+      
+      // Skip weekends: Saturday (6) -> Monday, Sunday (0) -> Monday
+      const dayOfWeek = target.getDay();
+      if (dayOfWeek === 6) {
+        // Saturday -> Move to Monday
+        target.setDate(target.getDate() + 2);
+        this.logger.info('📅 EOD OI Save: Skipping Saturday, scheduled for Monday');
+      } else if (dayOfWeek === 0) {
+        // Sunday -> Move to Monday
+        target.setDate(target.getDate() + 1);
+        this.logger.info('📅 EOD OI Save: Skipping Sunday, scheduled for Monday');
+      }
+      
+      const delay = target.getTime() - now.getTime();
+      const delayMinutes = Math.floor(delay / 60000);
+      const delayHours = Math.floor(delayMinutes / 60);
+      const remainingMinutes = delayMinutes % 60;
+      
+      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const targetDayName = dayNames[target.getDay()];
+      
+      this.logger.info(`⏰ EOD OI Save scheduled for ${targetDayName} ${target.toLocaleTimeString()} (in ${delayHours}h ${remainingMinutes}m)`);
+      
+      this.eodOISaverTimer = setTimeout(async () => {
+        // Double-check it's a weekday before running
+        const runDay = new Date().getDay();
+        if (runDay >= 1 && runDay <= 5) {
+          await this.runEODOISave();
+        } else {
+          this.logger.info('📅 EOD OI Save: Skipped (weekend)');
+        }
+        // Reschedule for next trading day
+        scheduleNextEODSave();
+      }, delay);
+    };
+    
+    scheduleNextEODSave();
+  }
+
+  /**
+   * Run End-of-Day OI save
+   */
+  private async runEODOISave(): Promise<void> {
+    const now = new Date();
+    this.logger.info(`💾 Running EOD OI Save at ${now.toLocaleTimeString()}...`);
+    
+    if (!this.oiHistoryService) {
+      this.logger.error('❌ OI History Service not initialized');
+      return;
+    }
+    
+    // Check if authenticated
+    if (!await this.authService.isAuthenticatedAndValid()) {
+      this.logger.warn('⏭️ Skipping EOD OI Save - not authenticated');
+      return;
+    }
+    
+    const result = await this.oiHistoryService.saveEndOfDayOI();
+    
+    if (result.success) {
+      this.logger.info(`✅ EOD OI Save complete: ${result.count} stocks saved at ${now.toLocaleTimeString()}`);
+    } else {
+      this.logger.error(`❌ EOD OI Save failed: ${result.errors.join(', ')}`);
+    }
+  }
+
+  /**
+   * Get OI History Service instance (for API endpoints)
+   */
+  public getOIHistoryService(): OIHistoryService | null {
+    return this.oiHistoryService;
+  }
+
+  /**
+   * Manually trigger EOD OI save (for testing)
+   */
+  public async triggerEODOISave(): Promise<{ success: boolean; count: number; errors: string[] }> {
+    if (!this.oiHistoryService) {
+      return { success: false, count: 0, errors: ['OI History Service not initialized'] };
+    }
+    return this.oiHistoryService.saveEndOfDayOI();
   }
 
   /**

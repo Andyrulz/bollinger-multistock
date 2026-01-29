@@ -1400,6 +1400,89 @@ class TradingBot {
       }
     });
 
+    // OI History API endpoints
+    this.app.get('/api/oi-history', (req: Request, res: Response): void => {
+      try {
+        const oiService = this.strategyManager.getOIHistoryService();
+        
+        if (!oiService) {
+          res.status(503).json({ 
+            error: 'OI History Service not initialized',
+            message: 'Service will be available after authentication'
+          });
+          return;
+        }
+
+        const history = oiService.getHistoryData();
+        
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          history
+        });
+      } catch (error) {
+        this.logger.error('Failed to get OI history:', error);
+        res.status(500).json({ error: 'Failed to get OI history' });
+      }
+    });
+
+    this.app.get('/api/oi-analysis', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const oiService = this.strategyManager.getOIHistoryService();
+        
+        if (!oiService) {
+          res.status(503).json({ 
+            error: 'OI History Service not initialized',
+            message: 'Service will be available after authentication'
+          });
+          return;
+        }
+
+        const analysis = await oiService.getFullAnalysis();
+        
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+          analysis
+        });
+      } catch (error) {
+        this.logger.error('Failed to get OI analysis:', error);
+        res.status(500).json({ error: 'Failed to get OI analysis' });
+      }
+    });
+
+    this.app.post('/api/oi-save-now', async (req: Request, res: Response): Promise<void> => {
+      try {
+        if (!this.authService.isAuthenticated()) {
+          res.status(401).json({ 
+            error: 'Not authenticated', 
+            message: 'Please visit /auth/login to authenticate first' 
+          });
+          return;
+        }
+
+        const result = await this.strategyManager.triggerEODOISave();
+        
+        res.json({
+          success: result.success,
+          timestamp: new Date().toISOString(),
+          stocksSaved: result.count,
+          errors: result.errors
+        });
+      } catch (error) {
+        this.logger.error('Failed to trigger EOD OI save:', error);
+        res.status(500).json({ error: 'Failed to trigger EOD OI save' });
+      }
+    });
+
     this.app.get('/scanner-results', async (req: Request, res: Response) => {
       try {
         const results = await this.strategyManager.getLastScannerResults();
@@ -1553,6 +1636,7 @@ class TradingBot {
                         <th>Symbol</th>
                         <th>Score</th>
                         <th>Bias</th>
+                        <th>Smart $</th>
                         <th>Sector</th>
                         <th>Breakdown</th>
                         <th>Spot Price</th>
@@ -1565,12 +1649,20 @@ class TradingBot {
                         <td><strong>${stock.symbol}</strong></td>
                         <td><span class="score ${stock.score >= 8 ? 'high' : stock.score >= 7 ? 'medium' : 'low'}">${stock.score.toFixed(2)}</span></td>
                         <td><span class="badge ${stock.bias.toLowerCase()}">${stock.bias}</span></td>
+                        <td style="text-align: center;">
+                            ${stock.smartMoneySignal === 'ACCUMULATION' ? '<span title="Coiled Spring: Accumulation" style="font-size: 1.2rem;">💎🟢</span>' :
+                              stock.smartMoneySignal === 'DISTRIBUTION' ? '<span title="Coiled Spring: Distribution" style="font-size: 1.2rem;">💎🔴</span>' :
+                              stock.smartMoneySignal === 'CONFLICT' ? '<span title="Smart Money Conflict" style="font-size: 1.2rem;">⚠️</span>' :
+                              stock.smartMoneySignal === 'EXPIRY_WEEK' ? '<span title="Expiry Week - Skipped" style="font-size: 0.9rem;">📅</span>' :
+                              '<span title="No Signal" style="color: #9ca3af;">—</span>'}
+                        </td>
                         <td>${stock.sector}</td>
                         <td class="breakdown">
                             T:${stock.breakdown.trend.toFixed(1)} 
                             M:${stock.breakdown.momentum.toFixed(1)} 
                             V:${stock.breakdown.volume.toFixed(1)} 
                             S:${stock.breakdown.sector.toFixed(1)}
+                            ${stock.breakdown.smartMoney > 0 ? '<span style="color: #10b981; font-weight: 600;"> 💎:+' + stock.breakdown.smartMoney.toFixed(1) + '</span>' : ''}
                         </td>
                         <td>₹${stock.spotPrice.toFixed(2)}</td>
                     </tr>
