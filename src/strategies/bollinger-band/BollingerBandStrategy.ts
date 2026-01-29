@@ -500,9 +500,14 @@ export class BollingerBandStrategy extends StrategyBase {
     
     // Predictive WebSocket removed - using real-time selection
     
-    // Force close any open positions
+    // 🔒 CRITICAL: Do NOT force close positions on stop!
+    // Positions should persist across restarts for recovery
+    // The position data is saved to disk and will be recovered on next start
     if (this.currentPosition) {
-      await this.forceClosePosition('STRATEGY_STOP');
+      this.logger.warn('⚠️ Strategy stopping with ACTIVE POSITION - position will be preserved for recovery');
+      this.logger.warn(`   Position: ${this.currentPosition.instrument?.tradingsymbol} | Entry: ₹${this.currentPosition.entryPrice}`);
+      // Save position state to disk before stopping
+      this.saveCapitalData();
     }
     
     this.metrics.isActive = false;
@@ -940,7 +945,33 @@ export class BollingerBandStrategy extends StrategyBase {
         currentTrailPercent: this.currentPosition.trailingSL && this.currentPosition.highestPremium
           ? ((1 - this.currentPosition.trailingSL / this.currentPosition.highestPremium) * 100)
           : 12, // Default 12%
-        lastHighTime: this.currentPosition.timeDecayTrailing?.lastHighTime
+        lastHighTime: this.currentPosition.timeDecayTrailing?.lastHighTime,
+        // NEW: Additional fields for Live Position Monitor dashboard
+        entryCandleLow: this.currentPosition.entryCandleLow,
+        entryCandleHigh: this.currentPosition.entryCandleHigh,
+        strikeType: this.currentPosition.instrument?.strikeType || 'unknown',
+        strike: this.currentPosition.instrument?.strike,
+        lotSize: this.currentPosition.instrument?.lot_size,
+        // Calculated fields for dashboard display
+        cushion: this.currentPosition.trailingSL && this.cachedCurrentPrice > 0
+          ? (this.cachedCurrentPrice - this.currentPosition.trailingSL)
+          : null,
+        cushionPercent: (this.currentPosition.trailingSL && this.cachedCurrentPrice > 0)
+          ? ((this.cachedCurrentPrice - this.currentPosition.trailingSL) / this.cachedCurrentPrice * 100)
+          : null,
+        profitFromEntry: this.cachedCurrentPrice > 0 
+          ? (this.cachedCurrentPrice - this.currentPosition.entryPrice)
+          : 0,
+        profitPercent: (this.currentPosition.entryPrice > 0 && this.cachedCurrentPrice > 0)
+          ? ((this.cachedCurrentPrice - this.currentPosition.entryPrice) / this.currentPosition.entryPrice * 100)
+          : 0,
+        // Underlying safety threshold (for LONG: MAX of entry candle low and BB midline)
+        underlyingSafetyThreshold: this.currentPosition.type === 'LONG' 
+          ? Math.max(
+              this.currentPosition.entryCandleLow || 0, 
+              this.currentIndicators?.bollingerBands?.middle || 0
+            )
+          : this.currentPosition.entryCandleHigh || 0
       } : null
     } as StrategyStatus;
   }
@@ -2562,21 +2593,20 @@ export class BollingerBandStrategy extends StrategyBase {
       // Entry candle high/low are now passed as parameters (captured at signal detection)
       // This eliminates race condition where candleHistory updates during async operations
       
-      // Real-time option selection instead of prediction
-      // Target premium based on stock price (adjust percentage based on stock volatility)
-      const targetPremium = stockPrice * 0.015; // 1.5% of stock price for stock options
-      const ceOption = await this.selectOptionInstrument('CE', targetPremium);
+      // ATM-based option selection (selects ATM or 1-strike OTM with min ₹10 premium)
+      const ceOption = await this.selectOptionInstrument('CE', stockPrice);
       
       if (!ceOption) {
-        this.logger.error(`❌ LONG entry failed: Could not find suitable ${this.signalSymbol} CE option`);
+        this.logger.error(`❌ LONG entry failed: Could not find suitable ${this.signalSymbol} CE option (ATM with premium ≥ ₹10)`);
         return;
       }
 
       this.logger.info(`🎯 ${this.signalSymbol} CE Option selected for LONG entry`, {
         symbol: ceOption.tradingsymbol,
+        strike: ceOption.strike,
         premium: ceOption.last_price,
-        target: targetPremium.toFixed(2),
         stockPrice: stockPrice.toFixed(2),
+        strikeType: ceOption.strikeType, // 'ATM' or '1-OTM'
         timestamp: new Date().toLocaleTimeString()
       });
       
@@ -2679,21 +2709,20 @@ export class BollingerBandStrategy extends StrategyBase {
       // Use passed values, with fallback to current price if not provided
       const candleHigh = entryCandleHigh !== undefined ? entryCandleHigh : stockPrice;
       
-      // Real-time option selection instead of prediction
-      // Target premium based on stock price (adjust percentage based on stock volatility)
-      const targetPremium = stockPrice * 0.015; // 1.5% of stock price for stock options
-      const peOption = await this.selectOptionInstrument('PE', targetPremium);
+      // ATM-based option selection (selects ATM or 1-strike OTM with min ₹10 premium)
+      const peOption = await this.selectOptionInstrument('PE', stockPrice);
       
       if (!peOption) {
-        this.logger.error(`❌ SHORT entry failed: Could not find suitable ${this.signalSymbol} PE option`);
+        this.logger.error(`❌ SHORT entry failed: Could not find suitable ${this.signalSymbol} PE option (ATM with premium ≥ ₹10)`);
         return;
       }
 
       this.logger.info(`🎯 ${this.signalSymbol} PE Option selected for SHORT entry`, {
         symbol: peOption.tradingsymbol,
+        strike: peOption.strike,
         premium: peOption.last_price,
-        target: targetPremium.toFixed(2),
         stockPrice: stockPrice.toFixed(2),
+        strikeType: peOption.strikeType, // 'ATM' or '1-OTM'
         timestamp: new Date().toLocaleTimeString()
       });
       
@@ -3321,13 +3350,14 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * P0: Schedule EOD safety exit at 3:28 PM
-   * Critical fix to prevent relying on broker's MIS auto-squareoff
+   * P0: Schedule EOD safety exit at 3:24 PM
+   * Critical fix to exit BEFORE broker's MIS auto-squareoff (~3:25 PM)
+   * This avoids broker squareoff charges (₹50+ per order)
    */
   private scheduleEODExit(): void {
     const now = new Date();
     const eodTime = new Date();
-    eodTime.setHours(15, 28, 0, 0); // 3:28 PM
+    eodTime.setHours(15, 24, 0, 0); // 3:24 PM - 1 minute before broker squareoff
     
     // Clear any existing timer first
     if (this.eodExitTimer) {
@@ -3335,21 +3365,21 @@ export class BollingerBandStrategy extends StrategyBase {
       delete this.eodExitTimer;
     }
     
-    // Only schedule if we haven't passed 3:28 PM today
+    // Only schedule if we haven't passed 3:24 PM today
     if (now < eodTime) {
       const delay = eodTime.getTime() - now.getTime();
-      this.logger.info(`📅 EOD safety exit scheduled for 3:28 PM (in ${Math.round(delay / 60000)} minutes)`);
+      this.logger.info(`📅 EOD safety exit scheduled for 3:24 PM (in ${Math.round(delay / 60000)} minutes)`);
       
       this.eodExitTimer = setTimeout(async () => {
         if (this.currentPosition) {
-          this.logger.warn('🕒 EOD safety exit triggered at 3:28 PM');
-          await this.forceClosePosition('EOD_SAFETY_EXIT_3:28PM');
+          this.logger.warn('🕒 EOD safety exit triggered at 3:24 PM');
+          await this.forceClosePosition('EOD_SAFETY_EXIT_3:24PM');
         } else {
-          this.logger.info('✅ No active position at 3:28 PM, no EOD exit needed');
+          this.logger.info('✅ No active position at 3:24 PM, no EOD exit needed');
         }
       }, delay);
     } else {
-      this.logger.info('⏰ Already past 3:28 PM today, no EOD exit scheduled');
+      this.logger.info('⏰ Already past 3:24 PM today, no EOD exit scheduled');
     }
   }
 
@@ -3625,16 +3655,21 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * Select option instrument based on target premium
-   * Selects stock options based on the signal stock (e.g., BRITANNIA, TCS options)
+   * Select option instrument using ATM-based selection
+   * Selects ATM or 1-strike OTM option with minimum ₹10 premium
+   * 
+   * @param optionType - 'CE' for calls, 'PE' for puts
+   * @param spotPrice - Current stock spot price (used for ATM calculation)
+   * @returns Option instrument with strike, premium, and strikeType
    */
-  private async selectOptionInstrument(optionType: 'CE' | 'PE', targetPremium: number): Promise<any> {
+  private async selectOptionInstrument(optionType: 'CE' | 'PE', spotPrice: number): Promise<any> {
+    const MIN_PREMIUM = 10; // Minimum ₹10 premium required for liquidity
+    
     try {
       // Get NFO instruments from cache (avoids 15MB API call on each entry)
       const instruments = await this.instrumentCache.getNFOInstruments();
       
       // Filter for stock options of specified type (using signal stock symbol)
-      // Stock options use the stock symbol as the 'name' field (e.g., BRITANNIA, TCS)
       const stockOptions = instruments.filter((inst: any) => 
         inst.name === this.signalSymbol && 
         inst.instrument_type === optionType &&
@@ -3642,21 +3677,19 @@ export class BollingerBandStrategy extends StrategyBase {
       );
       
       if (stockOptions.length === 0) {
-        this.logger.warn(`⚠️ No ${this.signalSymbol} options found. Checking for alternative name formats...`);
-        // Some stocks might have different naming in NFO
-        // Log available names for debugging
+        this.logger.warn(`⚠️ No ${this.signalSymbol} options found.`);
         const availableNames = [...new Set(instruments.map((i: any) => i.name))].sort();
         this.logger.debug(`Available option names in NFO: ${availableNames.slice(0, 20).join(', ')}...`);
         throw new Error(`No ${this.signalSymbol} options found in NFO instruments`);
       }
       
-      // Get next expiry for stock options (usually monthly for stocks, but check for weeklies)
+      // Get next expiry for stock options
       const nextExpiry = this.getNextStockOptionExpiry(stockOptions);
       
-      this.logger.info(`🎯 Selecting ${optionType} option by PREMIUM for ${this.signalSymbol}: ₹${targetPremium.toFixed(2)}`);
+      this.logger.info(`🎯 Selecting ${optionType} option using ATM-BASED selection for ${this.signalSymbol}`);
       this.logger.info(`📅 Target expiry: ${nextExpiry.toDateString()}`);
       
-      // Filter for next expiry options (exact match within 1 day)
+      // Filter for next expiry options
       const expiryOptions = stockOptions.filter((opt: any) => {
         const isSameExpiry = Math.abs(new Date(opt.expiry).getTime() - nextExpiry.getTime()) < 24 * 60 * 60 * 1000;
         return isSameExpiry;
@@ -3666,58 +3699,65 @@ export class BollingerBandStrategy extends StrategyBase {
         throw new Error(`No suitable ${this.signalSymbol} options found for expiry ${nextExpiry.toDateString()}`);
       }
       
-      // Get current stock spot price for ATM calculation
-      const stockQuote = await this.kiteConnect.getQuote([this.signalInstrumentToken]);
-      const stockPrice = stockQuote[this.signalInstrumentToken].last_price;
+      // Sort options by strike price
+      expiryOptions.sort((a: any, b: any) => a.strike - b.strike);
       
-      // Find ATM strike and select nearby options
-      const atmStrike = this.findATMStrike(expiryOptions, stockPrice);
-      const atmIndex = expiryOptions.findIndex((opt: any) => opt.strike === atmStrike);
+      // Find ATM strike
+      const atmStrike = this.findATMStrike(expiryOptions, spotPrice);
+      const atmOption = expiryOptions.find((opt: any) => opt.strike === atmStrike);
       
-      if (atmIndex === -1) {
-        throw new Error(`ATM strike ${atmStrike} not found in ${this.signalSymbol} options array`);
+      if (!atmOption) {
+        throw new Error(`ATM strike ${atmStrike} not found in ${this.signalSymbol} options`);
       }
       
-      // Calculate range: ATM ± 15 strikes (31 total) - less than NIFTY due to fewer strikes typically
-      const startIndex = Math.max(0, atmIndex - 15);
-      const endIndex = Math.min(expiryOptions.length - 1, atmIndex + 15);
-      const relevantOptions = expiryOptions.slice(startIndex, endIndex + 1);
+      this.logger.info(`🎯 ATM Strike: ₹${atmStrike} (${this.signalSymbol} Spot: ₹${spotPrice.toFixed(2)})`);
       
-      this.logger.info(`🎯 ATM Strike: ₹${atmStrike} (${this.signalSymbol} Spot: ₹${stockPrice.toFixed(2)})`);
-      this.logger.info(`📊 Selecting from ${relevantOptions.length} ${this.signalSymbol} options: Strikes ${relevantOptions[0].strike} to ${relevantOptions[relevantOptions.length-1].strike}`);
+      // Get strikes to check: ATM and 1-strike OTM
+      // For CE: OTM = higher strike, For PE: OTM = lower strike
+      const atmIndex = expiryOptions.findIndex((opt: any) => opt.strike === atmStrike);
+      const otmIndex = optionType === 'CE' ? atmIndex + 1 : atmIndex - 1;
       
-      // Get quotes for ATM±25 options (single API call, well under 200 symbol limit)
-      const tokens = relevantOptions.map((opt: any) => opt.instrument_token);
+      // Build candidate list: [ATM, 1-OTM] (prioritize ATM)
+      const candidates: Array<{ option: any; strikeType: 'ATM' | '1-OTM' }> = [];
+      candidates.push({ option: atmOption, strikeType: 'ATM' });
+      
+      if (otmIndex >= 0 && otmIndex < expiryOptions.length) {
+        candidates.push({ option: expiryOptions[otmIndex], strikeType: '1-OTM' });
+      }
+      
+      // Get quotes for candidates
+      const tokens = candidates.map(c => c.option.instrument_token);
       const quotes = await this.kiteConnect.getQuote(tokens);
       
-      let bestOption = null;
-      let smallestDiff = Infinity;
-      
-      for (const option of relevantOptions) {
-        const quote = quotes[option.instrument_token];
-        if (quote && quote.last_price > 0) {
-          const priceDiff = Math.abs(quote.last_price - targetPremium);
-          if (priceDiff < smallestDiff) {
-            smallestDiff = priceDiff;
-            bestOption = option;
-          }
+      // Find first candidate with premium >= ₹10 (ATM preferred)
+      for (const candidate of candidates) {
+        const quote = quotes[candidate.option.instrument_token];
+        const premium = quote?.last_price || 0;
+        
+        this.logger.info(`📊 Checking ${candidate.strikeType} Strike ₹${candidate.option.strike}: Premium ₹${premium.toFixed(2)}`);
+        
+        if (premium >= MIN_PREMIUM) {
+          // Valid option found!
+          candidate.option.last_price = premium;
+          candidate.option.strikeType = candidate.strikeType;
+          
+          this.logger.info(`✅ Selected ${candidate.strikeType} option`, {
+            tradingsymbol: candidate.option.tradingsymbol,
+            strike: candidate.option.strike,
+            premium: premium.toFixed(2),
+            strikeType: candidate.strikeType
+          });
+          
+          return candidate.option;
+        } else {
+          this.logger.warn(`⚠️ ${candidate.strikeType} Strike ₹${candidate.option.strike} rejected: Premium ₹${premium.toFixed(2)} < ₹${MIN_PREMIUM}`);
         }
       }
       
-      if (bestOption) {
-        // Add the current price to the option object for UI display
-        const currentPrice = quotes[bestOption.instrument_token].last_price;
-        bestOption.last_price = currentPrice;
-        
-        this.logger.info('Option selected', {
-          tradingsymbol: bestOption.tradingsymbol,
-          targetPremium: targetPremium.toFixed(2),
-          actualPremium: currentPrice.toFixed(2),
-          difference: smallestDiff.toFixed(2)
-        });
-      }
-      
-      return bestOption;
+      // No valid option found
+      this.logger.error(`❌ No ${this.signalSymbol} ${optionType} option found with premium ≥ ₹${MIN_PREMIUM}`);
+      this.logger.error(`❌ ATM and 1-OTM both have insufficient liquidity`);
+      return null;
       
     } catch (error) {
       this.logger.error('Error selecting option instrument:', error);
@@ -3766,7 +3806,8 @@ export class BollingerBandStrategy extends StrategyBase {
       // Step 1: Fetch LIVE LTP for the instrument
       const quoteKey = `${instrument.exchange}:${instrument.tradingsymbol}`;
       const quotes = await this.kiteConnect.getQuote([quoteKey]);
-      const ltp = quotes[quoteKey]?.last_price;
+      const quoteData = quotes[quoteKey];
+      const ltp = quoteData?.last_price;
       
       if (!ltp || ltp <= 0) {
         this.logger.error('Failed to fetch LTP for limit price calculation', {
@@ -3777,7 +3818,7 @@ export class BollingerBandStrategy extends StrategyBase {
         return { success: false, price: 0 };
       }
       
-      // Step 1.5: LIQUIDITY GUARD - Reject penny options (high slippage, low liquidity)
+      // Step 1.5a: LIQUIDITY GUARD - Reject penny options (high slippage, low liquidity)
       const MIN_OPTION_PREMIUM = 10; // Minimum ₹10 premium required
       if (ltp < MIN_OPTION_PREMIUM) {
         this.logger.error(`❌ LIQUIDITY GUARD: Option premium ₹${ltp.toFixed(2)} is below minimum ₹${MIN_OPTION_PREMIUM}`, {
@@ -3788,6 +3829,29 @@ export class BollingerBandStrategy extends StrategyBase {
         });
         return { success: false, price: 0 };
       }
+      
+      // Step 1.5b: LIQUIDITY GUARD - Check OI and Volume before execution
+      // Critical thresholds - lower than scanner since this is last line of defense
+      const CRITICAL_OI = 10000;   // Minimum OI to execute
+      const CRITICAL_VOL = 100;    // Minimum Volume to execute
+      const oi = quoteData?.oi || 0;
+      const volume = quoteData?.volume || 0;
+      
+      if (oi < CRITICAL_OI && volume < CRITICAL_VOL) {
+        this.logger.error(`❌ EXECUTION ABORTED: Liquidity Evaporated! ${instrument.tradingsymbol} - OI:${oi} Vol:${volume} (Need OI≥${CRITICAL_OI} OR Vol≥${CRITICAL_VOL})`, {
+          instrument: instrument.tradingsymbol,
+          oi,
+          volume,
+          criticalOI: CRITICAL_OI,
+          criticalVol: CRITICAL_VOL,
+          reason: 'Option liquidity dropped below critical threshold - execution aborted for safety'
+        });
+        return { success: false, price: 0 };
+      }
+      
+      this.logger.info(`✅ Liquidity check passed: OI:${oi}, Vol:${volume}`, {
+        instrument: instrument.tradingsymbol
+      });
       
       // Step 2: Calculate limit price with market protection buffer
       const limitPrice = this.calculateLimitPrice(ltp, transaction);

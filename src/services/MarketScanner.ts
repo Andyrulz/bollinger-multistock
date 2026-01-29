@@ -713,12 +713,25 @@ export class MarketScanner {
           continue;
         }
 
+        // LIQUIDITY FILTER - Reject if BOTH OI and Volume are too low
+        // Need at least one source of liquidity
+        const MIN_OI = 25000;    // Minimum Open Interest contracts
+        const MIN_VOL = 500;     // Minimum Volume contracts
+        
+        if (atmOption.oi < MIN_OI && atmOption.volume < MIN_VOL) {
+          this.logger.warn(
+            `❌ ${stock.symbol}: Illiquid Option (${atmOption.tradingsymbol}) - OI:${atmOption.oi}, Vol:${atmOption.volume} (Need OI≥${MIN_OI} OR Vol≥${MIN_VOL}) - DISCARD`,
+          );
+          stock.valid = false;
+          continue;
+        }
+
         // Valid stock found!
         stock.atmOption = atmOption;
         stock.valid = true;
         validStocks.push(stock);
         this.logger.info(
-          `✅ ${stock.symbol}: Valid option found - ${atmOption.tradingsymbol} @ ₹${atmOption.premium.toFixed(1)} (${validStocks.length}/${this.config.topCount} slots filled)`,
+          `✅ ${stock.symbol}: Valid option found - ${atmOption.tradingsymbol} @ ₹${atmOption.premium.toFixed(1)} | OI:${atmOption.oi}, Vol:${atmOption.volume} (${validStocks.length}/${this.config.topCount} slots filled)`,
         );
       } catch (error) {
         this.logger.error(`Failed to find option for ${stock.symbol}:`, error);
@@ -742,6 +755,8 @@ export class MarketScanner {
     strike: number;
     premium: number;
     expiry: Date;
+    oi: number;
+    volume: number;
   }> {
     // Fetch all NFO instruments from cache
     const instruments = await this.instrumentCache.getNFOInstruments();
@@ -794,17 +809,21 @@ export class MarketScanner {
       throw new Error(`ATM option not found: ${symbol} ${atmStrike}${optionType}`);
     }
 
-    // Get current premium
-    const quote = await this.kiteConnect.getQuote([
-      `NFO:${atmOption.tradingsymbol}`,
-    ]);
-    const premium = quote[`NFO:${atmOption.tradingsymbol}`].last_price;
+    // Get current premium, OI, and volume
+    const quoteKey = `NFO:${atmOption.tradingsymbol}`;
+    const quote = await this.kiteConnect.getQuote([quoteKey]);
+    const quoteData = quote[quoteKey];
+    const premium = quoteData.last_price;
+    const oi = quoteData.oi || 0;
+    const volume = quoteData.volume || 0;
 
     return {
       tradingsymbol: atmOption.tradingsymbol,
       strike: atmStrike,
       premium,
       expiry,
+      oi,
+      volume,
     };
   }
 

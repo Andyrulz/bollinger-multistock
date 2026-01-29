@@ -190,31 +190,63 @@ class TradingBot {
       const scannerResult = await this.strategyManager.getLastScannerResults();
       const slotStates = this.strategyManager.getSlotStates();
       
-      // Calculate aggregate metrics across all active strategies
+      // Calculate aggregate metrics from SLOT DATA FILES (persisted across restarts)
+      // This ensures we capture ALL historical trades, not just current session
+      const fs = require('fs');
+      const path = require('path');
+      const dataDir = path.join(__dirname, 'data');
+      
       let aggregateMetrics = {
         totalPnL: 0,
         totalTrades: 0,
         wins: 0,
         losses: 0,
         winRate: 0,
-        totalCapital: 0,
+        totalCapital: 195000, // 3 slots × ₹65,000
         currentCapital: 0,
         roi: 0,
-        activeSlots: activeStrategies.length
+        activeSlots: activeStrategies.length,
+        // NEW: Performance metrics
+        grossProfit: 0,
+        grossLoss: 0,
+        profitFactor: 0,
+        avgWin: 0,
+        avgLoss: 0,
+        riskRewardRatio: 0
       };
       
-      for (const strategy of activeStrategies) {
+      // Read from all 3 slot data files to get complete trade history
+      for (let slotNumber = 1; slotNumber <= 3; slotNumber++) {
+        const slotFile = path.join(dataDir, `bollinger-slot${slotNumber}.json`);
         try {
-          const status = await (strategy as any).getStatus();
-          const slotMetrics = status?.slotMetrics || {};
-          aggregateMetrics.totalPnL += slotMetrics.totalPnL || 0;
-          aggregateMetrics.totalTrades += slotMetrics.totalTrades || 0;
-          aggregateMetrics.wins += slotMetrics.wins || 0;
-          aggregateMetrics.losses += slotMetrics.losses || 0;
-          aggregateMetrics.totalCapital += slotMetrics.initialCapital || 65000;
-          aggregateMetrics.currentCapital += slotMetrics.currentCapital || 65000;
+          if (fs.existsSync(slotFile)) {
+            const data = JSON.parse(fs.readFileSync(slotFile, 'utf8'));
+            
+            // Add current capital from this slot
+            aggregateMetrics.currentCapital += data.capital || 65000;
+            
+            // Process all trades from history
+            if (data.tradeHistory && Array.isArray(data.tradeHistory)) {
+              for (const trade of data.tradeHistory) {
+                const pnl = trade.pnl || 0;
+                aggregateMetrics.totalPnL += pnl;
+                aggregateMetrics.totalTrades++;
+                if (pnl > 0) {
+                  aggregateMetrics.wins++;
+                  aggregateMetrics.grossProfit += pnl;
+                } else if (pnl < 0) {
+                  aggregateMetrics.losses++;
+                  aggregateMetrics.grossLoss += Math.abs(pnl);
+                }
+              }
+            }
+          } else {
+            // No data file yet, assume initial capital
+            aggregateMetrics.currentCapital += 65000;
+          }
         } catch (e) {
-          // Strategy may not have getStatus yet
+          // Error reading file, assume initial capital
+          aggregateMetrics.currentCapital += 65000;
         }
       }
       
@@ -224,6 +256,22 @@ class TradingBot {
       }
       if (aggregateMetrics.totalCapital > 0) {
         aggregateMetrics.roi = ((aggregateMetrics.currentCapital - aggregateMetrics.totalCapital) / aggregateMetrics.totalCapital) * 100;
+      }
+      
+      // Calculate performance metrics
+      if (aggregateMetrics.grossLoss > 0) {
+        aggregateMetrics.profitFactor = aggregateMetrics.grossProfit / aggregateMetrics.grossLoss;
+      } else if (aggregateMetrics.grossProfit > 0) {
+        aggregateMetrics.profitFactor = 999; // Infinite (no losses)
+      }
+      if (aggregateMetrics.wins > 0) {
+        aggregateMetrics.avgWin = aggregateMetrics.grossProfit / aggregateMetrics.wins;
+      }
+      if (aggregateMetrics.losses > 0) {
+        aggregateMetrics.avgLoss = aggregateMetrics.grossLoss / aggregateMetrics.losses;
+      }
+      if (aggregateMetrics.avgLoss > 0) {
+        aggregateMetrics.riskRewardRatio = aggregateMetrics.avgWin / aggregateMetrics.avgLoss;
       }
       
       const htmlResponse = `
@@ -918,8 +966,11 @@ class TradingBot {
                 <div class="section-title">
                     <span>💹</span> Aggregate Performance (All Slots)
                 </div>
-                <div style="font-size: 0.9rem; color: #64748b;">
-                    ${aggregateMetrics.activeSlots}/3 slots active
+                <div style="display: flex; align-items: center; gap: 16px;">
+                    <span style="font-size: 0.9rem; color: #64748b;">
+                        ${aggregateMetrics.activeSlots}/3 slots active
+                    </span>
+                    <a href="/trade-history" class="btn btn-secondary" style="background: #f1f5f9; border: 1px solid #cbd5e1;">📜 View Trade History</a>
                 </div>
             </div>
             
@@ -972,6 +1023,58 @@ class TradingBot {
                         ${aggregateMetrics.roi >= 0 ? '+' : ''}${aggregateMetrics.roi.toFixed(2)}%
                     </div>
                     <div class="stat-subtext">On ₹${aggregateMetrics.totalCapital.toLocaleString()} deployed</div>
+                </div>
+                
+                <div class="stat-card" style="border: 2px solid ${aggregateMetrics.profitFactor >= 1.5 ? '#10b981' : aggregateMetrics.profitFactor >= 1 ? '#f59e0b' : '#ef4444'};">
+                    <div class="stat-header">
+                        <span class="stat-icon">⚖️</span>
+                        <span class="badge" style="background: ${aggregateMetrics.profitFactor >= 1.5 ? 'rgba(16, 185, 129, 0.2)' : aggregateMetrics.profitFactor >= 1 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)'}; color: ${aggregateMetrics.profitFactor >= 1.5 ? '#10b981' : aggregateMetrics.profitFactor >= 1 ? '#f59e0b' : '#ef4444'};">
+                            ${aggregateMetrics.profitFactor >= 1.5 ? 'Excellent' : aggregateMetrics.profitFactor >= 1 ? 'Break-even' : 'Losing'}
+                        </span>
+                    </div>
+                    <div class="stat-label">Profit Factor</div>
+                    <div class="stat-value" style="color: ${aggregateMetrics.profitFactor >= 1.5 ? '#10b981' : aggregateMetrics.profitFactor >= 1 ? '#f59e0b' : '#ef4444'};">
+                        ${aggregateMetrics.profitFactor >= 999 ? '∞' : aggregateMetrics.profitFactor.toFixed(2)}
+                    </div>
+                    <div class="stat-subtext">Gross Profit / Gross Loss (Target: 1.5+)</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-icon">📈</span>
+                        <span class="stat-label">Avg Win</span>
+                    </div>
+                    <div class="stat-label">Average Win</div>
+                    <div class="stat-value" style="color: #10b981;">
+                        ₹${aggregateMetrics.avgWin.toFixed(0)}
+                    </div>
+                    <div class="stat-subtext">From ${aggregateMetrics.wins} winning trades</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-icon">📉</span>
+                        <span class="stat-label">Avg Loss</span>
+                    </div>
+                    <div class="stat-label">Average Loss</div>
+                    <div class="stat-value" style="color: #ef4444;">
+                        ₹${aggregateMetrics.avgLoss.toFixed(0)}
+                    </div>
+                    <div class="stat-subtext">From ${aggregateMetrics.losses} losing trades</div>
+                </div>
+                
+                <div class="stat-card" style="border: 2px solid ${aggregateMetrics.riskRewardRatio >= 1.5 ? '#10b981' : aggregateMetrics.riskRewardRatio >= 1 ? '#f59e0b' : '#ef4444'};">
+                    <div class="stat-header">
+                        <span class="stat-icon">🎰</span>
+                        <span class="badge" style="background: ${aggregateMetrics.riskRewardRatio >= 1.5 ? 'rgba(16, 185, 129, 0.2)' : aggregateMetrics.riskRewardRatio >= 1 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)'}; color: ${aggregateMetrics.riskRewardRatio >= 1.5 ? '#10b981' : aggregateMetrics.riskRewardRatio >= 1 ? '#f59e0b' : '#ef4444'};">
+                            ${aggregateMetrics.riskRewardRatio >= 1.5 ? 'Good' : aggregateMetrics.riskRewardRatio >= 1 ? 'Fair' : 'Poor'}
+                        </span>
+                    </div>
+                    <div class="stat-label">Risk:Reward</div>
+                    <div class="stat-value" style="color: ${aggregateMetrics.riskRewardRatio >= 1.5 ? '#10b981' : aggregateMetrics.riskRewardRatio >= 1 ? '#f59e0b' : '#ef4444'};">
+                        1:${aggregateMetrics.riskRewardRatio.toFixed(2)}
+                    </div>
+                    <div class="stat-subtext">Avg Win / Avg Loss (Target: 1:1.5+)</div>
                 </div>
             </div>
         </div>
@@ -1493,6 +1596,316 @@ class TradingBot {
     });
 
     // =============================
+    // TRADE HISTORY PAGE
+    // =============================
+    
+    this.app.get('/trade-history', async (req: Request, res: Response) => {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const dataDir = path.join(__dirname, 'data');
+        
+        // Collect trade history from all slots
+        const allTrades: any[] = [];
+        
+        for (let slotNumber = 1; slotNumber <= 3; slotNumber++) {
+          const slotFile = path.join(dataDir, `bollinger-slot${slotNumber}.json`);
+          try {
+            if (fs.existsSync(slotFile)) {
+              const data = JSON.parse(fs.readFileSync(slotFile, 'utf8'));
+              if (data.tradeHistory && Array.isArray(data.tradeHistory)) {
+                // Add slot number to each trade
+                data.tradeHistory.forEach((trade: any) => {
+                  allTrades.push({ ...trade, slotNumber });
+                });
+              }
+            }
+          } catch (e) {
+            this.logger.warn(`Failed to read slot ${slotNumber} data: ${e}`);
+          }
+        }
+        
+        // Sort by exit time (most recent first)
+        allTrades.sort((a, b) => new Date(b.exitTime).getTime() - new Date(a.exitTime).getTime());
+        
+        // Calculate totals
+        const totalPnL = allTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+        const wins = allTrades.filter(t => (t.pnl || 0) > 0).length;
+        const losses = allTrades.filter(t => (t.pnl || 0) < 0).length;
+        const winRate = allTrades.length > 0 ? (wins / allTrades.length) * 100 : 0;
+        
+        // Build trade rows HTML
+        const tradeRowsHtml = allTrades.map(trade => {
+          const pnl = trade.pnl || 0;
+          const isProfitable = pnl > 0;
+          const tradingsymbol = trade.instrument?.tradingsymbol || '—';
+          const underlying = trade.instrument?.name || tradingsymbol.match(/^([A-Z]+)/)?.[1] || '—';
+          const exitTimeStr = trade.exitTime ? new Date(trade.exitTime).toLocaleString('en-IN', { 
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+          }) : '—';
+          
+          return `
+            <tr>
+              <td><span class="slot-badge">Slot ${trade.slotNumber}</span></td>
+              <td>
+                <div class="symbol-cell">${tradingsymbol}</div>
+                <div class="symbol-underlying">${underlying}</div>
+              </td>
+              <td>
+                <span class="direction-badge ${trade.direction === 'LONG' ? 'long' : 'short'}">
+                  ${trade.direction || '—'}
+                </span>
+              </td>
+              <td>₹${trade.entryPrice?.toFixed(2) || '—'}</td>
+              <td>₹${trade.exitPrice?.toFixed(2) || '—'}</td>
+              <td>${trade.quantity || '—'}</td>
+              <td class="pnl-cell ${isProfitable ? 'profit' : 'loss'}">
+                ${isProfitable ? '+' : ''}₹${pnl.toFixed(2)}
+              </td>
+              <td class="exit-reason">${(trade.exitReason || '—').replace(/_/g, ' ')}</td>
+              <td class="date-cell">${exitTimeStr}</td>
+            </tr>
+          `;
+        }).join('');
+        
+        const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trade History - TMV Market Scanner</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #f5f7fa;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container { max-width: 1400px; margin: 0 auto; }
+        
+        .back-btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #3b82f6;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        
+        .back-btn:hover { background: #2563eb; }
+        
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border-left: 4px solid #3b82f6;
+        }
+        
+        h1 { color: #1a202c; margin-bottom: 8px; }
+        .subtitle { color: #64748b; font-size: 0.9rem; }
+        
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .summary-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        
+        .summary-card.profit { border: 2px solid #10b981; background: rgba(16, 185, 129, 0.05); }
+        .summary-card.loss { border: 2px solid #ef4444; background: rgba(239, 68, 68, 0.05); }
+        
+        .summary-label { color: #64748b; font-size: 0.85rem; margin-bottom: 8px; }
+        .summary-value { font-size: 2rem; font-weight: 700; color: #1a202c; }
+        .summary-value.profit { color: #10b981; }
+        .summary-value.loss { color: #ef4444; }
+        
+        .trades-section {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .section-header {
+            padding: 16px 24px;
+            background: #f8fafc;
+            border-bottom: 1px solid #e2e8f0;
+            font-weight: 600;
+            color: #1a202c;
+        }
+        
+        .trades-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .trades-table th {
+            padding: 12px 16px;
+            text-align: left;
+            background: #f8fafc;
+            color: #64748b;
+            font-weight: 600;
+            font-size: 0.85rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .trades-table td {
+            padding: 14px 16px;
+            border-bottom: 1px solid #f1f5f9;
+            vertical-align: middle;
+        }
+        
+        .trades-table tr:hover { background: #f8fafc; }
+        
+        .symbol-cell {
+            font-weight: 600;
+            color: #1a202c;
+        }
+        
+        .symbol-underlying {
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-top: 2px;
+        }
+        
+        .direction-badge {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .direction-badge.long { background: #d1fae5; color: #065f46; }
+        .direction-badge.short { background: #fee2e2; color: #991b1b; }
+        
+        .pnl-cell { font-weight: 700; font-size: 1rem; }
+        .pnl-cell.profit { color: #10b981; }
+        .pnl-cell.loss { color: #ef4444; }
+        
+        .slot-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: #64748b;
+        }
+        
+        .exit-reason {
+            font-size: 0.8rem;
+            color: #64748b;
+            max-width: 200px;
+        }
+        
+        .date-cell {
+            font-size: 0.85rem;
+            color: #64748b;
+        }
+        
+        .empty-state {
+            padding: 60px 20px;
+            text-align: center;
+            color: #64748b;
+        }
+        
+        .empty-state-icon { font-size: 3rem; margin-bottom: 16px; }
+        .empty-state-text { font-size: 1.1rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-btn">← Back to Dashboard</a>
+        
+        <div class="header">
+            <h1>📜 Trade History</h1>
+            <p class="subtitle">Complete record of all closed trades across all slots</p>
+        </div>
+        
+        <div class="summary-grid">
+            <div class="summary-card ${totalPnL >= 0 ? 'profit' : 'loss'}">
+                <div class="summary-label">Total P&L</div>
+                <div class="summary-value ${totalPnL >= 0 ? 'profit' : 'loss'}">
+                    ${totalPnL >= 0 ? '+' : ''}₹${totalPnL.toFixed(2)}
+                </div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-label">Total Trades</div>
+                <div class="summary-value">${allTrades.length}</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-label">Wins / Losses</div>
+                <div class="summary-value">
+                    <span style="color: #10b981;">${wins}</span> / <span style="color: #ef4444;">${losses}</span>
+                </div>
+            </div>
+            <div class="summary-card ${winRate >= 50 ? 'profit' : ''}">
+                <div class="summary-label">Win Rate</div>
+                <div class="summary-value ${winRate >= 50 ? 'profit' : ''}">${winRate.toFixed(1)}%</div>
+            </div>
+        </div>
+        
+        <div class="trades-section">
+            <div class="section-header">
+                📊 All Trades (${allTrades.length})
+            </div>
+            
+            ${allTrades.length > 0 ? `
+            <table class="trades-table">
+                <thead>
+                    <tr>
+                        <th>Slot</th>
+                        <th>Symbol</th>
+                        <th>Direction</th>
+                        <th>Entry</th>
+                        <th>Exit</th>
+                        <th>Qty</th>
+                        <th>P&L</th>
+                        <th>Exit Reason</th>
+                        <th>Exit Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${tradeRowsHtml}
+                </tbody>
+            </table>
+            ` : `
+            <div class="empty-state">
+                <div class="empty-state-icon">📭</div>
+                <div class="empty-state-text">No trades recorded yet. Trades will appear here once positions are closed.</div>
+            </div>
+            `}
+        </div>
+    </div>
+</body>
+</html>
+        `;
+        
+        res.send(html);
+      } catch (error) {
+        this.logger.error('Failed to render trade history:', error);
+        res.status(500).send('Failed to load trade history');
+      }
+    });
+
+    // =============================
     // STRATEGY MANAGER ENDPOINTS
     // =============================
 
@@ -1745,6 +2158,7 @@ class TradingBot {
         const pivots = (status as any).pivots || { pp: 0, r1: 0, r2: 0, s1: 0, s2: 0 };
         const currentPrice = (status as any).currentStockPrice || (status as any).currentNiftyPrice || 0;
         const signalSymbol = (status as any).signalSymbol || 'N/A';
+        const positionInfo = (status as any).positionInfo || null;
         
         // Helper functions for styling
         const getStrengthBadge = (strength: string) => {
@@ -1765,7 +2179,7 @@ class TradingBot {
 <head>
   <title>${status.config.name} - Trading Bot</title>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="30">
+  <meta http-equiv="refresh" content="${positionInfo ? '5' : '30'}">
   <style>
     * { box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f0f2f5; }
@@ -1829,6 +2243,28 @@ class TradingBot {
     .rules-list li { margin: 4px 0; font-size: 0.9rem; color: #374151; }
     .exit-rule { font-size: 0.85rem; color: #059669; margin-top: 8px; font-weight: 500; }
     .exit-rule.short { color: #dc2626; }
+    
+    /* Live Position Monitor Styles */
+    .position-monitor { border: 3px solid #10b981; background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); }
+    .position-monitor.short-position { border-color: #f59e0b; background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); }
+    .position-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid rgba(0,0,0,0.1); }
+    .position-title { font-size: 1.2rem; font-weight: 700; }
+    .position-badge { padding: 6px 16px; border-radius: 20px; font-weight: 700; font-size: 0.9rem; }
+    .position-badge.long { background: #10b981; color: white; }
+    .position-badge.short { background: #f59e0b; color: white; }
+    .position-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+    .position-stat { background: white; border-radius: 8px; padding: 12px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .position-stat-value { font-size: 1.3rem; font-weight: 700; color: #1f2937; }
+    .position-stat-label { font-size: 0.75rem; color: #6b7280; margin-top: 4px; text-transform: uppercase; }
+    .position-stat.profit { border-bottom: 3px solid #10b981; }
+    .position-stat.loss { border-bottom: 3px solid #ef4444; }
+    .position-stat.warning { border-bottom: 3px solid #f59e0b; }
+    .position-stat.info { border-bottom: 3px solid #3b82f6; }
+    .position-detail-row { display: flex; justify-content: space-between; padding: 8px 12px; background: white; border-radius: 6px; margin-bottom: 8px; }
+    .position-detail-label { color: #6b7280; font-size: 0.9rem; }
+    .position-detail-value { font-weight: 600; color: #1f2937; }
+    .no-position { text-align: center; padding: 40px; color: #6b7280; }
+    .no-position-icon { font-size: 3rem; margin-bottom: 12px; }
   </style>
 </head>
 <body>
@@ -1837,7 +2273,7 @@ class TradingBot {
     <div class="header">
       <h1>${status.config.name}</h1>
       <span class="status-badge">${status.metrics.isActive ? '🟢 ACTIVE' : '⚫ INACTIVE'}</span>
-      <p style="color: #6b7280; margin: 10px 0 0 0;">Real-time monitoring • Auto-refresh every 30s</p>
+      <p style="color: #6b7280; margin: 10px 0 0 0;">Real-time monitoring • Auto-refresh every ${positionInfo ? '5s (live position)' : '30s'}</p>
     </div>
     
     <!-- Quick Stats Row -->
@@ -1861,6 +2297,119 @@ class TradingBot {
         </div>
       </div>
     </div>
+    
+    <!-- Live Position Monitor -->
+    ${positionInfo ? `
+    <div class="section position-monitor ${positionInfo.type === 'SHORT' ? 'short-position' : ''}">
+      <div class="position-header">
+        <div>
+          <div class="position-title">📊 Live Position: ${positionInfo.tradingSymbol}</div>
+          <div style="color: #6b7280; font-size: 0.85rem; margin-top: 4px;">
+            Strike: ₹${positionInfo.strike || 'N/A'} (${positionInfo.strikeType || 'N/A'}) • 
+            Lot Size: ${positionInfo.lotSize || 'N/A'} • 
+            Qty: ${positionInfo.quantity} lot(s)
+          </div>
+        </div>
+        <span class="position-badge ${positionInfo.type === 'LONG' ? 'long' : 'short'}">${positionInfo.type === 'LONG' ? '🚀 LONG' : '🔻 SHORT'}</span>
+      </div>
+      
+      <!-- Main Stats Row -->
+      <div class="position-grid">
+        <div class="position-stat info">
+          <div class="position-stat-value">₹${positionInfo.entryPrice?.toFixed(2) || '0.00'}</div>
+          <div class="position-stat-label">Entry Price</div>
+        </div>
+        <div class="position-stat ${positionInfo.currentPrice > 0 ? 'info' : ''}">
+          <div class="position-stat-value">₹${positionInfo.currentPrice?.toFixed(2) || '0.00'}</div>
+          <div class="position-stat-label">Current Price</div>
+        </div>
+        <div class="position-stat ${(positionInfo.profitFromEntry || 0) >= 0 ? 'profit' : 'loss'}">
+          <div class="position-stat-value" style="color: ${(positionInfo.profitFromEntry || 0) >= 0 ? '#10b981' : '#ef4444'}">
+            ${(positionInfo.profitFromEntry || 0) >= 0 ? '+' : ''}₹${positionInfo.profitFromEntry?.toFixed(2) || '0.00'}
+          </div>
+          <div class="position-stat-label">P&L per Lot</div>
+        </div>
+        <div class="position-stat ${(positionInfo.profitPercent || 0) >= 0 ? 'profit' : 'loss'}">
+          <div class="position-stat-value" style="color: ${(positionInfo.profitPercent || 0) >= 0 ? '#10b981' : '#ef4444'}">
+            ${(positionInfo.profitPercent || 0) >= 0 ? '+' : ''}${positionInfo.profitPercent?.toFixed(2) || '0.00'}%
+          </div>
+          <div class="position-stat-label">P&L %</div>
+        </div>
+      </div>
+      
+      <!-- Trailing SL Row -->
+      <div class="position-grid">
+        <div class="position-stat warning">
+          <div class="position-stat-value">₹${positionInfo.highestPremium?.toFixed(2) || '0.00'}</div>
+          <div class="position-stat-label">Highest Premium</div>
+        </div>
+        <div class="position-stat" style="border-bottom: 3px solid #ef4444;">
+          <div class="position-stat-value" style="color: #ef4444;">₹${positionInfo.trailingSL?.toFixed(2) || 'Not Set'}</div>
+          <div class="position-stat-label">Trailing SL (${positionInfo.currentTrailPercent?.toFixed(0) || 12}%)</div>
+        </div>
+        <div class="position-stat ${(positionInfo.cushion || 0) > 0 ? 'profit' : 'warning'}">
+          <div class="position-stat-value" style="color: ${(positionInfo.cushion || 0) > 0 ? '#10b981' : '#f59e0b'}">
+            ₹${positionInfo.cushion?.toFixed(2) || '0.00'}
+          </div>
+          <div class="position-stat-label">Cushion Above SL</div>
+        </div>
+        <div class="position-stat">
+          <div class="position-stat-value">${positionInfo.cushionPercent?.toFixed(1) || '0.0'}%</div>
+          <div class="position-stat-label">Cushion %</div>
+        </div>
+      </div>
+      
+      <!-- Time & Safety Details -->
+      <div class="grid-2" style="margin-top: 12px;">
+        <div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">⏱️ Time Since Entry</span>
+            <span class="position-detail-value">${Math.floor(positionInfo.minutesSinceEntry || 0)}m ${Math.floor(((positionInfo.minutesSinceEntry || 0) % 1) * 60)}s</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">⏱️ Time Since New High</span>
+            <span class="position-detail-value">${Math.floor(positionInfo.minutesSinceLastHigh || 0)}m ${Math.floor(((positionInfo.minutesSinceLastHigh || 0) % 1) * 60)}s</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">📅 Entry Time</span>
+            <span class="position-detail-value">${positionInfo.entryTime ? new Date(positionInfo.entryTime).toLocaleTimeString() : 'N/A'}</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">🔄 Last Updated</span>
+            <span class="position-detail-value">${positionInfo.lastUpdated ? Math.round((Date.now() - new Date(positionInfo.lastUpdated).getTime()) / 1000) + 's ago' : 'N/A'}</span>
+          </div>
+        </div>
+        <div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">📉 Entry Candle Low</span>
+            <span class="position-detail-value">₹${positionInfo.entryCandleLow?.toFixed(2) || 'N/A'}</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">📈 Entry Candle High</span>
+            <span class="position-detail-value">₹${positionInfo.entryCandleHigh?.toFixed(2) || 'N/A'}</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">🛡️ Safety Threshold</span>
+            <span class="position-detail-value" style="color: #ef4444;">₹${positionInfo.underlyingSafetyThreshold?.toFixed(2) || 'N/A'}</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">💰 Unrealized P&L (Total)</span>
+            <span class="position-detail-value" style="color: ${(positionInfo.unrealizedPnL || 0) >= 0 ? '#10b981' : '#ef4444'}">
+              ${(positionInfo.unrealizedPnL || 0) >= 0 ? '+' : ''}₹${positionInfo.unrealizedPnL?.toFixed(2) || '0.00'}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+    ` : `
+    <div class="section">
+      <div class="no-position">
+        <div class="no-position-icon">⏳</div>
+        <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 8px;">No Active Position</div>
+        <div>Waiting for entry signal...</div>
+      </div>
+    </div>
+    `}
     
     <!-- Entry Analysis -->
     <div class="section">

@@ -85,16 +85,19 @@ export class StrategyManager {
   // Smart Retention: Configuration
   private smartRetentionConfig: SmartRetentionConfig = {
     enabled: true,
-    scanTimes: ['09:35', '10:35', '11:35', '12:35', '13:35', '14:35'],
+    scanTimes: ['09:18', '10:18', '11:18', '12:18', '13:18', '14:18'],
     keepThreshold: 6.0,
     minDeployScore: 7.0,
     lockOnActivePosition: true,
     swapOnBiasFlip: true,
-    lastScanCutoff: '14:35',
+    lastScanCutoff: '14:18',
   };
 
-  // Hourly scanner timer
-  private hourlyScannerTimer: NodeJS.Timeout | null = null;
+  // Hourly scanner timer (setTimeout for precise XX:18:05 timing)
+  private nextScanTimer: NodeJS.Timeout | null = null;
+  
+  // Race condition guard: Prevents concurrent scans
+  private isScanInProgress: boolean = false;
 
   constructor(
     kiteConnect: any,
@@ -144,6 +147,14 @@ export class StrategyManager {
       // Register all available strategies
       await this.registerStrategies();
       
+      // CRITICAL: Restore slot states from disk BEFORE anything else
+      // This prevents scanner from overwriting active positions on restart
+      await this.restoreSlotStatesFromDisk();
+      
+      // CRITICAL: Immediately restore strategies for LOCKED slots (active positions)
+      // This must happen BEFORE any scanner runs to ensure positions are monitored
+      await this.restoreLockedSlotStrategies();
+      
       // Load strategy configurations
       await this.loadStrategyConfigs();
       
@@ -162,6 +173,201 @@ export class StrategyManager {
     } catch (error) {
       this.logger.error('❌ Failed to initialize Strategy Manager:', error);
       throw error;
+    }
+  }
+
+  /**
+   * CRITICAL: Restore slot states from disk on startup
+   * This prevents the scanner from overwriting active positions when bot restarts
+   * 
+   * Checks each slot's data file (bollinger-slot{N}.json) for activePosition
+   * If found, pre-populates slotState and marks as LOCKED
+   */
+  private async restoreSlotStatesFromDisk(): Promise<void> {
+    this.logger.info('🔄 Restoring slot states from disk...');
+    
+    const dataDir = path.join(__dirname, '..', 'data');
+    let restoredCount = 0;
+    let activePositionsFound = 0;
+    
+    for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
+      const slotNumber = slotIndex + 1;
+      const slotDataFile = path.join(dataDir, `bollinger-slot${slotNumber}.json`);
+      
+      try {
+        if (!fs.existsSync(slotDataFile)) {
+          this.logger.info(`   Slot ${slotNumber}: No data file found`);
+          continue;
+        }
+        
+        const rawData = fs.readFileSync(slotDataFile, 'utf8');
+        const slotData = JSON.parse(rawData);
+        
+        // Check if there's an active position
+        if (slotData.activePosition && slotData.activePosition !== null) {
+          const position = slotData.activePosition;
+          
+          // Extract underlying symbol from tradingsymbol (e.g., "BEL26FEB430CE" → "BEL")
+          const tradingsymbol = position.instrument?.tradingsymbol || '';
+          const extractedSymbol = tradingsymbol.match(/^([A-Z]+)/)?.[1];
+          const symbol = extractedSymbol || position.underlying || 'UNKNOWN';
+          
+          // Determine direction from position type
+          const direction = position.type === 'LONG' ? 'LONG' : 'SHORT';
+          
+          this.logger.info(`   🔒 Slot ${slotNumber}: ACTIVE POSITION FOUND - ${symbol}`);
+          this.logger.info(`      Position: ${direction} | Entry: ₹${position.entryPrice} | Option: ${tradingsymbol}`);
+          
+          // Pre-populate slot state with SLOT-BASED strategy ID to prevent conflicts
+          this.slotStates[slotIndex] = {
+            slotNumber: slotIndex,
+            symbol: symbol,
+            strategyId: `bollinger-slot${slotNumber}-${symbol.toLowerCase()}`,
+            deployedAt: position.entryTime ? new Date(position.entryTime) : new Date(),
+            lastScanScore: null,
+            lastScanBias: direction,
+            locked: true, // CRITICAL: Lock the slot to prevent scanner from touching it
+          };
+          
+          activePositionsFound++;
+          restoredCount++;
+          
+          this.logger.info(`      ✅ Slot ${slotNumber} LOCKED - Scanner will NOT overwrite this position`);
+          
+        } else if (slotData.symbol) {
+          // No active position, but strategy was deployed (slot was in use)
+          this.logger.info(`   📦 Slot ${slotNumber}: Previously deployed to ${slotData.symbol} (no active position)`);
+          restoredCount++;
+        } else {
+          this.logger.info(`   📭 Slot ${slotNumber}: Empty (no active position)`);
+        }
+        
+      } catch (error) {
+        this.logger.warn(`   ⚠️ Slot ${slotNumber}: Failed to read data file - ${error}`);
+      }
+    }
+    
+    if (activePositionsFound > 0) {
+      this.logger.info(`\n🔐 POSITION PROTECTION ENABLED:`);
+      this.logger.info(`   ${activePositionsFound} active position(s) found and LOCKED`);
+      this.logger.info(`   Scanner will skip these slots to prevent orphaning positions`);
+    } else {
+      this.logger.info(`   No active positions found in slot data files`);
+    }
+    
+    this.logger.info(`✅ Slot state restoration complete (${restoredCount} slots processed)`);
+  }
+
+  /**
+   * CRITICAL: Restore strategies for LOCKED slots immediately at boot
+   * This ensures positions are being monitored BEFORE any scanner runs
+   * Prevents orphaned positions when same stock is picked by scanner
+   */
+  private async restoreLockedSlotStrategies(): Promise<void> {
+    const lockedSlots = this.slotStates.filter(s => s.locked && s.symbol);
+    
+    if (lockedSlots.length === 0) {
+      this.logger.info('📭 No locked slots to restore');
+      return;
+    }
+    
+    this.logger.info(`\n🔧 RESTORING ${lockedSlots.length} LOCKED SLOT STRATEGIES...`);
+    
+    for (const slotState of lockedSlots) {
+      const slotIndex = slotState.slotNumber;
+      const slotNumber = slotIndex + 1;
+      
+      this.logger.info(`   📍 Slot ${slotNumber}: Restoring ${slotState.symbol}...`);
+      
+      // Check if strategy already exists in registry
+      const existingStrategy = StrategyRegistry.getInstance(slotState.strategyId!);
+      if (existingStrategy) {
+        this.logger.info(`   ✅ Strategy ${slotState.strategyId} already running`);
+        continue;
+      }
+      
+      // Restore the strategy from slot data
+      const restored = await this.restoreStrategyFromSlotData(slotIndex, slotState);
+      
+      if (restored) {
+        this.logger.info(`   ✅ Slot ${slotNumber}: ${slotState.symbol} strategy restored and monitoring position`);
+      } else {
+        this.logger.error(`   ❌ CRITICAL: Slot ${slotNumber}: Failed to restore ${slotState.symbol} strategy!`);
+        this.logger.error(`   ⚠️ Position may be ORPHANED - manual intervention required!`);
+      }
+    }
+    
+    this.logger.info(`✅ Locked slot restoration complete\n`);
+  }
+
+  /**
+   * Restore a strategy from its slot data file
+   * Used when bot restarts with an active position but strategy isn't in registry
+   */
+  private async restoreStrategyFromSlotData(slotIndex: number, slotState: SlotState): Promise<boolean> {
+    const slotNumber = slotIndex + 1;
+    const dataDir = path.join(__dirname, '..', 'data');
+    const slotDataFile = path.join(dataDir, `bollinger-slot${slotNumber}.json`);
+    
+    try {
+      if (!fs.existsSync(slotDataFile)) {
+        this.logger.error(`   ❌ Slot data file not found: ${slotDataFile}`);
+        return false;
+      }
+      
+      const rawData = fs.readFileSync(slotDataFile, 'utf8');
+      const slotData = JSON.parse(rawData);
+      
+      if (!slotData.activePosition) {
+        this.logger.error(`   ❌ No active position in slot data - cannot restore`);
+        return false;
+      }
+      
+      const position = slotData.activePosition;
+      const symbol = slotState.symbol || position.underlying || 'UNKNOWN';
+      
+      this.logger.info(`   🔧 Restoring strategy for ${symbol} from slot data...`);
+      
+      // Create strategy config from slot data with SLOT-BASED ID
+      const config: StrategyConfig = {
+        id: slotState.strategyId || `bollinger-slot${slotNumber}-${symbol.toLowerCase()}`,
+        name: `Bollinger Band - ${symbol} (RESTORED)`,
+        enabled: true,
+        description: `Restored from active position on restart`,
+        timeframe: '5min',
+        instruments: [symbol],
+        riskPerTrade: 0.8,
+        maxPositions: 1,
+        config: {
+          period: 20,
+          stdDev: 2.0,
+          // Pass existing position data so strategy can restore it
+          restoreFromPosition: true,
+          restoredPositionData: position,
+          capitalAllocation: slotData.capital || 65000,
+          strategyIndex: slotIndex,
+        },
+      };
+      
+      // Create the strategy instance
+      const strategy = await StrategyRegistry.createInstance(
+        'bollinger-band',
+        this.kiteConnect,
+        this.logger,
+        this.quoteManager,
+        this.instrumentCache,
+        config,
+      );
+      
+      // Start the strategy (it will restore its position from the data file)
+      await strategy.start();
+      
+      this.logger.info(`   ✅ Strategy ${config.id} restored and started`);
+      return true;
+      
+    } catch (error) {
+      this.logger.error(`   ❌ Failed to restore strategy from slot data:`, error);
+      return false;
     }
   }
 
@@ -482,6 +688,12 @@ export class StrategyManager {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
     }
+    
+    // Clear the scheduled scan timer
+    if (this.nextScanTimer) {
+      clearTimeout(this.nextScanTimer);
+      this.nextScanTimer = null;
+    }
 
     await this.stopAllStrategies();
     
@@ -544,43 +756,137 @@ export class StrategyManager {
 
   /**
    * Schedule hourly scanner with Smart Retention
-   * Runs at XX:35 (5 min after candle close for stable indicators)
+   * Uses precise setTimeout to fire at exactly XX:35:05 (5 seconds after candle close)
    */
   private scheduleHourlyScanner(): void {
     this.logger.info('📅 Scheduling hourly Smart Retention scanner');
-    this.logger.info(`📅 Scan times: ${this.smartRetentionConfig.scanTimes.join(', ')}`);
+    this.logger.info(`📅 Scan times: ${this.smartRetentionConfig.scanTimes.join(', ')} (at :05 seconds)`);
 
-    // Check every minute if it's time for a scan
-    this.hourlyScannerTimer = setInterval(async () => {
-      const now = new Date();
-      const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      
-      // Check if current time matches any scan time
-      if (this.smartRetentionConfig.scanTimes.includes(currentTime)) {
-        // Check if we're past the cutoff
-        if (currentTime > this.smartRetentionConfig.lastScanCutoff) {
-          this.logger.info(`⏭️ Skipping scan at ${currentTime} - past cutoff (${this.smartRetentionConfig.lastScanCutoff})`);
-          return;
-        }
-        
-        // Check if authenticated
-        if (!await this.authService.isAuthenticatedAndValid()) {
-          this.logger.warn(`⏭️ Skipping scan at ${currentTime} - not authenticated`);
-          return;
-        }
-        
-        this.logger.info(`🕐 ${currentTime}: Triggering hourly Smart Retention scan...`);
-        await this.runHourlyScan();
-      }
-    }, 60000); // Check every minute
+    // Schedule the first scan
+    this.scheduleNextScan();
     
     this.logger.info('✅ Hourly scanner scheduled');
   }
 
   /**
+   * Calculate the next scan time (XX:35:05)
+   * Returns Date object for next scheduled scan
+   */
+  private getNextScanTime(): Date | null {
+    const now = new Date();
+    const scanTimes = this.smartRetentionConfig.scanTimes;
+    
+    if (!scanTimes || scanTimes.length === 0) {
+      return null;
+    }
+    
+    // Try each scan time today
+    for (const scanTime of scanTimes) {
+      const parts = scanTime.split(':');
+      if (parts.length < 2) continue;
+      const hour = parseInt(parts[0]!, 10);
+      const minute = parseInt(parts[1]!, 10);
+      const scanDate = new Date();
+      scanDate.setHours(hour, minute, 5, 0); // XX:35:05.000
+      
+      // If this scan time is in the future, use it
+      if (scanDate > now) {
+        return scanDate;
+      }
+    }
+    
+    // All scan times have passed today - schedule first scan tomorrow
+    const firstScan = scanTimes[0]!;
+    const firstScanParts = firstScan.split(':');
+    const hour = parseInt(firstScanParts[0]!, 10);
+    const minute = parseInt(firstScanParts[1]!, 10);
+    const tomorrowScan = new Date();
+    tomorrowScan.setDate(tomorrowScan.getDate() + 1);
+    tomorrowScan.setHours(hour, minute, 5, 0);
+    return tomorrowScan;
+  }
+
+  /**
+   * Schedule setTimeout for the next scan at XX:35:05
+   * Does NOT run any scan - only sets the timer
+   */
+  private scheduleNextScan(): void {
+    // Clear any existing timer
+    if (this.nextScanTimer) {
+      clearTimeout(this.nextScanTimer);
+      this.nextScanTimer = null;
+    }
+    
+    const nextScanTime = this.getNextScanTime();
+    if (!nextScanTime) {
+      this.logger.warn('⚠️ Could not calculate next scan time');
+      return;
+    }
+    
+    const now = new Date();
+    const delay = nextScanTime.getTime() - now.getTime();
+    
+    // Format time for logging
+    const timeStr = nextScanTime.toLocaleTimeString('en-IN', { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      hour12: true 
+    });
+    const delayMinutes = Math.floor(delay / 60000);
+    const delaySeconds = Math.floor((delay % 60000) / 1000);
+    
+    this.logger.info(`⏰ Next scan scheduled for ${timeStr} (in ${delayMinutes}m ${delaySeconds}s)`);
+    
+    // Schedule the callback
+    this.nextScanTimer = setTimeout(() => {
+      this.scheduledScanCallback();
+    }, delay);
+  }
+
+  /**
+   * Callback for scheduled scans (timer-triggered)
+   * Runs the scan AND reschedules the next one
+   */
+  private async scheduledScanCallback(): Promise<void> {
+    const now = new Date();
+    const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    
+    // Check if we're past the cutoff
+    if (currentTime > this.smartRetentionConfig.lastScanCutoff) {
+      this.logger.info(`⏭️ Skipping scan at ${currentTime} - past cutoff (${this.smartRetentionConfig.lastScanCutoff})`);
+      this.scheduleNextScan(); // Schedule for tomorrow
+      return;
+    }
+    
+    // Check if authenticated
+    if (!await this.authService.isAuthenticatedAndValid()) {
+      this.logger.warn(`⏭️ Skipping scan at ${currentTime} - not authenticated`);
+      this.scheduleNextScan(); // Try next scan time
+      return;
+    }
+    
+    this.logger.info(`🕐 ${currentTime}:05: Triggering scheduled Smart Retention scan...`);
+    await this.runHourlyScan();
+    
+    // Schedule the next scan
+    this.scheduleNextScan();
+  }
+
+  /**
    * Run hourly scan with Smart Retention logic
+   * Can be called by scheduled timer OR manual trigger
+   * Has race condition guard to prevent concurrent scans
    */
   private async runHourlyScan(): Promise<void> {
+    // Race condition guard: Prevent concurrent scans
+    if (this.isScanInProgress) {
+      this.logger.warn('⏭️ Scan already in progress, skipping this request');
+      return;
+    }
+    
+    this.isScanInProgress = true;
+    
     try {
       const scanStartTime = Date.now();
       this.logger.info('🔍 Smart Retention: Starting hourly scan...');
@@ -610,6 +916,9 @@ export class StrategyManager {
       
     } catch (error) {
       this.logger.error('❌ Smart Retention scan failed:', error);
+    } finally {
+      // Always release the lock
+      this.isScanInProgress = false;
     }
   }
 
@@ -629,6 +938,15 @@ export class StrategyManager {
     // Track which stocks are already deployed (to avoid duplicates)
     const deployedSymbols = new Set<string>();
     
+    // CRITICAL: Pre-populate deployedSymbols with LOCKED slot symbols
+    // This prevents scanner from deploying the same stock to an empty slot
+    for (const slotState of this.slotStates) {
+      if (slotState.locked && slotState.symbol) {
+        deployedSymbols.add(slotState.symbol);
+        this.logger.info(`   🔒 Pre-reserving ${slotState.symbol} (locked in Slot ${slotState.slotNumber + 1})`);
+      }
+    }
+    
     this.logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     this.logger.info('🔄 SMART RETENTION REBALANCE');
     this.logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -643,6 +961,28 @@ export class StrategyManager {
       // CASE 1: Slot is empty → Deploy
       if (!slotState.symbol || !slotState.strategyId) {
         await this.handleEmptySlot(slotIndex, selectedCandidates, deployedSymbols);
+        continue;
+      }
+      
+      // CRITICAL CHECK: If slot is LOCKED (has active position from restart), never treat as empty
+      if (slotState.locked) {
+        this.logger.info(`   🔒 Slot ${slotIndex + 1} is LOCKED with active position - protecting ${slotState.symbol}`);
+        
+        // If strategy doesn't exist in registry, we need to re-create it
+        let strategy = StrategyRegistry.getInstance(slotState.strategyId);
+        if (!strategy) {
+          this.logger.info(`   ⚠️ Strategy ${slotState.strategyId} not in registry - attempting to restore...`);
+          const restored = await this.restoreStrategyFromSlotData(slotIndex, slotState);
+          if (restored) {
+            this.logger.info(`   ✅ Strategy restored successfully - position protected`);
+          } else {
+            this.logger.error(`   ❌ CRITICAL: Failed to restore strategy - position may be orphaned!`);
+          }
+        }
+        
+        // Mark as deployed and continue (never swap a locked slot)
+        deployedSymbols.add(slotState.symbol!);
+        this.logRetentionDecision(slotIndex, slotState.symbol!, 'LOCK', 'active_position', 'Protected from restart');
         continue;
       }
       
@@ -776,7 +1116,9 @@ export class StrategyManager {
     if (!slotState) return;
     
     try {
-      const strategyId = `bollinger-${stock.symbol.toLowerCase()}`;
+      // Use SLOT-BASED strategy ID to prevent conflicts when same stock is in multiple slots
+      const slotNumber = slotIndex + 1;
+      const strategyId = `bollinger-slot${slotNumber}-${stock.symbol.toLowerCase()}`;
       
       const config: StrategyConfig = {
         id: strategyId,
