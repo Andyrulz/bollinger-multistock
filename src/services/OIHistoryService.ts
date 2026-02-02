@@ -37,7 +37,7 @@ export interface OIAnalysisResult {
   oiChangePercent: number;
   priceChangePercent: number;
   isCoiledSpring: boolean;
-  smartMoneySignal: 'ACCUMULATION' | 'DISTRIBUTION' | 'NONE' | 'CONFLICT';
+  smartMoneySignal: 'ACCUMULATION' | 'DISTRIBUTION' | 'SHORT_COVERING' | 'LONG_UNWINDING' | 'NONE' | 'CONFLICT';
   futuresSymbol: string;
 }
 
@@ -360,20 +360,40 @@ export class OIHistoryService {
       const oiChangePercent = ((currentOI - prevOI) / prevOI) * 100;
       const priceChangePercent = ((currentPrice - prevClose) / prevClose) * 100;
       
-      // Determine Smart Money signal
-      let smartMoneySignal: 'ACCUMULATION' | 'DISTRIBUTION' | 'NONE' | 'CONFLICT' = 'NONE';
+      // Determine Smart Money signal based on OI-Price relationship
+      // Reference: Wyckoff's "Coiled Spring" and FnO Market Dynamics
+      let smartMoneySignal: 'ACCUMULATION' | 'DISTRIBUTION' | 'SHORT_COVERING' | 'LONG_UNWINDING' | 'NONE' | 'CONFLICT' = 'NONE';
       let isCoiledSpring = false;
       
-      if (oiChangePercent >= this.OI_CHANGE_THRESHOLD) {
-        // High OI change detected - check price action
-        if (priceChangePercent >= 0 && priceChangePercent <= this.PRICE_CHANGE_MAX) {
-          // Price flat/slightly up + OI exploding = ACCUMULATION (Bullish)
-          smartMoneySignal = 'ACCUMULATION';
-          isCoiledSpring = true;
-        } else if (priceChangePercent >= -this.PRICE_CHANGE_MAX && priceChangePercent < 0) {
-          // Price flat/slightly down + OI exploding = DISTRIBUTION (Bearish)
-          smartMoneySignal = 'DISTRIBUTION';
-          isCoiledSpring = true;
+      const absOiChange = Math.abs(oiChangePercent);
+      
+      if (absOiChange >= this.OI_CHANGE_THRESHOLD) {
+        // Significant OI change detected - analyze pattern
+        
+        if (oiChangePercent >= this.OI_CHANGE_THRESHOLD) {
+          // OI INCREASED: New positions being built
+          if (priceChangePercent >= 0 && priceChangePercent <= this.PRICE_CHANGE_MAX) {
+            // Price flat/slightly up + OI exploding = ACCUMULATION (Bullish)
+            smartMoneySignal = 'ACCUMULATION';
+            isCoiledSpring = true;
+          } else if (priceChangePercent >= -this.PRICE_CHANGE_MAX && priceChangePercent < 0) {
+            // Price flat/slightly down + OI exploding = DISTRIBUTION (Bearish)
+            smartMoneySignal = 'DISTRIBUTION';
+            isCoiledSpring = true;
+          }
+        } else if (oiChangePercent <= -this.OI_CHANGE_THRESHOLD) {
+          // OI DECREASED: Positions being closed
+          if (priceChangePercent >= 0 && priceChangePercent <= this.PRICE_CHANGE_MAX) {
+            // Price flat/slightly up + OI dropping = SHORT COVERING (Bullish)
+            // Shorts closing = potential upside
+            smartMoneySignal = 'SHORT_COVERING';
+            isCoiledSpring = true;
+          } else if (priceChangePercent >= -this.PRICE_CHANGE_MAX && priceChangePercent < 0) {
+            // Price flat/slightly down + OI dropping = LONG UNWINDING (Bearish)
+            // Longs exiting = potential downside
+            smartMoneySignal = 'LONG_UNWINDING';
+            isCoiledSpring = true;
+          }
         }
       }
       
@@ -397,28 +417,36 @@ export class OIHistoryService {
   /**
    * Calculate Smart Money score bonus for a stock
    * Returns +2.0 for matching coiled spring, 0 for neutral, -999 for conflict
+   * 
+   * Signal Alignment:
+   * - LONG bias: ACCUMULATION (+2.0) or SHORT_COVERING (+2.0) = Bullish
+   * - SHORT bias: DISTRIBUTION (+2.0) or LONG_UNWINDING (+2.0) = Bearish
    */
   calculateSmartMoneyBonus(oiAnalysis: OIAnalysisResult | null, bias: 'LONG' | 'SHORT'): number {
     if (!oiAnalysis || !oiAnalysis.isCoiledSpring) {
       return 0;  // No signal
     }
     
-    // Check for alignment
-    if (bias === 'LONG' && oiAnalysis.smartMoneySignal === 'ACCUMULATION') {
-      return 2.0;  // 💎 Bullish Coiled Spring matches LONG bias
+    const signal = oiAnalysis.smartMoneySignal;
+    
+    // Check for LONG alignment (Bullish signals)
+    if (bias === 'LONG') {
+      if (signal === 'ACCUMULATION' || signal === 'SHORT_COVERING') {
+        return 2.0;  // 💎 Bullish Smart Money matches LONG bias
+      }
+      if (signal === 'DISTRIBUTION' || signal === 'LONG_UNWINDING') {
+        return -999;  // ⚠️ CONFLICT: Technical LONG but Smart Money bearish
+      }
     }
     
-    if (bias === 'SHORT' && oiAnalysis.smartMoneySignal === 'DISTRIBUTION') {
-      return 2.0;  // 💎 Bearish Coiled Spring matches SHORT bias
-    }
-    
-    // Check for conflict
-    if (bias === 'LONG' && oiAnalysis.smartMoneySignal === 'DISTRIBUTION') {
-      return -999;  // ⚠️ CONFLICT: Technical LONG but Smart Money shorting
-    }
-    
-    if (bias === 'SHORT' && oiAnalysis.smartMoneySignal === 'ACCUMULATION') {
-      return -999;  // ⚠️ CONFLICT: Technical SHORT but Smart Money buying
+    // Check for SHORT alignment (Bearish signals)
+    if (bias === 'SHORT') {
+      if (signal === 'DISTRIBUTION' || signal === 'LONG_UNWINDING') {
+        return 2.0;  // 💎 Bearish Smart Money matches SHORT bias
+      }
+      if (signal === 'ACCUMULATION' || signal === 'SHORT_COVERING') {
+        return -999;  // ⚠️ CONFLICT: Technical SHORT but Smart Money bullish
+      }
     }
     
     return 0;

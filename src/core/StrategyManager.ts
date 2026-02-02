@@ -48,6 +48,26 @@ export interface SlotState {
   lastScanScore: number | null;     // Score from last scan
   lastScanBias: 'LONG' | 'SHORT' | null;  // Bias from last scan
   locked: boolean;                  // True if has active position
+  // Retention decision tracking
+  lastRetentionDecision: 'LOCK' | 'KEEP' | 'SWAP' | 'DEPLOY' | null;
+  lastRetentionReason: string | null;
+}
+
+/**
+ * Enhanced slot state with live position data for dashboard
+ */
+export interface SlotStateWithPosition extends SlotState {
+  hasActivePosition: boolean;
+  positionInfo: {
+    type: 'LONG' | 'SHORT';
+    tradingSymbol: string;
+    entryPrice: number;
+    currentPrice: number;
+    quantity: number;
+    unrealizedPnL: number;
+    trailingSL: number | null;
+    profitPercent: number;
+  } | null;
 }
 
 /**
@@ -78,9 +98,9 @@ export class StrategyManager {
 
   // Smart Retention: Slot tracking
   private slotStates: SlotState[] = [
-    { slotNumber: 0, symbol: null, strategyId: null, deployedAt: null, lastScanScore: null, lastScanBias: null, locked: false },
-    { slotNumber: 1, symbol: null, strategyId: null, deployedAt: null, lastScanScore: null, lastScanBias: null, locked: false },
-    { slotNumber: 2, symbol: null, strategyId: null, deployedAt: null, lastScanScore: null, lastScanBias: null, locked: false },
+    { slotNumber: 0, symbol: null, strategyId: null, deployedAt: null, lastScanScore: null, lastScanBias: null, locked: false, lastRetentionDecision: null, lastRetentionReason: null },
+    { slotNumber: 1, symbol: null, strategyId: null, deployedAt: null, lastScanScore: null, lastScanBias: null, locked: false, lastRetentionDecision: null, lastRetentionReason: null },
+    { slotNumber: 2, symbol: null, strategyId: null, deployedAt: null, lastScanScore: null, lastScanBias: null, locked: false, lastRetentionDecision: null, lastRetentionReason: null },
   ];
 
   // Smart Retention: Configuration
@@ -235,6 +255,8 @@ export class StrategyManager {
             lastScanScore: null,
             lastScanBias: direction,
             locked: true, // CRITICAL: Lock the slot to prevent scanner from touching it
+            lastRetentionDecision: 'LOCK',
+            lastRetentionReason: 'Active position restored from persisted data',
           };
           
           activePositionsFound++;
@@ -736,6 +758,8 @@ export class StrategyManager {
           slot.lastScanScore = null;
           slot.lastScanBias = null;
           slot.locked = false;
+          slot.lastRetentionDecision = null;
+          slot.lastRetentionReason = null;
         }
         this.logger.info('🧹 Slot states reset for next trading day');
         
@@ -1331,7 +1355,7 @@ export class StrategyManager {
   }
 
   /**
-   * Log retention decision with consistent format
+   * Log retention decision with consistent format and store on slot state
    */
   private logRetentionDecision(
     slotIndex: number,
@@ -1355,6 +1379,13 @@ export class StrategyManager {
       'bias_flip': 'Bias reversed',
       'not_in_scan': 'Dropped from scan (sector flat/filtered)',
     };
+    
+    // Store decision on slot state for dashboard display
+    const slotState = this.slotStates[slotIndex];
+    if (slotState) {
+      slotState.lastRetentionDecision = decision;
+      slotState.lastRetentionReason = details ? `${reasonText[reason]} (${details})` : reasonText[reason];
+    }
     
     const message = `   ${icons[decision]} ${decision}: ${symbol} - ${reasonText[reason]}${details ? ` (${details})` : ''}`;
     this.logger.info(message);
@@ -1421,6 +1452,52 @@ export class StrategyManager {
    */
   public getSlotStates(): SlotState[] {
     return this.slotStates;
+  }
+
+  /**
+   * Get slot states enriched with live position data from strategies
+   * This provides real-time position visibility for the dashboard
+   */
+  public getSlotStatesWithPositions(): SlotStateWithPosition[] {
+    return this.slotStates.map(slot => {
+      let hasActivePosition = false;
+      let positionInfo: SlotStateWithPosition['positionInfo'] = null;
+      
+      if (slot.strategyId) {
+        const strategy = StrategyRegistry.getInstance(slot.strategyId);
+        if (strategy) {
+          try {
+            const status = strategy.getStatus() as any;
+            if (status?.positionInfo) {
+              hasActivePosition = true;
+              positionInfo = {
+                type: status.positionInfo.type,
+                tradingSymbol: status.positionInfo.tradingSymbol || status.positionInfo.instrument?.tradingsymbol || 'Unknown',
+                entryPrice: status.positionInfo.entryPrice || 0,
+                currentPrice: status.positionInfo.currentPrice || 0,
+                quantity: status.positionInfo.quantity || 0,
+                unrealizedPnL: status.positionInfo.unrealizedPnL || 0,
+                trailingSL: status.positionInfo.trailingSL || null,
+                profitPercent: status.positionInfo.profitPercent || 0,
+              };
+              // Update locked status based on live position
+              slot.locked = true;
+            } else {
+              // No position - ensure not locked (unless scanner locked it during rebalance)
+              // Don't unlock here as scanner may have locked for other reasons
+            }
+          } catch (error) {
+            this.logger.debug(`Error getting status for ${slot.strategyId}: ${error}`);
+          }
+        }
+      }
+      
+      return {
+        ...slot,
+        hasActivePosition,
+        positionInfo,
+      };
+    });
   }
 
   private lastScannerResults: any = null;

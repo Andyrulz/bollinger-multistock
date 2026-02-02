@@ -59,6 +59,7 @@ interface Position {
   entryCandleTimestamp?: Date; // FIXED: Timestamp of entry candle for verification
   entryCandleLow?: number;     // NEW: Store entry candle's low for LONG SL logic
   entryCandleHigh?: number;    // NEW: Store entry candle's high (for future use)
+  entryStockPrice?: number;    // Stock price at entry (for Emergency Hard Stop)
   trailingSL?: number;
   highestPremium?: number;
   entryOrderId: string;        // Store real order ID from KiteConnect
@@ -151,6 +152,11 @@ export class BollingerBandStrategy extends StrategyBase {
   // REST API position monitoring
   private shortMonitoringInterval?: NodeJS.Timeout;
   
+  // Emergency Hard Stop monitoring (flash crash protection)
+  private emergencyStopInterval: NodeJS.Timeout | null = null;
+  private readonly EMERGENCY_STOP_PERCENT = 5.0;      // 5% disaster threshold
+  private readonly EMERGENCY_POLL_INTERVAL_MS = 30000; // 30 seconds between checks
+  
   // EOD safety exit timer
   private eodExitTimer?: NodeJS.Timeout;
   
@@ -193,6 +199,10 @@ export class BollingerBandStrategy extends StrategyBase {
   private lastSuccessfulFetchTime: number | null = null; // Track last candle fetch for system sleep detection
   private lastReconciliationTime: number | null = null; // Track last reconciliation for system sleep detection
   
+  // 🚀 RESOURCE EFFICIENCY: Slot index for staggered execution (0, 1, 2)
+  // Prevents all 3 slots from firing API calls simultaneously
+  private readonly slotIndex: number;
+  
   // 🔒 CRITICAL FIX: Add timeout for candle fetch operations
   private readonly CANDLE_FETCH_TIMEOUT = 45000; // 45 seconds max for API calls
 
@@ -204,10 +214,10 @@ export class BollingerBandStrategy extends StrategyBase {
     // SLOT-BASED DATA FILE: Use strategyIndex from scanner config (0-indexed)
     // Scanner passes strategyIndex: 0, 1, 2 for first 3 stocks
     // Slot numbers are 1-indexed: slot1, slot2, slot3
-    const strategyIndex = (config as any).config?.strategyIndex ?? 0;
-    const slotNumber = strategyIndex + 1;
+    this.slotIndex = (config as any).config?.strategyIndex ?? 0;
+    const slotNumber = this.slotIndex + 1;
     this.BOLLINGER_DATA_FILE = path.join(__dirname, `../../data/bollinger-slot${slotNumber}.json`);
-    this.logger.info(`📁 Slot ${slotNumber}: Using data file ${this.BOLLINGER_DATA_FILE}`);
+    this.logger.info(`📁 Slot ${slotNumber}: Using data file ${this.BOLLINGER_DATA_FILE} (stagger offset: ${this.slotIndex}s)`);
     
     // 🔒 CRITICAL FIX: Moved loadCapitalData() to initialize() to avoid blocking sync I/O in constructor
   }
@@ -363,6 +373,13 @@ export class BollingerBandStrategy extends StrategyBase {
         this.logger.info('🔄 Starting position monitoring after recovery...');
         await this.startPositionMonitoring();
         
+        // Start Emergency Hard Stop monitoring if we have entry stock price
+        if (this.currentPosition?.entryStockPrice) {
+          this.startEmergencyStopMonitoring();
+        } else {
+          this.logger.warn('⚠️ Cannot start Emergency Hard Stop - no entry stock price in recovered position');
+        }
+        
         // Validate that monitoring actually started for SHORT positions
         if (this.currentPosition?.type === 'SHORT') {
           // Give monitoring 1 second to initialize
@@ -485,6 +502,9 @@ export class BollingerBandStrategy extends StrategyBase {
     
     // 🔒 CRITICAL FIX: Stop position monitoring to prevent resource leak
     this.stopPositionMonitoring();
+    
+    // Stop Emergency Hard Stop monitoring
+    this.stopEmergencyStopMonitoring();
     
     // Stop all monitoring
     this.stopRealTimeMonitoring();
@@ -1760,14 +1780,19 @@ export class BollingerBandStrategy extends StrategyBase {
       millisecondsUntilAlignment = (minutesUntilNext * 60 - currentSeconds + targetSecond) * 1000 - currentMilliseconds;
     }
     
+    // 🚀 RESOURCE EFFICIENCY: Add slot-based stagger to prevent simultaneous API calls
+    // Slot 0 fires at X:X0:05, Slot 1 at X:X0:06, Slot 2 at X:X0:07
+    const slotStaggerMs = this.slotIndex * 1000; // 1 second per slot
+    millisecondsUntilAlignment += slotStaggerMs;
+    
     const alignmentTime = new Date(now.getTime() + millisecondsUntilAlignment);
     this.logger.info(`⏰ Current time: ${now.toLocaleTimeString()}.${now.getMilliseconds()}`);
-    this.logger.info(`⏰ Aligning to: ${alignmentTime.toLocaleTimeString()}.${alignmentTime.getMilliseconds()} (${(millisecondsUntilAlignment / 1000).toFixed(1)}s)`);
+    this.logger.info(`⏰ Slot ${this.slotIndex + 1} aligning to: ${alignmentTime.toLocaleTimeString()}.${alignmentTime.getMilliseconds()} (${(millisecondsUntilAlignment / 1000).toFixed(1)}s, includes ${this.slotIndex}s stagger)`);
     
     // Start the master cycle after alignment timing
     setTimeout(() => {
       const triggerTime = new Date();
-      this.logger.info(`✅ Alignment triggered at ${triggerTime.toLocaleTimeString()}.${triggerTime.getMilliseconds()}`);
+      this.logger.info(`✅ Slot ${this.slotIndex + 1} alignment triggered at ${triggerTime.toLocaleTimeString()}.${triggerTime.getMilliseconds()}`);
       this.startMasterCycle();
     }, millisecondsUntilAlignment);
     
@@ -2039,11 +2064,15 @@ export class BollingerBandStrategy extends StrategyBase {
           // CRITICAL ORDER: Check exits BEFORE entries (exit existing position before considering new entry)
           const hadPositionBeforeExitCheck = this.currentPosition !== null;
           if (this.currentPosition) {
-            // Only call exit check at exact 5-minute boundaries (X:00, X:05, X:10, X:15, etc.)
-            // Prevents exit checks from running at random times when candles are fetched outside normal cycle
-            const minutes = new Date().getMinutes();
-            if (minutes % 5 === 0) {
+            // Check exit within first 15 seconds of a 5-minute boundary (allows for API delays + slot stagger)
+            // E.g., 9:35:00-9:35:15, 9:40:00-9:40:15, etc.
+            const now = new Date();
+            const minutes = now.getMinutes();
+            const seconds = now.getSeconds();
+            if (minutes % 5 === 0 && seconds <= 15) {
               await this.checkPositionExit(newCandle.close);
+            } else {
+              this.logger.debug(`[EXIT CHECK] Skipped - not within 5-min boundary window (${minutes}:${seconds.toString().padStart(2, '0')})`);
             }
           }
           
@@ -2126,127 +2155,170 @@ export class BollingerBandStrategy extends StrategyBase {
     this.logger.info('🛑 Position monitoring stopped');
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EMERGENCY HARD STOP SYSTEM - Flash Crash Protection
+  // ═══════════════════════════════════════════════════════════════════════════
+
   /**
-   * Pure REST API polling-based monitoring
-   * Uses recursive setTimeout to prevent overlapping async operations
+   * Start Emergency Hard Stop monitoring
+   * Lightweight 30-second polling to detect >5% stock moves against position
+   * This is a circuit breaker for disasters, NOT the primary exit logic
    */
-  private startPollingBasedMonitoring(instrumentToken: number): void {
-    // Recursive polling function that waits for completion before scheduling next poll
-    const pollOnce = async () => {
-      // ✅ Detect system sleep disruption
-      const wasDisrupted = this.detectPositionMonitoringDisruption();
-      
-      // Check if position still exists
-      if (!this.currentPosition) {
-        this.stopShortPositionMonitoring();
-        return;
-      }
-
-      // Circuit breaker: Stop if too many consecutive failures
-      if (this.consecutivePollingFailures >= 10) {
-        this.logger.error('🔴 Circuit breaker: Too many polling failures, stopping monitoring');
-        this.stopShortPositionMonitoring();
-        return;
-      }
-
-      // Check if previous poll is still running (safety check)
-      if (this.isPollingInProgress) {
-        this.logger.debug('⏭️ Skipping poll - previous operation still in progress');
-        // Schedule next poll anyway to maintain cadence
-        this.shortMonitoringInterval = setTimeout(pollOnce, 1000);
-        return;
-      }
-
-      this.isPollingInProgress = true;
-      const pollStartTime = Date.now();
-      
-      try {
-        // Get current premium via REST API
-        const currentPremium = await this.getLiveOptionPremium(instrumentToken);
-        
-        if (currentPremium > 0) {
-          // Update cached position state for dashboard display
-          this.cachedCurrentPrice = currentPremium;
-          
-          // Calculate and cache unrealized P&L
-          // Since we always BUY options (CE or PE), profit when price goes up
-          if (this.currentPosition) {
-            const priceDiff = currentPremium - this.currentPosition.entryPrice;
-            this.cachedUnrealizedPnL = priceDiff * this.currentPosition.quantity;
-            this.lastPriceUpdateTime = new Date();
-            
-            // ✅ Log recovery details if disruption was detected
-            if (wasDisrupted) {
-              const pointsDiff = Math.abs(priceDiff);
-              const worstCaseExtraLoss = pointsDiff > 10 ? (pointsDiff - 10) * this.currentPosition.quantity : 0;
-              
-              this.logger.info('📊 Position Status After Sleep Recovery:');
-              this.logger.info(`   Entry Price: ₹${this.currentPosition.entryPrice.toFixed(2)}`);
-              this.logger.info(`   Current Price: ₹${currentPremium.toFixed(2)}`);
-              this.logger.info(`   Price Difference: ${priceDiff > 0 ? '+' : ''}${priceDiff.toFixed(2)} points`);
-              this.logger.info(`   Unrealized P&L: ₹${this.cachedUnrealizedPnL.toFixed(2)}`);
-              
-              if (worstCaseExtraLoss > 0) {
-                this.logger.warn(`   ⚠️ Potential Extra Loss: ₹${worstCaseExtraLoss.toFixed(2)} (beyond 10-point SL)`);
-              }
-            }
-          }
-          
-          // Now proceed with exit checks
-          // Real-time monitoring for BOTH LONG and SHORT positions
-          if (this.currentPosition.type === 'SHORT') {
-            await this.checkShortExitUnified(currentPremium, 'polling');
-          } else if (this.currentPosition.type === 'LONG') {
-            // LONG: Use real-time simple 12% trailing SL exit logic
-            await this.checkLongExitSimple(currentPremium, 'polling');
-          }
-          
-          // Success - reset failure counter
-          this.consecutivePollingFailures = 0;
-        }
-      } catch (error) {
-        this.logger.error(`Error in REST API ${this.currentPosition?.type} monitoring:`, error);
-        this.consecutivePollingFailures++;
-      } finally {
-        this.isPollingInProgress = false;
-        this.lastPollingTime = new Date();
-      }
-
-      // Calculate smart delay with backoff on failures
-      let delay = 1000; // Default 1 second
-      
-      // Apply backoff if consecutive failures
-      if (this.consecutivePollingFailures >= this.MAX_CONSECUTIVE_FAILURES) {
-        delay = 5000; // Back off to 5 seconds
-        this.logger.warn(`⚠️ Multiple polling failures detected, backing off to ${delay}ms interval`);
-      } else {
-        // Smart debouncing: Ensure minimum interval between polls
-        const timeSinceLastPoll = Date.now() - pollStartTime;
-        if (timeSinceLastPoll < this.MIN_POLLING_INTERVAL) {
-          delay = this.MIN_POLLING_INTERVAL - timeSinceLastPoll + 1000;
-        }
-      }
-
-      // Schedule next poll AFTER current one completes (prevents overlapping)
-      this.shortMonitoringInterval = setTimeout(pollOnce, delay);
-    };
-
-    this.logger.info(`🔄 Using pure REST API ${this.currentPosition?.type || 'position'} monitoring (1s intervals, recursive with backoff)`);
+  private startEmergencyStopMonitoring(): void {
+    // Clear any existing interval first
+    this.stopEmergencyStopMonitoring();
     
-    // Start first poll
-    pollOnce();
+    if (!this.currentPosition || !this.currentPosition.entryStockPrice) {
+      this.logger.warn('⚠️ Cannot start Emergency Stop monitoring - no position or entry stock price');
+      return;
+    }
+    
+    const entryStockPrice = this.currentPosition.entryStockPrice;
+    const positionType = this.currentPosition.type;
+    
+    this.logger.info(`🚨 Emergency Hard Stop monitoring STARTED`, {
+      pollInterval: `${this.EMERGENCY_POLL_INTERVAL_MS / 1000}s`,
+      threshold: `${this.EMERGENCY_STOP_PERCENT}%`,
+      entryStockPrice: entryStockPrice.toFixed(2),
+      positionType,
+      triggerPrice: positionType === 'LONG' 
+        ? (entryStockPrice * (1 - this.EMERGENCY_STOP_PERCENT / 100)).toFixed(2)
+        : (entryStockPrice * (1 + this.EMERGENCY_STOP_PERCENT / 100)).toFixed(2)
+    });
+    
+    // Start interval - first check after 30 seconds
+    this.emergencyStopInterval = setInterval(async () => {
+      await this.checkEmergencyStop();
+    }, this.EMERGENCY_POLL_INTERVAL_MS);
   }
 
-  // === All WebSocket methods removed - Using pure REST API polling ===
-  // WebSocket monitoring, health checks, and subscription methods have been
-  // replaced with reliable REST API calls for position monitoring
+  /**
+   * Stop Emergency Hard Stop monitoring
+   * Called when position is closed or strategy stops
+   */
+  private stopEmergencyStopMonitoring(): void {
+    if (this.emergencyStopInterval) {
+      clearInterval(this.emergencyStopInterval);
+      this.emergencyStopInterval = null;
+      this.logger.info('🛑 Emergency Hard Stop monitoring stopped');
+    }
+  }
 
+  /**
+   * Check if stock has moved >5% against position (flash crash detection)
+   * ONLY triggers on catastrophic moves - does NOT interfere with normal exits
+   */
+  private async checkEmergencyStop(): Promise<void> {
+    if (!this.currentPosition || !this.currentPosition.entryStockPrice) {
+      return;
+    }
+    
+    try {
+      // Fetch current stock LTP
+      const quoteKey = `NSE:${this.signalSymbol}`;
+      const quotes = await this.kiteConnect.getQuote([quoteKey]);
+      const currentStockLTP = quotes[quoteKey]?.last_price;
+      
+      if (!currentStockLTP || currentStockLTP <= 0) {
+        this.logger.warn('⚠️ Emergency Stop: Failed to fetch stock LTP');
+        return;
+      }
+      
+      const entryStockPrice = this.currentPosition.entryStockPrice;
+      const movePercent = ((currentStockLTP - entryStockPrice) / entryStockPrice) * 100;
+      
+      // LONG: Exit if stock dropped >5%
+      if (this.currentPosition.type === 'LONG') {
+        if (currentStockLTP < entryStockPrice * (1 - this.EMERGENCY_STOP_PERCENT / 100)) {
+          this.logger.error(`🚨🚨🚨 EMERGENCY HARD STOP TRIGGERED!`, {
+            symbol: this.signalSymbol,
+            positionType: 'LONG',
+            entryStockPrice: entryStockPrice.toFixed(2),
+            currentStockPrice: currentStockLTP.toFixed(2),
+            dropPercent: movePercent.toFixed(2),
+            threshold: `-${this.EMERGENCY_STOP_PERCENT}%`,
+            action: 'FORCE EXIT LONG position'
+          });
+          
+          // Stop monitoring BEFORE exit to prevent duplicate triggers
+          this.stopEmergencyStopMonitoring();
+          
+          // Force immediate exit
+          await this.executeExit('EMERGENCY_HARD_STOP');
+          return;
+        }
+      }
+      
+      // SHORT: Exit if stock rose >5%
+      if (this.currentPosition.type === 'SHORT') {
+        if (currentStockLTP > entryStockPrice * (1 + this.EMERGENCY_STOP_PERCENT / 100)) {
+          this.logger.error(`🚨🚨🚨 EMERGENCY HARD STOP TRIGGERED!`, {
+            symbol: this.signalSymbol,
+            positionType: 'SHORT',
+            entryStockPrice: entryStockPrice.toFixed(2),
+            currentStockPrice: currentStockLTP.toFixed(2),
+            risePercent: movePercent.toFixed(2),
+            threshold: `+${this.EMERGENCY_STOP_PERCENT}%`,
+            action: 'FORCE EXIT SHORT position'
+          });
+          
+          // Stop monitoring BEFORE exit to prevent duplicate triggers
+          this.stopEmergencyStopMonitoring();
+          
+          // Force immediate exit
+          await this.executeExit('EMERGENCY_HARD_STOP');
+          return;
+        }
+      }
+      
+      // Log periodic status (every check)
+      this.logger.debug(`🔍 Emergency Stop check: ${this.signalSymbol} at ₹${currentStockLTP.toFixed(2)} (${movePercent >= 0 ? '+' : ''}${movePercent.toFixed(2)}% from entry ₹${entryStockPrice.toFixed(2)})`);
+      
+    } catch (error) {
+      this.logger.error('❌ Emergency Stop check failed:', error);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Pure REST API polling-based monitoring - DISABLED
+   * 
+   * Real-time polling has been disabled in favor of 5-minute candle close exit logic.
+   * Exit checks now run ONLY when a 5-minute candle closes, using:
+   * - LONG: Supertrend break (candleClose < Supertrend)
+   * - SHORT: MIN(Supertrend, BB Middle) break (candleClose > threshold)
+   * 
+   * This eliminates "wick noise" and reduces API calls significantly.
+   */
+  private startPollingBasedMonitoring(instrumentToken: number): void {
+    this.logger.info('📴 Real-time position monitoring DISABLED - using 5-min candle close ONLY');
+    this.logger.info('📊 Exit logic: LONG exits when close < Supertrend | SHORT exits when close > MIN(Supertrend, BB Mid)');
+    this.logger.info('⏰ Exit checks run at each 5-minute candle close (XX:00, XX:05, XX:10, etc.)');
+    
+    // Do NOT start polling - exit logic is now handled by checkPositionExit() 
+    // which is called from fetchLatest5MinuteCandle() after indicators are updated
+    return;
+  }
+
+  // === Real-time polling DISABLED - Using 5-minute candle close exit logic ===
+  // Exit checks now run ONLY at 5-minute candle closes via checkPositionExit()
+
+  /**
+   * Check position exit conditions - CALLED ONLY AT 5-MINUTE CANDLE CLOSES
+   * 
+   * Exit Logic (Simplified for Stock Options):
+   * - LONG: Exit when 5-min candle CLOSES below dynamic Supertrend
+   * - SHORT: Exit when 5-min candle CLOSES above MIN(Supertrend, BB Middle)
+   * 
+   * This eliminates "wick noise" - no more intra-candle fake-out exits.
+   */
   private async checkPositionExit(candleClose?: number): Promise<void> {
     if (!this.currentPosition) return;
 
     try {
       if (this.currentPosition.type === 'LONG') {
-        // For LONG positions: Use ONLY 5-minute candle close (never real-time LTP)
+        // LONG: Exit if close < Supertrend (dynamic, updated each candle)
         if (candleClose !== undefined) {
           this.currentStockLTP = candleClose; // Store for dashboard
           await this.checkLongExitOnCandleClose(candleClose);
@@ -2254,12 +2326,12 @@ export class BollingerBandStrategy extends StrategyBase {
           this.logger.warn('LONG position exit called without candle close price');
         }
       } else if (this.currentPosition.type === 'SHORT') {
-        // For SHORT positions: Check entry candle high breach at 5-minute candle close
-        // (Independent of 12% trailing SL which is checked every 1 second via polling)
+        // SHORT: Exit if close > MIN(Supertrend, BB Middle)
         if (candleClose !== undefined) {
+          this.currentStockLTP = candleClose; // Store for dashboard  
           await this.checkShortExitOnCandleClose(candleClose);
         } else {
-          this.logger.debug('SHORT position 5-minute exit check skipped (no candle close price provided)');
+          this.logger.warn('SHORT position exit called without candle close price');
         }
       }
       
@@ -2381,8 +2453,9 @@ export class BollingerBandStrategy extends StrategyBase {
     if (!this.currentCandle || !this.currentCandle.isComplete) return;
     
     // ⚠️ REMOVED: All entry/exit signal checking (now handled by fetchLatest5MinuteCandle at 5-min boundaries)
-    // LONG exits are checked at 5-minute candle close via master cycle
-    // SHORT exits use dedicated 1-second polling via startPositionMonitoring()
+    // LONG exits: checkLongExitOnCandleClose() - exit when close < Supertrend
+    // SHORT exits: checkShortExitOnCandleClose() - exit when close > MIN(Supertrend, BB Middle)
+    // Both use 5-minute candle close ONLY (no real-time polling)
     
     // Update technical indicators with completed candle
     const newCandle: Candle = {
@@ -2628,6 +2701,7 @@ export class BollingerBandStrategy extends StrategyBase {
           ...(entryCandleTimestamp !== undefined && { entryCandleTimestamp: entryCandleTimestamp }),
           ...(entryCandleLow !== undefined && { entryCandleLow: entryCandleLow }),
           ...(entryCandleHigh !== undefined && { entryCandleHigh: entryCandleHigh }),
+          entryStockPrice: stockPrice, // Store stock price for Emergency Hard Stop
           // trailingSL is NOT initialized here - will be calculated purely from option premium
           // in checkLongExitSimple() on first poll (12% below highest premium)
           highestPremium: orderResult.price, // Track maximum premium reached
@@ -2640,13 +2714,17 @@ export class BollingerBandStrategy extends StrategyBase {
         
         this.logger.info('✅ LONG position created with pre-captured candle data', {
           entryCandleLow: entryCandleLow?.toFixed(2),
-          entryCandleHigh: entryCandleHigh?.toFixed(2)
+          entryCandleHigh: entryCandleHigh?.toFixed(2),
+          entryStockPrice: stockPrice.toFixed(2)
         });
         
         // Start position monitoring for exit conditions
         this.startPositionMonitoring().catch(error => {
           this.logger.error('Failed to start position monitoring:', error);
         });
+        
+        // Start Emergency Hard Stop monitoring (30-second flash crash protection)
+        this.startEmergencyStopMonitoring();
         
         this.metrics.totalTrades++;
         // Update metrics to reflect successful trade execution
@@ -2743,6 +2821,7 @@ export class BollingerBandStrategy extends StrategyBase {
           entryTime: new Date(),
           ...(entryCandleTimestamp !== undefined && { entryCandleTimestamp: entryCandleTimestamp }),
           entryCandleHigh: candleHigh, // Extracted at signal detection
+          entryStockPrice: stockPrice, // Store stock price for Emergency Hard Stop
           // trailingSL is NOT initialized here - will be calculated purely from option premium
           // in checkShortExitUnified() on first poll (time-decay: 12% for 0-20 min, tightening over time)
           highestPremium: orderResult.price,
@@ -2757,6 +2836,9 @@ export class BollingerBandStrategy extends StrategyBase {
         this.startPositionMonitoring().catch(error => {
           this.logger.error('Failed to start position monitoring:', error);
         });
+        
+        // Start Emergency Hard Stop monitoring (30-second flash crash protection)
+        this.startEmergencyStopMonitoring();
         
         this.metrics.totalTrades++;
         // Update metrics to reflect successful trade execution
@@ -2817,18 +2899,15 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * LONG Exit Check - Underlying-Based Safety Net (Secondary Exit)
+   * LONG Exit Check - Supertrend-Based Exit (5-minute candle close ONLY)
    *
-   * This is a SECONDARY exit mechanism based on stock spot price.
-   * PRIMARY exit is via checkLongExitSimple() with trailing SL.
+   * Simplified exit logic for stock options:
+   * Exit when 5-minute candle CLOSES below the dynamic Supertrend value.
    *
-   * This acts as:
-   * 1. Technical invalidation (stock breaks below key support)
-   * 2. Safety net if option premium streaming fails
-   * 3. Additional protection against sharp stock drops
+   * This replaces the complex 12% trailing SL + entry candle low logic.
+   * Supertrend naturally trails price up in uptrends, providing dynamic protection.
    *
-   * Exit Threshold: MAX(entry candle low, BB midline)
-   * Checked ONLY on 5-minute candle close
+   * @param candleClosePrice - The closing price of the just-completed 5-minute stock candle
    */
   private async checkLongExitOnCandleClose(candleClosePrice: number): Promise<void> {
     if (!this.currentIndicators || !this.currentPosition) return;
@@ -2836,389 +2915,121 @@ export class BollingerBandStrategy extends StrategyBase {
     
     // Race condition protection - ensure only one exit check at a time
     if (this.isProcessingLongExit) {
-      this.logger.debug('[LONG EXIT CHECK] Exit already in progress, skipping secondary check');
+      this.logger.debug('[LONG EXIT CHECK] Exit already in progress, skipping');
       return;
     }
     
-    const bbMidline = this.currentIndicators.bollingerBands.middle;
+    // Get CURRENT (dynamic) Supertrend value from just-updated indicators
+    const supertrend = this.currentIndicators.supertrend.value;
+    const supertrendTrend = this.currentIndicators.supertrend.trend;
     
-    // Determine exit threshold: MAX(entry candle low, BB midline) - whichever is hit FIRST as price falls
-    const entryCandleLow = this.currentPosition.entryCandleLow || bbMidline;
-    const exitThreshold = Math.max(entryCandleLow, bbMidline);
-    const usedEntryCandleLow = exitThreshold === entryCandleLow && this.currentPosition.entryCandleLow !== undefined;
+    this.logger.info(`[LONG EXIT CHECK] 5-min candle close: ${candleClosePrice.toFixed(2)} | Supertrend: ${supertrend.toFixed(2)} (${supertrendTrend})`);
     
-    // ONLY exit if completed 5-minute candle close is below exit threshold
-    if (candleClosePrice < exitThreshold) {
-      this.isProcessingLongExit = true; // Set flag BEFORE async executeExit call
+    // EXIT: If candle CLOSES below Supertrend
+    if (candleClosePrice < supertrend) {
+      this.isProcessingLongExit = true;
       
       try {
-        this.logger.info('🔴 LONG exit signal: Secondary safety net triggered (underlying-based)', {
+        this.logger.info('🔴 LONG EXIT SIGNAL: 5-min candle closed below Supertrend', {
           candleClose: candleClosePrice.toFixed(2),
-          exitThreshold: exitThreshold.toFixed(2),
-          entryCandleLow: entryCandleLow.toFixed(2),
-          bbMidline: bbMidline.toFixed(2),
-          usedThreshold: usedEntryCandleLow ? 'Entry Candle Low' : 'BB Midline',
-          exitType: 'CANDLE_CLOSE_SAFETY_NET',
-          note: 'Primary trailing SL did not trigger first',
+          supertrend: supertrend.toFixed(2),
+          supertrendTrend: supertrendTrend,
+          breachAmount: (supertrend - candleClosePrice).toFixed(2),
+          exitType: 'SUPERTREND_BREAK',
           timestamp: new Date().toLocaleTimeString()
         });
         
-        await this.executeExit('LONG_CANDLE_CLOSE_SAFETY_NET');
+        await this.executeExit('LONG_SUPERTREND_BREAK');
       } finally {
-        this.isProcessingLongExit = false; // Reset flag in finally block
+        this.isProcessingLongExit = false;
       }
     } else {
-      this.logger.debug('✅ LONG position held: candle close above exit threshold', {
-        candleClose: candleClosePrice.toFixed(2),
-        exitThreshold: exitThreshold.toFixed(2)
-      });
+      const cushion = candleClosePrice - supertrend;
+      this.logger.info(`✅ LONG position held: Close ${candleClosePrice.toFixed(2)} > Supertrend ${supertrend.toFixed(2)} (cushion: +${cushion.toFixed(2)})`);
     }
   }
 
   /**
-   * SHORT Exit Check - Entry Candle High Breach (5-minute candle close only)
-   * 
-   * CRITICAL FIX: Now checks candle HIGH (not close) against entry candle high.
-   * A breach of entry candle high by the candle's high invalidates the bearish thesis
-   * even if the candle closes back below it. This prevents holding SHORT positions
-   * when price action shows bullish strength.
-   * 
-   * This is independent of the 12% trailing stop loss on option premium.
-   * 
-   * @param candleClosePrice - The closing price of the just-completed 5-minute NIFTY candle (kept for compatibility)
+   * SHORT Exit Check - Supertrend/BB Middle-Based Exit (5-minute candle close ONLY)
+   *
+   * Simplified exit logic for stock options:
+   * Exit when 5-minute candle CLOSES above MIN(Supertrend, BB Middle).
+   * Uses the TIGHTER (lower) of the two levels for quicker profit protection.
+   *
+   * This replaces the complex time-decay trailing SL + entry candle high logic.
+   *
+   * @param candleClosePrice - The closing price of the just-completed 5-minute stock candle
    */
   private async checkShortExitOnCandleClose(candleClosePrice: number): Promise<void> {
-    if (!this.currentPosition) return;
+    if (!this.currentIndicators || !this.currentPosition) return;
     if (this.currentPosition.type !== 'SHORT') return;
     
     // Race condition protection - ensure only one exit check at a time
     if (this.isProcessingShortExit) {
-      this.logger.debug('[SHORT EXIT CHECK] Exit already in progress, skipping 5-minute check');
+      this.logger.debug('[SHORT EXIT CHECK] Exit already in progress, skipping');
       return;
     }
     
-    const entryCandleHigh = this.currentPosition.entryCandleHigh;
-    if (entryCandleHigh === undefined) {
-      this.logger.warn('[SHORT EXIT CHECK] Entry candle high not stored, skipping 5-minute exit check');
-      return;
-    }
+    // Get CURRENT (dynamic) indicator values from just-updated indicators
+    const supertrend = this.currentIndicators.supertrend.value;
+    const supertrendTrend = this.currentIndicators.supertrend.trend;
+    const bbMiddle = this.currentIndicators.bollingerBands.middle;
     
-    // Get the latest candle from history (just added before this check)
-    const latestCandle = this.candleHistory[this.candleHistory.length - 1];
-    if (!latestCandle) {
-      this.logger.warn('[SHORT EXIT CHECK] No candle in history, skipping exit check');
-      return;
-    }
+    // Use the TIGHTER stop (lower value) - MIN of Supertrend and BB Middle
+    const exitThreshold = Math.min(supertrend, bbMiddle);
+    const usedIndicator = exitThreshold === supertrend ? 'Supertrend' : 'BB Middle';
     
-    const currentCandleHigh = latestCandle.high;
-    const currentCandleClose = latestCandle.close;
+    this.logger.info(`[SHORT EXIT CHECK] 5-min candle close: ${candleClosePrice.toFixed(2)} | Supertrend: ${supertrend.toFixed(2)} | BB Mid: ${bbMiddle.toFixed(2)} | Exit threshold: ${exitThreshold.toFixed(2)} (${usedIndicator})`);
     
-    this.logger.debug(`[SHORT EXIT CHECK] Candle H:${currentCandleHigh.toFixed(2)} C:${currentCandleClose.toFixed(2)}, Entry candle high: ${entryCandleHigh.toFixed(2)}`);
-    
-    // CRITICAL: Exit if candle CLOSE breaches entry candle high (not just high wick)
-    // This prevents holding SHORT positions when price action invalidates bearish thesis
-    // Uses CLOSE not HIGH to avoid exiting on temporary intracandle wicks
-    if (currentCandleClose > entryCandleHigh) {
-      this.isProcessingShortExit = true; // Set flag BEFORE async executeExit call
+    // EXIT: If candle CLOSES above the tighter threshold (MIN of ST and BB Mid)
+    if (candleClosePrice > exitThreshold) {
+      this.isProcessingShortExit = true;
       
       try {
-        const breachAmount = currentCandleHigh - entryCandleHigh;
-        this.logger.info(`[SHORT EXIT SIGNAL] 🔴 Entry candle HIGH breached! Candle H:${currentCandleHigh.toFixed(2)} > Entry H:${entryCandleHigh.toFixed(2)} (breach: +${breachAmount.toFixed(2)})`);
-        this.logger.info(`[SHORT EXIT SIGNAL] 📊 Candle details: O:${latestCandle.open.toFixed(2)} H:${currentCandleHigh.toFixed(2)} L:${latestCandle.low.toFixed(2)} C:${currentCandleClose.toFixed(2)}`);
+        const breachAmount = candleClosePrice - exitThreshold;
+        this.logger.info('🔴 SHORT EXIT SIGNAL: 5-min candle closed above exit threshold', {
+          candleClose: candleClosePrice.toFixed(2),
+          supertrend: supertrend.toFixed(2),
+          supertrendTrend: supertrendTrend,
+          bbMiddle: bbMiddle.toFixed(2),
+          exitThreshold: exitThreshold.toFixed(2),
+          usedIndicator: usedIndicator,
+          breachAmount: breachAmount.toFixed(2),
+          exitType: 'SUPERTREND_BB_BREAK',
+          timestamp: new Date().toLocaleTimeString()
+        });
         
-        await this.executeExit('SHORT_ENTRY_CANDLE_HIGH_BREACH');
+        await this.executeExit('SHORT_SUPERTREND_BB_BREAK');
       } finally {
-        this.isProcessingShortExit = false; // Reset flag in finally block
+        this.isProcessingShortExit = false;
       }
     } else {
-      const marginFromHigh = entryCandleHigh - currentCandleHigh;
-      const marginFromClose = entryCandleHigh - currentCandleClose;
-      this.logger.debug(`[SHORT EXIT CHECK] ✅ Still safe - Entry high: ${entryCandleHigh.toFixed(2)}, Current H:${currentCandleHigh.toFixed(2)} (margin: ${marginFromHigh.toFixed(2)}), C:${currentCandleClose.toFixed(2)} (margin: ${marginFromClose.toFixed(2)})`);
+      const cushion = exitThreshold - candleClosePrice;
+      this.logger.info(`✅ SHORT position held: Close ${candleClosePrice.toFixed(2)} < Threshold ${exitThreshold.toFixed(2)} (${usedIndicator}) (cushion: +${cushion.toFixed(2)})`);
     }
   }
 
-  // Deprecated WebSocket-based methods removed - using checkShortExitUnified() with REST API polling
+  // ============================================================================
+  // DEPRECATED METHODS - Kept for reference, no longer called
+  // Real-time polling has been replaced with 5-minute candle close exit logic
+  // ============================================================================
 
   /**
-   * Unified SHORT exit handler - Single entry point for all SHORT exit checks
-   * Consolidates logic with source tracking and race condition protection
+   * @deprecated - No longer used. Real-time polling disabled.
+   * Exit logic moved to checkShortExitOnCandleClose() using Supertrend/BB Middle.
    */
   private async checkShortExitUnified(currentPremium: number, source: 'polling'): Promise<void> {
-    if (!this.currentPosition || this.currentPosition.type !== 'SHORT') return;
-    
-    // Race condition protection - ensure only one exit check at a time
-    if (this.isProcessingShortExit) {
-      this.logger.debug(`? SHORT exit check already in progress, skipping ${source} request`);
-      return;
-    }
-    
-    this.isProcessingShortExit = true;
-    
-    try {
-      // Step 1: Update highest premium if new high reached
-      if (currentPremium > (this.currentPosition.highestPremium || 0)) {
-        this.currentPosition.highestPremium = currentPremium;
-        
-        // Update last high time (lazy initialization)
-        if (!this.currentPosition.timeDecayTrailing) {
-          this.currentPosition.timeDecayTrailing = { lastHighTime: new Date() };
-        } else {
-          this.currentPosition.timeDecayTrailing.lastHighTime = new Date();
-        }
-        
-        this.logger.info(`📈 New high premium reached`, {
-          newHigh: currentPremium.toFixed(2),
-          timestamp: new Date().toLocaleTimeString()
-        });
-      }
-      
-      // Step 2: Calculate time-based trailing SL (runs EVERY poll, independent of new highs)
-      if (this.currentPosition.highestPremium) {
-        const minutesSinceEntry = (Date.now() - this.currentPosition.entryTime.getTime()) / 60000;
-        const minutesSinceLastHigh = this.currentPosition.timeDecayTrailing
-          ? (Date.now() - this.currentPosition.timeDecayTrailing.lastHighTime.getTime()) / 60000
-          : minutesSinceEntry; // First high after entry, use entry time
-        
-        // Time-based tightening schedule
-        let trailingPct = 12; // Default for 0-20 minutes
-        if (minutesSinceEntry >= 40) trailingPct = 5;       // 40-45 min
-        else if (minutesSinceEntry >= 35) trailingPct = 6;  // 35-40 min
-        else if (minutesSinceEntry >= 30) trailingPct = 7;  // 30-35 min
-        else if (minutesSinceEntry >= 20) trailingPct = 9;  // 20-30 min
-        
-        // Stagnation rule: Enforce ceiling (max looseness) at 9%
-        // Math.min ensures we don't use a % LOOSER than 9% when stagnant
-        // (Smaller % = tighter stop, so min() takes the tightest/most protective value)
-        // This prevents double-reduction when time thresholds align with stagnation
-        if (minutesSinceLastHigh >= 10) {
-          trailingPct = Math.min(trailingPct, 9);
-        }
-        
-        // Calculate what SL should be based on time-decay schedule
-        const timeBasedSL = this.currentPosition.highestPremium * (1 - trailingPct / 100);
-        
-        // Only update if tighter (higher SL = tighter protection for SHORT positions)
-        if (!this.currentPosition.trailingSL || timeBasedSL > this.currentPosition.trailingSL) {
-          const oldSL = this.currentPosition.trailingSL;
-          const oldPct = oldSL && this.currentPosition.highestPremium
-            ? ((1 - oldSL / this.currentPosition.highestPremium) * 100).toFixed(1)
-            : 'none';
-          
-          this.currentPosition.trailingSL = timeBasedSL;
-          
-          // P0: Save SHORT trailing SL updates to disk
-          this.saveCapitalData();
-          
-          this.logger.info(`� Trailing SL updated (${oldSL ? 'time-decay' : 'initial'})`, {
-            highestPremium: this.currentPosition.highestPremium.toFixed(2),
-            oldSL: oldSL?.toFixed(2) || 'none',
-            oldPct: oldPct + '%',
-            newSL: timeBasedSL.toFixed(2),
-            newPct: trailingPct + '%',
-            minutesSinceEntry: minutesSinceEntry.toFixed(1),
-            minutesSinceLastHigh: minutesSinceLastHigh.toFixed(1),
-            source: source,
-            timestamp: new Date().toLocaleTimeString()
-          });
-        }
-      }
-      
-      // Step 2.5: Check minimum movement requirements (performance filter)
-      // Exit if premium hasn't moved sufficiently at key time checkpoints
-      if (this.currentPosition.highestPremium) {
-        const minutesSinceEntry = (Date.now() - this.currentPosition.entryTime.getTime()) / 60000;
-        const movementFromEntry = this.currentPosition.highestPremium - this.currentPosition.entryPrice;
-        
-        // 15-minute checkpoint: Require at least ₹5 movement from entry
-        if (minutesSinceEntry >= 15 && minutesSinceEntry < 15.1) {
-          if (movementFromEntry < 5) {
-            this.logger.info('🔴 SHORT exit: Insufficient movement at 15-minute checkpoint', {
-              minutesSinceEntry: minutesSinceEntry.toFixed(2),
-              entryPrice: this.currentPosition.entryPrice.toFixed(2),
-              highestPremium: this.currentPosition.highestPremium.toFixed(2),
-              movementFromEntry: movementFromEntry.toFixed(2),
-              required: 5,
-              shortfall: (5 - movementFromEntry).toFixed(2),
-              timestamp: new Date().toLocaleTimeString()
-            });
-            await this.executeExit('SHORT_INSUFFICIENT_MOVEMENT_15MIN');
-            return; // Exit immediately, skip trailing SL check
-          } else {
-            // Log successful pass of 15-minute checkpoint
-            this.logger.info('✅ SHORT position passed 15-minute movement checkpoint', {
-              minutesSinceEntry: minutesSinceEntry.toFixed(2),
-              entryPrice: this.currentPosition.entryPrice.toFixed(2),
-              highestPremium: this.currentPosition.highestPremium.toFixed(2),
-              movementFromEntry: movementFromEntry.toFixed(2),
-              required: 5,
-              surplus: (movementFromEntry - 5).toFixed(2),
-              timestamp: new Date().toLocaleTimeString()
-            });
-          }
-        }
-        
-        // 20-minute checkpoint: Require at least ₹10 movement from entry
-        if (minutesSinceEntry >= 20 && minutesSinceEntry < 20.1) {
-          if (movementFromEntry < 10) {
-            this.logger.info('🔴 SHORT exit: Insufficient movement at 20-minute checkpoint', {
-              minutesSinceEntry: minutesSinceEntry.toFixed(2),
-              entryPrice: this.currentPosition.entryPrice.toFixed(2),
-              highestPremium: this.currentPosition.highestPremium.toFixed(2),
-              movementFromEntry: movementFromEntry.toFixed(2),
-              required: 10,
-              shortfall: (10 - movementFromEntry).toFixed(2),
-              timestamp: new Date().toLocaleTimeString()
-            });
-            await this.executeExit('SHORT_INSUFFICIENT_MOVEMENT_20MIN');
-            return; // Exit immediately, skip trailing SL check
-          } else {
-            // Log successful pass of 20-minute checkpoint
-            this.logger.info('✅ SHORT position passed 20-minute movement checkpoint', {
-              minutesSinceEntry: minutesSinceEntry.toFixed(2),
-              entryPrice: this.currentPosition.entryPrice.toFixed(2),
-              highestPremium: this.currentPosition.highestPremium.toFixed(2),
-              movementFromEntry: movementFromEntry.toFixed(2),
-              required: 10,
-              surplus: (movementFromEntry - 10).toFixed(2),
-              timestamp: new Date().toLocaleTimeString()
-            });
-          }
-        }
-      }
-      
-      // Step 3: Check if trailing SL is hit
-      if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
-        // Calculate what % was used for exit log context
-        const exitTrailingPct = this.currentPosition.highestPremium 
-          ? ((1 - this.currentPosition.trailingSL / this.currentPosition.highestPremium) * 100).toFixed(1)
-          : '0';
-        
-        this.logger.info(`?? SHORT exit signal: Trailing SL hit (${source})`, {
-          currentPremium: currentPremium.toFixed(2),
-          trailingSL: this.currentPosition.trailingSL.toFixed(2),
-          trailingPct: exitTrailingPct + '%',
-          highestPremium: this.currentPosition.highestPremium?.toFixed(2) || 'N/A',
-          source: source,
-          timestamp: new Date().toLocaleTimeString()
-        });
-        
-        await this.executeExit(`SHORT_TRAILING_SL_${source.toUpperCase()}`);
-      } else {
-        this.logger.debug(`?? SHORT position held (${source})`, {
-          currentPremium: currentPremium.toFixed(2),
-          trailingSL: this.currentPosition.trailingSL?.toFixed(2) || 'not-set',
-          source: source
-        });
-      }
-      
-    } catch (error) {
-      this.logger.error(`Error in unified SHORT exit check (${source}):`, error);
-    } finally {
-      this.isProcessingShortExit = false;
-    }
+    this.logger.warn('⚠️ DEPRECATED: checkShortExitUnified called but real-time polling is disabled');
+    return; // No-op - exit logic now in checkShortExitOnCandleClose()
   }
 
   /**
-   * LONG Exit Check - Simple 12% Trailing SL
-   *
-   * Monitors CE option premium every 1 second via REST API polling.
-   * Implements simple 12% trailing stop loss from highest premium.
-   *
-   * Exit Trigger: Current premium drops 12% below highest premium achieved
-   *
-   * @param currentPremium - Current CE option premium from REST API
-   * @param source - Monitoring source ('polling')
+   * @deprecated - No longer used. Real-time polling disabled.
+   * Exit logic moved to checkLongExitOnCandleClose() using Supertrend.
    */
   private async checkLongExitSimple(currentPremium: number, source: 'polling'): Promise<void> {
-    if (!this.currentPosition || this.currentPosition.type !== 'LONG') return;
-
-    // ✓ FIX: Validate price quality BEFORE any exit logic
-    // If price is 0, it means API failed and we have no valid real-time price
-    // Skip exit checks to prevent false exits on corrupted data
-    if (currentPremium <= 0) {
-      this.logger.warn(`⚠️ Skipping LONG exit check: No valid price available (price=${currentPremium}, source=${source})`);
-      return;
-    }
-
-    // Race condition protection (same as SHORT)
-    if (this.isProcessingLongExit) {
-      this.logger.debug(`🔒 LONG exit check already in progress, skipping ${source} request`);
-      return;
-    }
-
-    this.isProcessingLongExit = true;
-
-    try {
-      // STEP 1: Update highest premium if new high reached
-      if (currentPremium > (this.currentPosition.highestPremium || 0)) {
-        const oldHigh = this.currentPosition.highestPremium;
-        this.currentPosition.highestPremium = currentPremium;
-
-        this.logger.info(`📈 LONG: New high premium reached`, {
-          oldHigh: oldHigh?.toFixed(2) || 'none',
-          newHigh: currentPremium.toFixed(2),
-          timestamp: new Date().toLocaleTimeString()
-        });
-      }
-
-      // STEP 2: Calculate 12% trailing SL from highest premium
-      if (this.currentPosition.highestPremium) {
-        const simpleSL = this.currentPosition.highestPremium * 0.88; // 12% below highest
-
-        // Only update if tighter (higher SL = tighter protection for LONG)
-        if (!this.currentPosition.trailingSL || simpleSL > this.currentPosition.trailingSL) {
-          const oldSL = this.currentPosition.trailingSL;
-          this.currentPosition.trailingSL = simpleSL;
-
-          // Save to disk
-          this.saveCapitalData();
-
-          this.logger.info(`🔧 LONG: Trailing SL updated`, {
-            highestPremium: this.currentPosition.highestPremium.toFixed(2),
-            oldSL: oldSL?.toFixed(2) || 'none',
-            newSL: simpleSL.toFixed(2),
-            trailingPct: '12%',
-            source: source,
-            timestamp: new Date().toLocaleTimeString()
-          });
-        }
-      }
-
-      // STEP 3: Check if trailing SL is hit
-      if (this.currentPosition.trailingSL && currentPremium <= this.currentPosition.trailingSL) {
-        this.logger.info(`🔴 LONG exit signal: Trailing SL hit (${source})`, {
-          currentPremium: currentPremium.toFixed(2),
-          trailingSL: this.currentPosition.trailingSL.toFixed(2),
-          trailingPct: '12%',
-          highestPremium: this.currentPosition.highestPremium?.toFixed(2) || 'N/A',
-          source: source,
-          timestamp: new Date().toLocaleTimeString()
-        });
-
-        await this.executeExit(`LONG_TRAILING_SL_${source.toUpperCase()}`);
-      } else {
-        this.logger.debug(`✅ LONG position held (${source})`, {
-          currentPremium: currentPremium.toFixed(2),
-          trailingSL: this.currentPosition.trailingSL?.toFixed(2) || 'not-set',
-          highestPremium: this.currentPosition.highestPremium?.toFixed(2) || 'N/A',
-          cushion: this.currentPosition.trailingSL
-            ? (currentPremium - this.currentPosition.trailingSL).toFixed(2)
-            : 'N/A'
-        });
-      }
-
-    } finally {
-      this.isProcessingLongExit = false;
-    }
-  }
-
-  /**
-   * Check candle-based exit signals (called on 5-minute candle completion)
-   */
-  private async checkCandleBasedExitSignals(): Promise<void> {
-    // Additional candle-based exit logic can be implemented here
-    // LONG positions use ONLY 5-minute candle close via checkLongExitOnCandleClose()
-    // SHORT positions use unified real-time monitoring via startShortPositionMonitoring()
+    this.logger.warn('⚠️ DEPRECATED: checkLongExitSimple called but real-time polling is disabled');
+    return; // No-op - exit logic now in checkLongExitOnCandleClose()
   }
 
   /**
@@ -3286,6 +3097,9 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Stop position monitoring since no active position
         this.stopPositionMonitoring();
+        
+        // Stop Emergency Hard Stop monitoring
+        this.stopEmergencyStopMonitoring();
         
         // P0: Save cleared position to disk (CRITICAL for all exit paths)
         // Retry once if save fails to prevent ghost positions
@@ -3403,14 +3217,20 @@ export class BollingerBandStrategy extends StrategyBase {
     // Clear any existing interval first
     this.stopPositionReconciliation();
     
-    // Run reconciliation every 5 minutes
-    this.positionReconciliationInterval = setInterval(async () => {
-      if (this.currentPosition) {
-        await this.reconcilePositions();
-      }
-    }, 5 * 60 * 1000); // Every 5 minutes
+    // 🚀 RESOURCE EFFICIENCY: Stagger reconciliation start per slot
+    // Slot 0 starts immediately, Slot 1 after 1s, Slot 2 after 2s
+    const slotStaggerMs = this.slotIndex * 1000;
     
-    this.logger.info('✅ Position reconciliation started (checks every 5 minutes)');
+    setTimeout(() => {
+      // Run reconciliation every 5 minutes
+      this.positionReconciliationInterval = setInterval(async () => {
+        if (this.currentPosition) {
+          await this.reconcilePositions();
+        }
+      }, 5 * 60 * 1000); // Every 5 minutes
+      
+      this.logger.info(`✅ Slot ${this.slotIndex + 1} position reconciliation started (checks every 5 minutes, stagger: ${this.slotIndex}s)`);
+    }, slotStaggerMs);
   }
 
   /**
@@ -3852,6 +3672,42 @@ export class BollingerBandStrategy extends StrategyBase {
       this.logger.info(`✅ Liquidity check passed: OI:${oi}, Vol:${volume}`, {
         instrument: instrument.tradingsymbol
       });
+      
+      // Step 1.5c: SPREAD CHECK - Reject entries with wide bid-ask spread (high impact cost)
+      // Only check on BUY (entries) - never block exits due to spread
+      if (transaction === 'BUY') {
+        const MAX_SPREAD_PERCENT = 2.0; // Maximum allowed spread percentage
+        const depth = quoteData?.depth;
+        const bestBid = depth?.buy?.[0]?.price || 0;
+        const bestAsk = depth?.sell?.[0]?.price || 0;
+        
+        if (bestBid > 0 && bestAsk > 0) {
+          const spreadPercent = ((bestAsk - bestBid) / bestBid) * 100;
+          
+          if (spreadPercent > MAX_SPREAD_PERCENT) {
+            this.logger.error(`❌ HIGH_SPREAD_REJECTION: ${instrument.tradingsymbol} spread ${spreadPercent.toFixed(2)}% > ${MAX_SPREAD_PERCENT}% threshold | Bid:₹${bestBid.toFixed(2)} Ask:₹${bestAsk.toFixed(2)} - ENTRY ABORTED`, {
+              instrument: instrument.tradingsymbol,
+              bestBid,
+              bestAsk,
+              spreadPercent: spreadPercent.toFixed(2),
+              maxAllowed: MAX_SPREAD_PERCENT,
+              reason: 'Wide bid-ask spread indicates high impact cost - entry rejected for safety'
+            });
+            return { success: false, price: 0 };
+          }
+          
+          this.logger.info(`✅ Spread check passed: ${spreadPercent.toFixed(2)}% (max ${MAX_SPREAD_PERCENT}%)`, {
+            instrument: instrument.tradingsymbol,
+            bestBid,
+            bestAsk
+          });
+        } else {
+          this.logger.warn(`⚠️ Could not verify spread (empty depth) - proceeding with caution`, {
+            instrument: instrument.tradingsymbol,
+            depthAvailable: !!depth
+          });
+        }
+      }
       
       // Step 2: Calculate limit price with market protection buffer
       const limitPrice = this.calculateLimitPrice(ltp, transaction);

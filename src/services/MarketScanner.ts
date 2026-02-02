@@ -3,6 +3,12 @@ import { InstrumentCache } from "../utils/InstrumentCache";
 import { UNIVERSE, UniverseStock } from "../config/universe";
 import { OIHistoryService, OIAnalysisResult } from "./OIHistoryService";
 
+// ═══════════════════════════════════════════════════════════════════════════
+// TRADEABILITY GUARDS - Pre-filtering thresholds
+// ═══════════════════════════════════════════════════════════════════════════
+const MAX_RISK_PERCENT = 1.5;      // Maximum allowed stop loss distance (%)
+const MAX_BANDWIDTH_PERCENT = 3.5; // Maximum Bollinger Band width (over-extension filter)
+
 /**
  * MarketScanner - TMV (Trend, Momentum, Volume) Stock Selection
  *
@@ -33,7 +39,7 @@ export interface ScoredStock {
     sector: number; // Max 2.0
     smartMoney: number; // Max 2.0 (Coiled Spring bonus)
   };
-  smartMoneySignal?: 'ACCUMULATION' | 'DISTRIBUTION' | 'NONE' | 'CONFLICT' | 'EXPIRY_WEEK';
+  smartMoneySignal?: 'ACCUMULATION' | 'DISTRIBUTION' | 'SHORT_COVERING' | 'LONG_UNWINDING' | 'NONE' | 'CONFLICT' | 'EXPIRY_WEEK';
   spotPrice: number;
   upperCircuitLimit: number; // Circuit limit from quote
   lowerCircuitLimit: number; // Circuit limit from quote
@@ -46,6 +52,7 @@ export interface ScoredStock {
   } | null;
   historicalData: Candle[]; // Pass to strategy
   valid: boolean;
+  rejectionReason?: string;  // Reason for disqualification (if valid=false)
 }
 
 export interface ScannerResult {
@@ -463,6 +470,64 @@ export class MarketScanner {
           continue;
         }
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        // TRADEABILITY GUARDS - Reject stocks that are geometrically untradeable
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        // Calculate indicators needed for guards
+        const supertrend = this.calculateSupertrend(candles, 10, 2);
+        const bollingerBands = this.calculateBollingerBands(closes, 20, 2);
+
+        // GUARD #1: Risk Distance Check (Stop Loss too far)
+        // Math: Risk % = (ABS(Close - SupertrendValue) / Close) * 100
+        const riskPercent = (Math.abs(spotPrice - supertrend.value) / spotPrice) * 100;
+        if (riskPercent > MAX_RISK_PERCENT) {
+          this.logger.warn(`⚠️ ${stock.symbol}: Rejected - Risk too high (${riskPercent.toFixed(2)}% > ${MAX_RISK_PERCENT}%)`);
+          results.push({
+            symbol: stock.symbol,
+            score: 0,
+            bias: "LONG", // Placeholder, doesn't matter for rejected
+            sector: stock.sector,
+            sectorToken: stock.sectorToken,
+            breakdown: { trend: 0, momentum: 0, volume: 0, sector: 0, smartMoney: 0 },
+            spotPrice,
+            upperCircuitLimit: 0,
+            lowerCircuitLimit: 0,
+            todayChangePercent: 0,
+            atmOption: null,
+            historicalData: candles,
+            valid: false,
+            rejectionReason: `Risk too high (${riskPercent.toFixed(2)}% > ${MAX_RISK_PERCENT}%)`,
+          });
+          continue; // Skip to next stock
+        }
+
+        // GUARD #2: Bandwidth Check (Over-extended bands)
+        // Math: Bandwidth % = ((UpperBB - LowerBB) / MiddleBB) * 100
+        const bandwidthPercent = ((bollingerBands.upper - bollingerBands.lower) / bollingerBands.middle) * 100;
+        if (bandwidthPercent > MAX_BANDWIDTH_PERCENT) {
+          this.logger.warn(`⚠️ ${stock.symbol}: Rejected - Over-extended (Bandwidth ${bandwidthPercent.toFixed(2)}% > ${MAX_BANDWIDTH_PERCENT}%)`);
+          results.push({
+            symbol: stock.symbol,
+            score: 0,
+            bias: "LONG", // Placeholder
+            sector: stock.sector,
+            sectorToken: stock.sectorToken,
+            breakdown: { trend: 0, momentum: 0, volume: 0, sector: 0, smartMoney: 0 },
+            spotPrice,
+            upperCircuitLimit: 0,
+            lowerCircuitLimit: 0,
+            todayChangePercent: 0,
+            atmOption: null,
+            historicalData: candles,
+            valid: false,
+            rejectionReason: `Over-extended (Bandwidth ${bandwidthPercent.toFixed(2)}% > ${MAX_BANDWIDTH_PERCENT}%)`,
+          });
+          continue; // Skip to next stock
+        }
+
+        this.logger.debug(`✅ ${stock.symbol}: Passed geometry checks (Risk: ${riskPercent.toFixed(2)}%, Bandwidth: ${bandwidthPercent.toFixed(2)}%)`);
+
         // Sector data
         const sectorData = sectorStatus.data.get(stock.sectorToken);
         const sectorChange = sectorData?.changePercent || 0;
@@ -567,7 +632,7 @@ export class MarketScanner {
         // E. SMART MONEY (Max 2.0) - Coiled Spring Detection
         // Uses OI History Service to detect institutional accumulation/distribution
         let smartMoneyBonus = 0;
-        let smartMoneySignal: 'ACCUMULATION' | 'DISTRIBUTION' | 'NONE' | 'CONFLICT' | 'EXPIRY_WEEK' = 'NONE';
+        let smartMoneySignal: 'ACCUMULATION' | 'DISTRIBUTION' | 'SHORT_COVERING' | 'LONG_UNWINDING' | 'NONE' | 'CONFLICT' | 'EXPIRY_WEEK' = 'NONE';
         
         if (this.oiHistoryService) {
           // Check if it's expiry week (skip Smart Money scoring)
@@ -693,25 +758,26 @@ export class MarketScanner {
       }
 
       // 4. Circuit limit check - Spec Section 6
-      // If price is within 1% of circuit limit, DISCARD
+      // If price is within 1.5% of circuit limit, DISCARD (increased from 1.0% for safety)
+      const CIRCUIT_PROXIMITY_THRESHOLD = 1.5; // Wider buffer to avoid circuit traps
       if (stock.upperCircuitLimit > 0 && stock.lowerCircuitLimit > 0) {
         const currentPrice = stock.spotPrice;
         
         if (stock.bias === "LONG") {
           // For LONG: Check proximity to upper circuit
           const proximityToUpperCircuit = ((stock.upperCircuitLimit - currentPrice) / currentPrice) * 100;
-          if (proximityToUpperCircuit < 1.0) {
+          if (proximityToUpperCircuit < CIRCUIT_PROXIMITY_THRESHOLD) {
             this.logger.warn(
-              `${stock.symbol}: Near Upper Circuit (${proximityToUpperCircuit.toFixed(2)}% away) - DISCARD`,
+              `${stock.symbol}: Near Upper Circuit (${proximityToUpperCircuit.toFixed(2)}% < ${CIRCUIT_PROXIMITY_THRESHOLD}%) - DISCARD`,
             );
             return false;
           }
         } else {
           // For SHORT: Check proximity to lower circuit
           const proximityToLowerCircuit = ((currentPrice - stock.lowerCircuitLimit) / currentPrice) * 100;
-          if (proximityToLowerCircuit < 1.0) {
+          if (proximityToLowerCircuit < CIRCUIT_PROXIMITY_THRESHOLD) {
             this.logger.warn(
-              `${stock.symbol}: Near Lower Circuit (${proximityToLowerCircuit.toFixed(2)}% away) - DISCARD`,
+              `${stock.symbol}: Near Lower Circuit (${proximityToLowerCircuit.toFixed(2)}% < ${CIRCUIT_PROXIMITY_THRESHOLD}%) - DISCARD`,
             );
             return false;
           }
@@ -736,21 +802,38 @@ export class MarketScanner {
     // Log top 10 scored stocks for debugging
     this.logger.info(`📊 Top 10 Scored Stocks:`);
     sorted.slice(0, 10).forEach((stock, i) => {
-      this.logger.info(`  ${i + 1}. ${stock.symbol}: Score=${stock.score.toFixed(2)} (${stock.bias}) | T:${stock.breakdown.trend.toFixed(1)} M:${stock.breakdown.momentum.toFixed(1)} V:${stock.breakdown.volume.toFixed(1)} S:${stock.breakdown.sector.toFixed(1)} | Spot=₹${stock.spotPrice.toFixed(2)}`);
+      const smDisplay = stock.breakdown.smartMoney > 0 ? ` SM:${stock.breakdown.smartMoney.toFixed(1)}` : '';
+      this.logger.info(`  ${i + 1}. ${stock.symbol}: Score=${stock.score.toFixed(2)} (${stock.bias}) | T:${stock.breakdown.trend.toFixed(1)} M:${stock.breakdown.momentum.toFixed(1)} V:${stock.breakdown.volume.toFixed(1)} S:${stock.breakdown.sector.toFixed(1)}${smDisplay} | Spot=₹${stock.spotPrice.toFixed(2)}`);
     });
 
     // Filter to only stocks meeting minimum score
     const qualifiedStocks = sorted.filter(s => s.score >= this.config.minScore);
     this.logger.info(`📊 ${qualifiedStocks.length} stocks meet minimum score of ${this.config.minScore}`);
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECTOR DIVERSITY RULE - Max 2 stocks per sector to prevent concentration risk
+    // Allows capitalizing on sector strength while avoiding 3x correlated exposure
+    // ═══════════════════════════════════════════════════════════════════════════
+    const MAX_STOCKS_PER_SECTOR = 2;
+    const sectorCounts: Map<string, number> = new Map();
+
     // Iterate through ALL qualified stocks until we find N with valid options
     const validStocks: ScoredStock[] = [];
     let checkedCount = 0;
+    let skippedForDiversity = 0;
 
     for (const stock of qualifiedStocks) {
       // Stop once we have enough valid stocks
       if (validStocks.length >= this.config.topCount) {
         break;
+      }
+
+      // SECTOR DIVERSITY CHECK: Skip if sector already has max stocks
+      const currentSectorCount = sectorCounts.get(stock.sector) || 0;
+      if (currentSectorCount >= MAX_STOCKS_PER_SECTOR) {
+        this.logger.info(`⚠️ ${stock.symbol}: Sector ${stock.sector} already has ${currentSectorCount} stocks - SKIP (diversity rule)`);
+        skippedForDiversity++;
+        continue;
       }
 
       checkedCount++;
@@ -770,14 +853,17 @@ export class MarketScanner {
           continue;
         }
 
-        // LIQUIDITY FILTER - Reject if BOTH OI and Volume are too low
-        // Need at least one source of liquidity
-        const MIN_OI = 25000;    // Minimum Open Interest contracts
+        // DYNAMIC LIQUIDITY FILTER - OI threshold scales with lot size
+        // Formula: Min OI = 500 × Lot_Size (ensures ~500 lots exist in market)
+        // Example: RELIANCE (lot 250) → MIN_OI = 125,000
+        //          COFORGE (lot 150) → MIN_OI = 75,000
+        const DYNAMIC_OI_MULTIPLIER = 500;
+        const dynamicMinOI = DYNAMIC_OI_MULTIPLIER * atmOption.lotSize;
         const MIN_VOL = 500;     // Minimum Volume contracts
         
-        if (atmOption.oi < MIN_OI && atmOption.volume < MIN_VOL) {
+        if (atmOption.oi < dynamicMinOI && atmOption.volume < MIN_VOL) {
           this.logger.warn(
-            `❌ ${stock.symbol}: Illiquid Option (${atmOption.tradingsymbol}) - OI:${atmOption.oi}, Vol:${atmOption.volume} (Need OI≥${MIN_OI} OR Vol≥${MIN_VOL}) - DISCARD`,
+            `❌ ${stock.symbol}: Illiquid Option (${atmOption.tradingsymbol}) - OI:${atmOption.oi} < Dynamic Min ${dynamicMinOI} (lot:${atmOption.lotSize} × ${DYNAMIC_OI_MULTIPLIER}), Vol:${atmOption.volume} - DISCARD`,
           );
           stock.valid = false;
           continue;
@@ -787,8 +873,12 @@ export class MarketScanner {
         stock.atmOption = atmOption;
         stock.valid = true;
         validStocks.push(stock);
+        
+        // Update sector count for diversity tracking
+        sectorCounts.set(stock.sector, (sectorCounts.get(stock.sector) || 0) + 1);
+        
         this.logger.info(
-          `✅ ${stock.symbol}: Valid option found - ${atmOption.tradingsymbol} @ ₹${atmOption.premium.toFixed(1)} | OI:${atmOption.oi}, Vol:${atmOption.volume} (${validStocks.length}/${this.config.topCount} slots filled)`,
+          `✅ ${stock.symbol}: Valid option found - ${atmOption.tradingsymbol} @ ₹${atmOption.premium.toFixed(1)} | OI:${atmOption.oi}, Vol:${atmOption.volume} | Sector: ${stock.sector} (${sectorCounts.get(stock.sector)}/${MAX_STOCKS_PER_SECTOR}) (${validStocks.length}/${this.config.topCount} slots filled)`,
         );
       } catch (error) {
         this.logger.error(`Failed to find option for ${stock.symbol}:`, error);
@@ -796,7 +886,7 @@ export class MarketScanner {
       }
     }
 
-    this.logger.info(`📊 Checked ${checkedCount} stocks to find ${validStocks.length} with valid options`);
+    this.logger.info(`📊 Checked ${checkedCount} stocks, skipped ${skippedForDiversity} for diversity, found ${validStocks.length} with valid options`);
     return validStocks;
   }
 
@@ -814,6 +904,7 @@ export class MarketScanner {
     expiry: Date;
     oi: number;
     volume: number;
+    lotSize: number;  // Added for dynamic liquidity calculation
   }> {
     // Fetch all NFO instruments from cache
     const instruments = await this.instrumentCache.getNFOInstruments();
@@ -881,6 +972,7 @@ export class MarketScanner {
       expiry,
       oi,
       volume,
+      lotSize: atmOption.lot_size || 1,  // Extract lot size from instrument data
     };
   }
 
@@ -1187,6 +1279,126 @@ export class MarketScanner {
     const avgVolume = volumes.slice(-20, -10).reduce((a, b) => a + b, 0) / 10;
 
     return avgVolume > 0 ? recentVolume / avgVolume : 1.0;
+  }
+
+  /**
+   * Calculate Supertrend indicator
+   * Based on TradingView implementation using ATR
+   */
+  private calculateSupertrend(candles: Candle[], period: number = 10, multiplier: number = 2): { value: number; trend: 'UP' | 'DOWN' } {
+    if (candles.length < period + 1) {
+      const lastClose = candles[candles.length - 1]?.close || 0;
+      return { value: lastClose, trend: 'UP' };
+    }
+
+    // Calculate ATR
+    const trueRanges: number[] = [];
+    for (let i = 1; i < candles.length; i++) {
+      const candle = candles[i];
+      const prevCandle = candles[i - 1];
+      if (!candle || !prevCandle) continue;
+      
+      const tr = Math.max(
+        candle.high - candle.low,
+        Math.abs(candle.high - prevCandle.close),
+        Math.abs(candle.low - prevCandle.close)
+      );
+      trueRanges.push(tr);
+    }
+
+    // Calculate ATR as SMA of True Ranges
+    const atrValues = trueRanges.slice(-period);
+    const atr = atrValues.reduce((sum, tr) => sum + tr, 0) / atrValues.length;
+
+    // Build Supertrend values
+    const supertrendValues: Array<{
+      close: number;
+      finalUB: number;
+      finalLB: number;
+      trend: number;
+      supertrend: number;
+    }> = [];
+
+    for (let i = period; i < candles.length; i++) {
+      const candle = candles[i];
+      const prevCandle = candles[i - 1];
+      if (!candle || !prevCandle) continue;
+
+      const hl2 = (candle.high + candle.low) / 2;
+      const basicUB = hl2 + (multiplier * atr);
+      const basicLB = hl2 - (multiplier * atr);
+
+      let finalUB: number, finalLB: number, trend: number, supertrend: number;
+
+      if (supertrendValues.length === 0) {
+        finalUB = basicUB;
+        finalLB = basicLB;
+        trend = candle.close <= finalUB ? -1 : 1;
+        supertrend = trend === 1 ? finalLB : finalUB;
+      } else {
+        const prev = supertrendValues[supertrendValues.length - 1];
+        if (!prev) {
+          finalUB = basicUB;
+          finalLB = basicLB;
+          trend = candle.close <= finalUB ? -1 : 1;
+          supertrend = trend === 1 ? finalLB : finalUB;
+        } else {
+          finalUB = (basicUB < prev.finalUB || prevCandle.close > prev.finalUB) ? basicUB : prev.finalUB;
+          finalLB = (basicLB > prev.finalLB || prevCandle.close < prev.finalLB) ? basicLB : prev.finalLB;
+
+          if (prev.trend === 1) {
+            trend = candle.close < prev.supertrend ? -1 : 1;
+          } else {
+            trend = candle.close > prev.supertrend ? 1 : -1;
+          }
+          supertrend = trend === 1 ? finalLB : finalUB;
+        }
+      }
+
+      supertrendValues.push({ close: candle.close, finalUB, finalLB, trend, supertrend });
+    }
+
+    const lastValue = supertrendValues[supertrendValues.length - 1];
+    if (!lastValue) {
+      const lastClose = candles[candles.length - 1]?.close || 0;
+      return { value: lastClose, trend: 'UP' };
+    }
+
+    return {
+      value: lastValue.supertrend,
+      trend: lastValue.trend === 1 ? 'UP' : 'DOWN'
+    };
+  }
+
+  /**
+   * Calculate Bollinger Bands
+   * Standard SMA + 2×StdDev calculation
+   */
+  private calculateBollingerBands(closes: number[], period: number = 20, stdDevMultiplier: number = 2): { upper: number; middle: number; lower: number } {
+    if (closes.length < period) {
+      const lastClose = closes[closes.length - 1] || 0;
+      return {
+        upper: lastClose * 1.02,
+        middle: lastClose,
+        lower: lastClose * 0.98
+      };
+    }
+
+    // Get last 'period' closes
+    const recentCloses = closes.slice(-period);
+
+    // Calculate SMA (Middle Band)
+    const sma = recentCloses.reduce((sum, close) => sum + close, 0) / period;
+
+    // Calculate Standard Deviation
+    const variance = recentCloses.reduce((sum, close) => sum + Math.pow(close - sma, 2), 0) / period;
+    const stdDev = Math.sqrt(variance);
+
+    return {
+      upper: sma + (stdDev * stdDevMultiplier),
+      middle: sma,
+      lower: sma - (stdDev * stdDevMultiplier)
+    };
   }
 
   /**

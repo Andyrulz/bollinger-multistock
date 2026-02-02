@@ -188,7 +188,8 @@ class TradingBot {
       // Get active strategies from StrategyRegistry
       const activeStrategies = Array.from(StrategyRegistry.getAllInstances().values());
       const scannerResult = await this.strategyManager.getLastScannerResults();
-      const slotStates = this.strategyManager.getSlotStates();
+      // Use enhanced slot states with live position data
+      const slotStates = this.strategyManager.getSlotStatesWithPositions();
       
       // Calculate aggregate metrics from SLOT DATA FILES (persisted across restarts)
       // This ensures we capture ALL historical trades, not just current session
@@ -1094,11 +1095,22 @@ class TradingBot {
             </div>
             
             ${scannerResult && scannerResult.selected.length > 0 ? `
-            <div class="scanner-results">
-                <h3 style="margin-bottom: 16px; color: #1a202c;">🏆 Top 3 Selected Stocks</h3>
+            <div class="scanner-results" style="background: linear-gradient(135deg, #fefce8 0%, #ffffff 100%); border-color: #eab308;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h3 style="color: #1a202c; margin: 0;">🔍 Scanner Candidates (Top 3 by Score)</h3>
+                    <span style="font-size: 0.8rem; color: #64748b; background: #f1f5f9; padding: 4px 12px; border-radius: 12px;">
+                        ⚡ Smart Retention decides if these replace existing slots
+                    </span>
+                </div>
                 <div class="scanner-results-grid">
-                    ${scannerResult.selected.map((stock: any, index: number) => `
-                    <div class="result-card">
+                    ${scannerResult.selected.map((stock: any, index: number) => {
+                        // Check if this candidate is deployed in any slot
+                        const deployedSlot = slotStates.find((s: any) => s.symbol === stock.symbol);
+                        const isDeployed = !!deployedSlot;
+                        const deployedSlotNum = deployedSlot ? deployedSlot.slotNumber + 1 : null;
+                        
+                        return `
+                    <div class="result-card" style="border-color: ${isDeployed ? '#10b981' : '#fbbf24'}; background: ${isDeployed ? 'linear-gradient(135deg, #ecfdf5 0%, #ffffff 100%)' : 'linear-gradient(135deg, #fffbeb 0%, #ffffff 100%)'};">
                         <div class="rank-badge">#${index + 1}</div>
                         <div class="result-symbol">${stock.symbol}</div>
                         <div class="result-score">Score: ${stock.score.toFixed(1)}/10</div>
@@ -1110,8 +1122,12 @@ class TradingBot {
                             V:${stock.breakdown.volume.toFixed(1)} | 
                             S:${stock.breakdown.sector.toFixed(1)}
                         </div>
+                        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e2e8f0; font-size: 0.8rem; font-weight: 600; color: ${isDeployed ? '#059669' : '#d97706'};">
+                            ${isDeployed ? `✅ Deployed → Slot #${deployedSlotNum}` : '⏸️ Not deployed (existing slots retained)'}
+                        </div>
                     </div>
-                    `).join('')}
+                        `;
+                    }).join('')}
                 </div>
             </div>
             ` : ''}
@@ -1136,18 +1152,38 @@ class TradingBot {
         <div class="slot-states-section">
             <div class="section-header">
                 <div class="section-title">
-                    <span>🎰</span> Smart Retention - Slot States
+                    <span>🎰</span> Deployed Strategies - Slot States
                 </div>
                 <div style="font-size: 0.85rem; color: #64748b;">
-                    LOCK → Active Position | KEEP → Score ≥6.0 | SWAP → Score dropped | DEPLOY → Empty slot
+                    🔒 LOCK = Position Open | 🛡️ KEEP = Score OK | ♻️ SWAP = Replaced | 🚀 DEPLOY = New
                 </div>
             </div>
             
             <div class="slot-grid">
                 ${slotStates.map((slot: any, idx: number) => {
-                    const slotClass = slot.locked ? 'locked' : (slot.symbol ? 'active' : 'empty');
+                    const hasPosition = slot.hasActivePosition || slot.locked;
+                    const slotClass = hasPosition ? 'locked' : (slot.symbol ? 'active' : 'empty');
+                    const posInfo = slot.positionInfo;
+                    
+                    // Determine border color based on position P&L
+                    let borderColor = '#e2e8f0';
+                    let bgGradient = '#f8fafc';
+                    if (hasPosition && posInfo) {
+                        borderColor = posInfo.unrealizedPnL >= 0 ? '#10b981' : '#ef4444';
+                        bgGradient = posInfo.unrealizedPnL >= 0 
+                            ? 'linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)'
+                            : 'linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)';
+                    } else if (slot.symbol) {
+                        borderColor = '#3b82f6';
+                        bgGradient = 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)';
+                    }
+                    
+                    // Retention decision icons
+                    const decisionIcons: any = { 'LOCK': '🔒', 'KEEP': '🛡️', 'SWAP': '♻️', 'DEPLOY': '🚀' };
+                    const decisionIcon = slot.lastRetentionDecision ? decisionIcons[slot.lastRetentionDecision] || '❓' : '';
+                    
                     return `
-                    <div class="slot-card ${slotClass}">
+                    <div class="slot-card ${slotClass}" style="border: 2px solid ${borderColor}; background: ${bgGradient};">
                         <div class="slot-number">Slot #${slot.slotNumber + 1}</div>
                         <div class="slot-symbol">${slot.symbol || '—'}</div>
                         ${slot.symbol ? `
@@ -1155,11 +1191,47 @@ class TradingBot {
                             <span class="slot-score-value">${slot.lastScanScore !== null ? slot.lastScanScore.toFixed(1) : '—'}/10</span>
                             <span class="slot-bias ${slot.lastScanBias?.toLowerCase() || ''}">${slot.lastScanBias || '—'}</span>
                         </div>
-                        <div class="slot-status">
-                            <span class="slot-status-icon">${slot.locked ? '🔒' : '✅'}</span>
-                            <span>${slot.locked ? 'LOCKED (Active Position)' : 'Monitoring'}</span>
+                        
+                        ${hasPosition && posInfo ? `
+                        <!-- POSITION INFO BOX -->
+                        <div style="margin: 10px 0; padding: 10px; background: ${posInfo.unrealizedPnL >= 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)'}; border-radius: 8px; border: 1px solid ${posInfo.unrealizedPnL >= 0 ? '#10b981' : '#ef4444'};">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <span style="font-weight: 700; color: ${posInfo.type === 'LONG' ? '#059669' : '#dc2626'};">
+                                    ${posInfo.type === 'LONG' ? '📈 LONG' : '📉 SHORT'}
+                                </span>
+                                <span style="font-size: 0.75rem; color: #64748b;">🔒 Position Open</span>
+                            </div>
+                            <div style="font-size: 0.8rem; color: #374151; margin-bottom: 4px; font-family: monospace;">
+                                ${posInfo.tradingSymbol}
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 0.75rem;">
+                                <div>Entry: ₹${posInfo.entryPrice.toFixed(2)}</div>
+                                <div>Now: ₹${posInfo.currentPrice.toFixed(2)}</div>
+                            </div>
+                            <div style="margin-top: 6px; font-size: 1rem; font-weight: 700; color: ${posInfo.unrealizedPnL >= 0 ? '#059669' : '#dc2626'};">
+                                P&L: ${posInfo.unrealizedPnL >= 0 ? '+' : ''}₹${posInfo.unrealizedPnL.toFixed(0)} (${posInfo.profitPercent >= 0 ? '+' : ''}${posInfo.profitPercent.toFixed(1)}%)
+                            </div>
+                            ${posInfo.trailingSL ? `
+                            <div style="margin-top: 4px; font-size: 0.7rem; color: #6b7280;">
+                                🛡️ Trailing SL: ₹${posInfo.trailingSL.toFixed(2)}
+                            </div>
+                            ` : ''}
                         </div>
-                        <div class="slot-deployed">
+                        ` : `
+                        <!-- NO POSITION - MONITORING -->
+                        <div class="slot-status">
+                            <span class="slot-status-icon">🔍</span>
+                            <span>Monitoring for signals</span>
+                        </div>
+                        `}
+                        
+                        ${slot.lastRetentionDecision ? `
+                        <div style="margin-top: 8px; padding: 6px 8px; background: rgba(0,0,0,0.05); border-radius: 6px; font-size: 0.7rem; color: #475569;">
+                            <span style="font-weight: 600;">${decisionIcon} ${slot.lastRetentionDecision}:</span> ${slot.lastRetentionReason || ''}
+                        </div>
+                        ` : ''}
+                        
+                        <div class="slot-deployed" style="margin-top: 6px;">
                             Deployed: ${slot.deployedAt ? new Date(slot.deployedAt).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : '—'}
                         </div>
                         ` : `
@@ -1185,25 +1257,31 @@ class TradingBot {
             </div>
             
             <div class="strategies-grid">
-                ${activeStrategies.length > 0 ? activeStrategies.map((strategy: any) => `
-                <div class="strategy-card" style="border: 2px solid #10b981; background: white;">
+                ${activeStrategies.length > 0 ? activeStrategies.map((strategy: any) => {
+                    // Get position info properly using getStatus()
+                    let posStatus = null;
+                    try {
+                        const status = strategy.getStatus();
+                        posStatus = status?.positionInfo || null;
+                    } catch (e) {}
+                    
+                    const strategySymbol = strategy.config?.instruments?.[0] || strategy.config?.symbol || 'Unknown';
+                    
+                    return `
+                <div class="strategy-card" style="border: 2px solid ${posStatus ? (posStatus.unrealizedPnL >= 0 ? '#10b981' : '#ef4444') : '#3b82f6'}; background: white;">
                     <div class="strategy-header">
                         <div>
-                            <div class="strategy-title">🎯 ${strategy.config?.instruments?.[0] || strategy.config?.symbol || 'Unknown'}</div>
+                            <div class="strategy-title">🎯 ${strategySymbol}</div>
                             <div class="strategy-subtitle">${strategy.config?.name || strategy.config?.id || 'Strategy'}</div>
-                            ${scannerResult && scannerResult.selected ? 
-                                scannerResult.selected.find((s: any) => s.symbol === (strategy.config?.instruments?.[0] || strategy.config?.symbol)) ? 
-                                `<div style="margin-top: 4px; color: #6366f1; font-size: 0.875rem;">
-                                    Score: ${scannerResult.selected.find((s: any) => s.symbol === (strategy.config?.instruments?.[0] || strategy.config?.symbol))?.score.toFixed(1)} | 
-                                    ${scannerResult.selected.find((s: any) => s.symbol === (strategy.config?.instruments?.[0] || strategy.config?.symbol))?.bias}
-                                </div>` : '' : ''}
                         </div>
-                        <span class="status-badge active">Active</span>
+                        <span class="status-badge ${posStatus ? 'running' : 'active'}" style="${posStatus ? 'background: rgba(16, 185, 129, 0.2); color: #059669;' : ''}">
+                            ${posStatus ? '🔒 In Position' : 'Monitoring'}
+                        </span>
                     </div>
                     <div class="strategy-metrics">
                         <div class="metric">
                             <div class="metric-label">Status</div>
-                            <div class="metric-value">${(strategy as any).currentPosition ? '📊 In Position' : '🔍 Monitoring'}</div>
+                            <div class="metric-value">${posStatus ? '📊 ' + posStatus.type : '🔍 Scanning'}</div>
                         </div>
                         <div class="metric">
                             <div class="metric-label">Capital</div>
@@ -1214,12 +1292,13 @@ class TradingBot {
                         <a href="/strategy/${strategy.config?.id}" class="btn btn-secondary">View Details</a>
                     </div>
                 </div>
-                `).join('') : `
-                <div class="strategy-card" style="border: 2px solid #3b82f6; background: white;">
+                    `;
+                }).join('') : `
+                <div class="strategy-card" style="border: 2px solid #64748b; background: #f8fafc;">
                     <div class="strategy-header">
                         <div>
-                            <div class="strategy-title">🤖 Smart Retention Strategies</div>
-                            <div class="strategy-subtitle">Hourly scans at XX:35 with rebalancing</div>
+                            <div class="strategy-title">🤖 No Active Strategies</div>
+                            <div class="strategy-subtitle">Waiting for scanner deployment</div>
                         </div>
                         <span class="status-badge scheduled">Awaiting Scan</span>
                     </div>
@@ -1230,21 +1309,18 @@ class TradingBot {
                         </div>
                         <div class="metric">
                             <div class="metric-label">Next Scan</div>
-                            <div class="metric-value">XX:35</div>
+                            <div class="metric-value">XX:18</div>
                         </div>
-                    </div>
-                    <div class="strategy-actions">
-                        <button class="btn btn-secondary" disabled>Awaiting Scanner</button>
                     </div>
                 </div>
                 `}
             </div>
         </div>
 
-        <div class="refresh-note">
-            <strong>📡 Real-time Updates:</strong> This dashboard shows static configuration. 
-            Use <a href="/strategies" style="color: #3b82f6; text-decoration: underline;">GET /strategies</a> 
-            for live strategy metrics and positions.
+        <div class="refresh-note" style="margin-top: 20px;">
+            <strong>📡 Real-time Updates:</strong> Slot position data updates every page refresh. 
+            Use <a href="/strategies" style="color: #3b82f6; text-decoration: underline;">View All Strategies</a> 
+            for detailed live metrics.
         </div>
         ` : `
         <div class="auth-banner ${isAuthenticated ? 'warning' : 'error'}">
@@ -1278,7 +1354,7 @@ class TradingBot {
 
         <div class="footer">
             <p><strong>🤖 TMV Market Scanner</strong> | Powered by Node.js + TypeScript + KiteConnect</p>
-            <p style="margin-top: 8px;">100-Stock Universe • Bollinger Band Strategy • Daily 09:30 AM Execution</p>
+            <p style="margin-top: 8px;">100-Stock Universe • Bollinger Band Strategy • Smart Retention Hourly Scans</p>
         </div>
     </div>
     <script>
@@ -1298,11 +1374,14 @@ class TradingBot {
                     btn.textContent = '🔍 Run Scanner Now';
                 }
             } catch (error) {
-                alert('Error: ' + error.message);
+                alert('Network Error: ' + error.message);
                 btn.disabled = false;
                 btn.textContent = '🔍 Run Scanner Now';
             }
         }
+        
+        // Auto-refresh every 30 seconds
+        setTimeout(() => window.location.reload(), 30000);
     </script>
 </body>
 </html>
@@ -1378,7 +1457,7 @@ class TradingBot {
           return;
         }
 
-        const slotStates = this.strategyManager.getSlotStates();
+        const slotStates = this.strategyManager.getSlotStatesWithPositions();
         
         res.json({
           success: true,
@@ -1391,7 +1470,11 @@ class TradingBot {
             lastScanScore: slot.lastScanScore,
             lastScanBias: slot.lastScanBias,
             locked: slot.locked,
-            status: slot.locked ? 'LOCKED' : (slot.symbol ? 'ACTIVE' : 'EMPTY')
+            lastRetentionDecision: slot.lastRetentionDecision,
+            lastRetentionReason: slot.lastRetentionReason,
+            hasActivePosition: slot.hasActivePosition,
+            positionInfo: slot.positionInfo,
+            status: slot.hasActivePosition ? 'IN_POSITION' : (slot.locked ? 'LOCKED' : (slot.symbol ? 'MONITORING' : 'EMPTY'))
           }))
         });
       } catch (error) {
@@ -1486,7 +1569,7 @@ class TradingBot {
     this.app.get('/scanner-results', async (req: Request, res: Response) => {
       try {
         const results = await this.strategyManager.getLastScannerResults();
-        const slotStates = this.strategyManager.getSlotStates();
+        const slotStates = this.strategyManager.getSlotStatesWithPositions();
         
         const html = `
 <!DOCTYPE html>
@@ -1650,8 +1733,10 @@ class TradingBot {
                         <td><span class="score ${stock.score >= 8 ? 'high' : stock.score >= 7 ? 'medium' : 'low'}">${stock.score.toFixed(2)}</span></td>
                         <td><span class="badge ${stock.bias.toLowerCase()}">${stock.bias}</span></td>
                         <td style="text-align: center;">
-                            ${stock.smartMoneySignal === 'ACCUMULATION' ? '<span title="Coiled Spring: Accumulation" style="font-size: 1.2rem;">💎🟢</span>' :
-                              stock.smartMoneySignal === 'DISTRIBUTION' ? '<span title="Coiled Spring: Distribution" style="font-size: 1.2rem;">💎🔴</span>' :
+                            ${stock.smartMoneySignal === 'ACCUMULATION' ? '<span title="Coiled Spring: Accumulation (OI↑ Price→)" style="font-size: 1.2rem;">💎🟢</span>' :
+                              stock.smartMoneySignal === 'SHORT_COVERING' ? '<span title="Short Covering (OI↓ Price→↑)" style="font-size: 1.2rem;">💎🔵</span>' :
+                              stock.smartMoneySignal === 'DISTRIBUTION' ? '<span title="Coiled Spring: Distribution (OI↑ Price→)" style="font-size: 1.2rem;">💎🔴</span>' :
+                              stock.smartMoneySignal === 'LONG_UNWINDING' ? '<span title="Long Unwinding (OI↓ Price→↓)" style="font-size: 1.2rem;">💎🟠</span>' :
                               stock.smartMoneySignal === 'CONFLICT' ? '<span title="Smart Money Conflict" style="font-size: 1.2rem;">⚠️</span>' :
                               stock.smartMoneySignal === 'EXPIRY_WEEK' ? '<span title="Expiry Week - Skipped" style="font-size: 0.9rem;">📅</span>' :
                               '<span title="No Signal" style="color: #9ca3af;">—</span>'}
@@ -2429,38 +2514,40 @@ class TradingBot {
         </div>
       </div>
       
-      <!-- Trailing SL Row -->
+      <!-- Exit Monitoring (Supertrend-Based) -->
       <div class="position-grid">
-        <div class="position-stat warning">
-          <div class="position-stat-value">₹${positionInfo.highestPremium?.toFixed(2) || '0.00'}</div>
-          <div class="position-stat-label">Highest Premium</div>
+        <div class="position-stat info">
+          <div class="position-stat-value">₹${indicators.supertrend?.value?.toFixed(2) || 'N/A'}</div>
+          <div class="position-stat-label">Supertrend (10,2)</div>
         </div>
-        <div class="position-stat" style="border-bottom: 3px solid #ef4444;">
-          <div class="position-stat-value" style="color: #ef4444;">₹${positionInfo.trailingSL?.toFixed(2) || 'Not Set'}</div>
-          <div class="position-stat-label">Trailing SL (${positionInfo.currentTrailPercent?.toFixed(0) || 12}%)</div>
+        <div class="position-stat info">
+          <div class="position-stat-value">₹${indicators.bollingerBands?.middle?.toFixed(2) || 'N/A'}</div>
+          <div class="position-stat-label">BB Middle (20)</div>
         </div>
-        <div class="position-stat ${(positionInfo.cushion || 0) > 0 ? 'profit' : 'warning'}">
-          <div class="position-stat-value" style="color: ${(positionInfo.cushion || 0) > 0 ? '#10b981' : '#f59e0b'}">
-            ₹${positionInfo.cushion?.toFixed(2) || '0.00'}
+        <div class="position-stat ${positionInfo.type === 'LONG' ? 'warning' : 'info'}">
+          <div class="position-stat-value" style="color: ${positionInfo.type === 'LONG' ? '#ef4444' : '#3b82f6'};">
+            ₹${positionInfo.type === 'LONG' 
+              ? (indicators.supertrend?.value?.toFixed(2) || 'N/A')
+              : (Math.min(indicators.supertrend?.value || 0, indicators.bollingerBands?.middle || 0).toFixed(2) || 'N/A')}
           </div>
-          <div class="position-stat-label">Cushion Above SL</div>
+          <div class="position-stat-label">${positionInfo.type === 'LONG' ? 'Exit Below (ST)' : 'Exit Above (MIN)'}</div>
         </div>
-        <div class="position-stat">
-          <div class="position-stat-value">${positionInfo.cushionPercent?.toFixed(1) || '0.0'}%</div>
-          <div class="position-stat-label">Cushion %</div>
+        <div class="position-stat ${(positionInfo.profitPercent || 0) >= 0 ? 'profit' : 'loss'}">
+          <div class="position-stat-value">
+            ${positionInfo.type === 'LONG' 
+              ? (currentPrice > (indicators.supertrend?.value || 0) ? '🟢 SAFE' : '🔴 EXIT')
+              : (currentPrice < Math.min(indicators.supertrend?.value || Infinity, indicators.bollingerBands?.middle || Infinity) ? '🟢 SAFE' : '🔴 EXIT')}
+          </div>
+          <div class="position-stat-label">Exit Status</div>
         </div>
       </div>
       
-      <!-- Time & Safety Details -->
+      <!-- Time & Position Details -->
       <div class="grid-2" style="margin-top: 12px;">
         <div>
           <div class="position-detail-row">
             <span class="position-detail-label">⏱️ Time Since Entry</span>
             <span class="position-detail-value">${Math.floor(positionInfo.minutesSinceEntry || 0)}m ${Math.floor(((positionInfo.minutesSinceEntry || 0) % 1) * 60)}s</span>
-          </div>
-          <div class="position-detail-row">
-            <span class="position-detail-label">⏱️ Time Since New High</span>
-            <span class="position-detail-value">${Math.floor(positionInfo.minutesSinceLastHigh || 0)}m ${Math.floor(((positionInfo.minutesSinceLastHigh || 0) % 1) * 60)}s</span>
           </div>
           <div class="position-detail-row">
             <span class="position-detail-label">📅 Entry Time</span>
@@ -2470,19 +2557,27 @@ class TradingBot {
             <span class="position-detail-label">🔄 Last Updated</span>
             <span class="position-detail-value">${positionInfo.lastUpdated ? Math.round((Date.now() - new Date(positionInfo.lastUpdated).getTime()) / 1000) + 's ago' : 'N/A'}</span>
           </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">📊 Exit Mode</span>
+            <span class="position-detail-value">5-min Candle Close</span>
+          </div>
         </div>
         <div>
           <div class="position-detail-row">
-            <span class="position-detail-label">📉 Entry Candle Low</span>
-            <span class="position-detail-value">₹${positionInfo.entryCandleLow?.toFixed(2) || 'N/A'}</span>
+            <span class="position-detail-label">📈 Current ${signalSymbol}</span>
+            <span class="position-detail-value">₹${currentPrice?.toFixed(2) || 'N/A'}</span>
           </div>
           <div class="position-detail-row">
-            <span class="position-detail-label">📈 Entry Candle High</span>
-            <span class="position-detail-value">₹${positionInfo.entryCandleHigh?.toFixed(2) || 'N/A'}</span>
+            <span class="position-detail-label">🎯 ${positionInfo.type === 'LONG' ? 'Exit Below ST' : 'Exit Above MIN(ST,BB)'}</span>
+            <span class="position-detail-value" style="color: #ef4444;">
+              ₹${positionInfo.type === 'LONG'
+                ? (indicators.supertrend?.value?.toFixed(2) || 'N/A')
+                : (Math.min(indicators.supertrend?.value || 0, indicators.bollingerBands?.middle || 0).toFixed(2) || 'N/A')}
+            </span>
           </div>
           <div class="position-detail-row">
-            <span class="position-detail-label">🛡️ Safety Threshold</span>
-            <span class="position-detail-value" style="color: #ef4444;">₹${positionInfo.underlyingSafetyThreshold?.toFixed(2) || 'N/A'}</span>
+            <span class="position-detail-label">🕐 EOD Safety Exit</span>
+            <span class="position-detail-value">3:24 PM</span>
           </div>
           <div class="position-detail-row">
             <span class="position-detail-label">💰 Unrealized P&L (Total)</span>
@@ -2621,7 +2716,7 @@ class TradingBot {
             <li>Supertrend = UP</li>
             <li>${signalSymbol} Price above R1 or R2</li>
           </ul>
-          <div class="exit-rule">Exit: 12% Trailing SL OR ${signalSymbol} < MAX(Entry Candle Low, Mid BB)</div>
+          <div class="exit-rule">Exit: 5-min Candle Close < Supertrend (10,2)</div>
         </div>
         <div class="rules-box short">
           <strong class="text-red">🔻 SHORT Entry (Buy ${signalSymbol} PE)</strong>
@@ -2631,7 +2726,7 @@ class TradingBot {
             <li>Supertrend = DOWN</li>
             <li>${signalSymbol} Price below PP (Pivot Point)</li>
           </ul>
-          <div class="exit-rule short">Exit: Entry Candle High breach OR 12% Trailing SL</div>
+          <div class="exit-rule short">Exit: 5-min Candle Close > MIN(Supertrend, BB Middle)</div>
         </div>
       </div>
     </div>
