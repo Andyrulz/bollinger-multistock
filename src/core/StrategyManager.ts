@@ -106,12 +106,20 @@ export class StrategyManager {
   // Smart Retention: Configuration
   private smartRetentionConfig: SmartRetentionConfig = {
     enabled: true,
-    scanTimes: ['09:18', '10:18', '11:18', '12:18', '13:18', '14:18'],
+    // Every 15 minutes starting at 9:23 AM
+    scanTimes: [
+      '09:23', '09:38', '09:53',
+      '10:08', '10:23', '10:38', '10:53',
+      '11:08', '11:23', '11:38', '11:53',
+      '12:08', '12:23', '12:38', '12:53',
+      '13:08', '13:23', '13:38', '13:53',
+      '14:08', '14:23'
+    ],
     keepThreshold: 6.0,
     minDeployScore: 7.0,
     lockOnActivePosition: true,
     swapOnBiasFlip: true,
-    lastScanCutoff: '14:18',
+    lastScanCutoff: '14:23',
   };
 
   // Hourly scanner timer (setTimeout for precise XX:18:05 timing)
@@ -309,11 +317,17 @@ export class StrategyManager {
       
       this.logger.info(`   📍 Slot ${slotNumber}: Restoring ${slotState.symbol}...`);
       
-      // Check if strategy already exists in registry
+      // Check if strategy already exists in registry AND is actually running
       const existingStrategy = StrategyRegistry.getInstance(slotState.strategyId!);
-      if (existingStrategy) {
+      if (existingStrategy && existingStrategy.isRunning()) {
         this.logger.info(`   ✅ Strategy ${slotState.strategyId} already running`);
         continue;
+      }
+      
+      // Strategy exists but is STOPPED - remove zombie instance before restoring fresh
+      if (existingStrategy && !existingStrategy.isRunning()) {
+        this.logger.warn(`   ⚠️ Strategy ${slotState.strategyId} exists but STOPPED - removing zombie and restoring...`);
+        StrategyRegistry.removeInstance(slotState.strategyId!);
       }
       
       // Restore the strategy from slot data
@@ -1136,16 +1150,26 @@ export class StrategyManager {
       if (slotState.locked) {
         this.logger.info(`   🔒 Slot ${slotIndex + 1} is LOCKED with active position - protecting ${slotState.symbol}`);
         
-        // If strategy doesn't exist in registry, we need to re-create it
+        // Check if strategy exists AND is actually running (not just in registry)
         let strategy = StrategyRegistry.getInstance(slotState.strategyId);
-        if (!strategy) {
-          this.logger.info(`   ⚠️ Strategy ${slotState.strategyId} not in registry - attempting to restore...`);
+        
+        if (!strategy || !strategy.isRunning()) {
+          // Strategy missing OR exists but stopped - need to restore
+          if (strategy && !strategy.isRunning()) {
+            this.logger.warn(`   ⚠️ Strategy ${slotState.strategyId} exists but STOPPED - removing zombie...`);
+            StrategyRegistry.removeInstance(slotState.strategyId!);
+          } else {
+            this.logger.info(`   ⚠️ Strategy ${slotState.strategyId} not in registry - attempting to restore...`);
+          }
+          
           const restored = await this.restoreStrategyFromSlotData(slotIndex, slotState);
           if (restored) {
             this.logger.info(`   ✅ Strategy restored successfully - position protected`);
           } else {
             this.logger.error(`   ❌ CRITICAL: Failed to restore strategy - position may be orphaned!`);
           }
+        } else {
+          this.logger.info(`   ✅ Strategy ${slotState.strategyId} already running - no action needed`);
         }
         
         // Mark as deployed and continue (never swap a locked slot)
@@ -1227,19 +1251,30 @@ export class StrategyManager {
     candidates: ScoredStock[], 
     deployedSymbols: Set<string>
   ): Promise<void> {
-    // Find first candidate not already deployed
-    const availableCandidate = candidates.find(c => !deployedSymbols.has(c.symbol));
+    // CRITICAL: Also check slotStates directly (belt-and-suspenders for race conditions)
+    const alreadyDeployedInSlots = new Set(
+      this.slotStates
+        .filter(s => s.symbol !== null)
+        .map(s => s.symbol!)
+    );
+    
+    // Find first candidate not already deployed (check BOTH the passed set AND slot states)
+    const availableCandidate = candidates.find(c => 
+      !deployedSymbols.has(c.symbol) && !alreadyDeployedInSlots.has(c.symbol)
+    );
     
     if (!availableCandidate) {
       this.logger.info(`   📭 No available candidates for Slot ${slotIndex + 1}`);
       return;
     }
     
+    // Add to deployedSymbols BEFORE deploying to prevent race conditions
+    deployedSymbols.add(availableCandidate.symbol);
+    
     this.logRetentionDecision(slotIndex, availableCandidate.symbol, 'DEPLOY', 'empty_slot',
       `Score ${availableCandidate.score.toFixed(1)}`);
     
     await this.deployToSlot(slotIndex, availableCandidate);
-    deployedSymbols.add(availableCandidate.symbol);
   }
 
   /**
@@ -1282,6 +1317,15 @@ export class StrategyManager {
   private async deployToSlot(slotIndex: number, stock: ScoredStock): Promise<void> {
     const slotState = this.slotStates[slotIndex];
     if (!slotState) return;
+    
+    // CRITICAL: Belt-and-suspenders duplicate prevention
+    // Check if this stock is already deployed to ANY other slot
+    for (let i = 0; i < this.slotStates.length; i++) {
+      if (i !== slotIndex && this.slotStates[i]?.symbol === stock.symbol) {
+        this.logger.error(`   🚫 DUPLICATE BLOCKED: ${stock.symbol} already in Slot ${i + 1}, cannot deploy to Slot ${slotIndex + 1}`);
+        return;
+      }
+    }
     
     try {
       // Use SLOT-BASED strategy ID to prevent conflicts when same stock is in multiple slots

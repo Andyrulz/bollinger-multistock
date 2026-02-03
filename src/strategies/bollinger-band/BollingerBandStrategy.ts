@@ -682,18 +682,17 @@ export class BollingerBandStrategy extends StrategyBase {
       const orders = await this.kiteConnect.getOrders();
       
       // Filter for this symbol's SELL orders after entry time
-      // ONLY untagged orders (manual exits from broker, not bot-placed exits)
+      // Include ALL SELL orders (manual exits may or may not have tags)
       let exitCandidates = orders.filter((order: any) => {
         const orderTime = new Date(order.order_timestamp);
         return order.tradingsymbol === symbol
           && order.transaction_type === 'SELL'
           && order.status === 'COMPLETE'
-          && orderTime > entryTime
-          && (!order.tag || order.tag === ''); // ONLY untagged (manual) exits
+          && orderTime > entryTime;
       });
       
       if (exitCandidates.length === 0) {
-        this.logger.warn(`⚠️ No manual SELL orders found for ${symbol} after ${entryTime.toLocaleTimeString()}`);
+        this.logger.warn(`⚠️ No SELL orders found for ${symbol} after ${entryTime.toLocaleTimeString()}`);
         return null;
       }
       
@@ -3222,14 +3221,14 @@ export class BollingerBandStrategy extends StrategyBase {
     const slotStaggerMs = this.slotIndex * 1000;
     
     setTimeout(() => {
-      // Run reconciliation every 5 minutes
+      // Run reconciliation every 2 minutes (faster detection of manual exits)
       this.positionReconciliationInterval = setInterval(async () => {
         if (this.currentPosition) {
           await this.reconcilePositions();
         }
-      }, 5 * 60 * 1000); // Every 5 minutes
+      }, 2 * 60 * 1000); // Every 2 minutes
       
-      this.logger.info(`✅ Slot ${this.slotIndex + 1} position reconciliation started (checks every 5 minutes, stagger: ${this.slotIndex}s)`);
+      this.logger.info(`✅ Slot ${this.slotIndex + 1} position reconciliation started (checks every 2 minutes, stagger: ${this.slotIndex}s)`);
     }, slotStaggerMs);
   }
 
@@ -3260,7 +3259,7 @@ export class BollingerBandStrategy extends StrategyBase {
     const ourSymbol = this.currentPosition.instrument.tradingsymbol;
     
     try {
-      this.logger.debug(`🔄 Reconciling position: ${ourSymbol}`);
+      this.logger.info(`🔄 Reconciling position: ${ourSymbol} (checking broker...)`);
       
       // Fetch current positions from broker
       const brokerPositions = await this.kiteConnect.getPositions();
@@ -3283,7 +3282,7 @@ export class BollingerBandStrategy extends StrategyBase {
         
         this.logger.info('✅ Position reconciliation completed successfully');
       } else {
-        this.logger.debug(`✅ Position reconciliation OK: ${ourSymbol} exists at broker`);
+        this.logger.info(`✅ Position reconciliation OK: ${ourSymbol} exists at broker (qty: ${brokerPosition.quantity})`);
       }
     } catch (error) {
       this.logger.error('❌ Error during position reconciliation:', error);
