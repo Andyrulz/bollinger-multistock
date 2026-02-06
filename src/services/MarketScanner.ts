@@ -784,6 +784,21 @@ export class MarketScanner {
         }
       }
 
+      // 5. HARD EXTENSION FILTER - Extreme moves (>5%) are exhausted, save compute
+      // This is LOOSER than strategy filter (5% vs 3%) - catches only dead stocks
+      if (stock.todayChangePercent < -5.0 && stock.bias === 'SHORT') {
+        this.logger.warn(
+          `${stock.symbol}: Extreme DOWN move (${stock.todayChangePercent.toFixed(1)}% < -5%) - DISCARD (extended)`,
+        );
+        return false;
+      }
+      if (stock.todayChangePercent > 5.0 && stock.bias === 'LONG') {
+        this.logger.warn(
+          `${stock.symbol}: Extreme UP move (${stock.todayChangePercent.toFixed(1)}% > +5%) - DISCARD (extended)`,
+        );
+        return false;
+      }
+
       return true;
     });
   }

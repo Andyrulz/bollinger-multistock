@@ -1134,12 +1134,12 @@ class TradingBot {
             
             <div class="scanner-timeline">
                 <div class="timeline-item upcoming">
-                    <div class="timeline-time">09:35 AM</div>
+                    <div class="timeline-time">09:23 AM</div>
                     <div class="timeline-label">First scan + deployment (initial)</div>
                 </div>
                 <div class="timeline-item upcoming">
-                    <div class="timeline-time">10:35 - 14:35</div>
-                    <div class="timeline-label">Hourly Smart Retention scans</div>
+                    <div class="timeline-time">09:28 - 14:58</div>
+                    <div class="timeline-label">5-Min Smart Retention scans</div>
                 </div>
                 <div class="timeline-item upcoming">
                     <div class="timeline-time">15:30 PM</div>
@@ -1309,7 +1309,7 @@ class TradingBot {
                         </div>
                         <div class="metric">
                             <div class="metric-label">Next Scan</div>
-                            <div class="metric-value">XX:18</div>
+                            <div class="metric-value">Every 5min</div>
                         </div>
                     </div>
                 </div>
@@ -1354,7 +1354,7 @@ class TradingBot {
 
         <div class="footer">
             <p><strong>🤖 TMV Market Scanner</strong> | Powered by Node.js + TypeScript + KiteConnect</p>
-            <p style="margin-top: 8px;">100-Stock Universe • Bollinger Band Strategy • Smart Retention Hourly Scans</p>
+            <p style="margin-top: 8px;">100-Stock Universe • Bollinger Band Strategy • 5-Min Smart Retention Scans</p>
         </div>
     </div>
     <script>
@@ -1817,10 +1817,32 @@ class TradingBot {
           const isProfitable = pnl > 0;
           const tradingsymbol = trade.instrument?.tradingsymbol || '—';
           const underlying = trade.instrument?.name || tradingsymbol.match(/^([A-Z]+)/)?.[1] || '—';
+          
+          const entryTimeStr = trade.entryTime ? new Date(trade.entryTime).toLocaleString('en-IN', { 
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+          }) : '—';
+          
           const exitTimeStr = trade.exitTime ? new Date(trade.exitTime).toLocaleString('en-IN', { 
             day: '2-digit', month: 'short', year: 'numeric',
             hour: '2-digit', minute: '2-digit'
           }) : '—';
+          
+          // Calculate duration
+          let durationStr = '—';
+          if (trade.entryTime && trade.exitTime) {
+            const entryDate = new Date(trade.entryTime);
+            const exitDate = new Date(trade.exitTime);
+            const durationMs = exitDate.getTime() - entryDate.getTime();
+            const durationMinutes = Math.floor(durationMs / 60000);
+            const hours = Math.floor(durationMinutes / 60);
+            const minutes = durationMinutes % 60;
+            if (hours > 0) {
+              durationStr = `${hours}h ${minutes}m`;
+            } else {
+              durationStr = `${minutes}m`;
+            }
+          }
           
           return `
             <tr>
@@ -1841,7 +1863,9 @@ class TradingBot {
                 ${isProfitable ? '+' : ''}₹${pnl.toFixed(2)}
               </td>
               <td class="exit-reason">${(trade.exitReason || '—').replace(/_/g, ' ')}</td>
+              <td class="date-cell">${entryTimeStr}</td>
               <td class="date-cell">${exitTimeStr}</td>
+              <td class="duration-cell">${durationStr}</td>
             </tr>
           `;
         }).join('');
@@ -1997,6 +2021,12 @@ class TradingBot {
             color: #64748b;
         }
         
+        .duration-cell {
+            font-size: 0.85rem;
+            color: #3b82f6;
+            font-weight: 500;
+        }
+        
         .empty-state {
             padding: 60px 20px;
             text-align: center;
@@ -2056,7 +2086,9 @@ class TradingBot {
                         <th>Qty</th>
                         <th>P&L</th>
                         <th>Exit Reason</th>
+                        <th>Entry Time</th>
                         <th>Exit Time</th>
+                        <th>Duration</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -2722,7 +2754,7 @@ class TradingBot {
           <strong class="text-red">🔻 SHORT Entry (Buy ${signalSymbol} PE)</strong>
           <ul class="rules-list">
             <li>${signalSymbol} Price < Bollinger Lower Band</li>
-            <li>RSI between 10-30 (oversold momentum)</li>
+            <li>RSI between 15-40 (oversold momentum)</li>
             <li>Supertrend = DOWN</li>
             <li>${signalSymbol} Price below PP (Pivot Point)</li>
           </ul>

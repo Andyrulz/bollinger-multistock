@@ -74,13 +74,16 @@ export interface SlotStateWithPosition extends SlotState {
  * Retention decision for logging
  */
 type RetentionDecision = 'LOCK' | 'KEEP' | 'SWAP' | 'DEPLOY';
-type SwapReason = 'empty_slot' | 'active_position' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan';
+type SwapReason = 'empty_slot' | 'active_position' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout';
 
 /**
  * Central manager for all trading strategies
  * Handles loading, starting, stopping, and monitoring of multiple strategies
  */
 export class StrategyManager {
+  // Static singleton for symbol cooldown (accessible from strategies)
+  private static instance: StrategyManager | null = null;
+  
   private kiteConnect: any;
   private logger: Logger;
   private config: StrategyManagerConfig;
@@ -96,6 +99,10 @@ export class StrategyManager {
   private hasScannerRunToday: boolean = false; // Prevent duplicate scanner runs
   private lastScannerDate: string = ''; // Track date of last scan
 
+  // Symbol-level cooldown tracking (prevents repeated losses on same stock)
+  private symbolCooldownMap: Map<string, Date> = new Map();
+  private readonly SYMBOL_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes cooldown after exit
+
   // Smart Retention: Slot tracking
   private slotStates: SlotState[] = [
     { slotNumber: 0, symbol: null, strategyId: null, deployedAt: null, lastScanScore: null, lastScanBias: null, locked: false, lastRetentionDecision: null, lastRetentionReason: null },
@@ -106,23 +113,24 @@ export class StrategyManager {
   // Smart Retention: Configuration
   private smartRetentionConfig: SmartRetentionConfig = {
     enabled: true,
-    // Every 15 minutes starting at 9:23 AM
+    // Every 5 minutes starting at 9:23 AM (at :03, :08, :13, :18, :23, :28, :33, :38, :43, :48, :53, :58)
+    // Scan starts ~90s before candle close to ensure slots are updated before strategy entry checks
     scanTimes: [
-      '09:23', '09:38', '09:53',
-      '10:08', '10:23', '10:38', '10:53',
-      '11:08', '11:23', '11:38', '11:53',
-      '12:08', '12:23', '12:38', '12:53',
-      '13:08', '13:23', '13:38', '13:53',
-      '14:08', '14:23'
+      '09:23', '09:28', '09:33', '09:38', '09:43', '09:48', '09:53', '09:58',
+      '10:03', '10:08', '10:13', '10:18', '10:23', '10:28', '10:33', '10:38', '10:43', '10:48', '10:53', '10:58',
+      '11:03', '11:08', '11:13', '11:18', '11:23', '11:28', '11:33', '11:38', '11:43', '11:48', '11:53', '11:58',
+      '12:03', '12:08', '12:13', '12:18', '12:23', '12:28', '12:33', '12:38', '12:43', '12:48', '12:53', '12:58',
+      '13:03', '13:08', '13:13', '13:18', '13:23', '13:28', '13:33', '13:38', '13:43', '13:48', '13:53', '13:58',
+      '14:03', '14:08', '14:13', '14:18', '14:23', '14:28', '14:33', '14:38', '14:43', '14:48', '14:53', '14:58'
     ],
     keepThreshold: 6.0,
     minDeployScore: 7.0,
     lockOnActivePosition: true,
     swapOnBiasFlip: true,
-    lastScanCutoff: '14:23',
+    lastScanCutoff: '14:58',
   };
 
-  // Hourly scanner timer (setTimeout for precise XX:18:05 timing)
+  // 5-min scanner timer (setTimeout for precise timing at :05 seconds)
   private nextScanTimer: NodeJS.Timeout | null = null;
   
   // Race condition guard: Prevents concurrent scans
@@ -144,6 +152,9 @@ export class StrategyManager {
     this.logger = logger;
     this.quoteManager = quoteManager;
     this.config = config;
+
+    // Set singleton instance for static access from strategies
+    StrategyManager.instance = this;
 
     // Initialize InstrumentCache (shared across scanner and strategies)
     this.instrumentCache = new InstrumentCache(this.kiteConnect, this.logger);
@@ -723,6 +734,81 @@ export class StrategyManager {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SYMBOL COOLDOWN MANAGEMENT - Prevents repeated losses on same stock
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Check if a symbol is in cooldown period (cannot be deployed/re-entered)
+   * @param symbol - Stock symbol to check (e.g., "ASIANPAINT")
+   * @returns true if symbol is in cooldown, false if available
+   */
+  public isSymbolInCooldown(symbol: string): boolean {
+    const lastExitTime = this.symbolCooldownMap.get(symbol);
+    if (!lastExitTime) return false;
+    
+    const timeSinceExit = Date.now() - lastExitTime.getTime();
+    const isInCooldown = timeSinceExit < this.SYMBOL_COOLDOWN_MS;
+    
+    if (isInCooldown) {
+      const remainingMs = this.SYMBOL_COOLDOWN_MS - timeSinceExit;
+      const remainingMin = Math.ceil(remainingMs / 60000);
+      this.logger.info(`⏳ Symbol ${symbol} in cooldown: ${remainingMin}m remaining`);
+    }
+    
+    return isInCooldown;
+  }
+
+  /**
+   * Record that a symbol has exited (starts cooldown timer)
+   * Called by strategies when positions are closed
+   * @param symbol - Stock symbol that just exited (e.g., "ASIANPAINT")
+   */
+  public recordSymbolExit(symbol: string): void {
+    const exitTime = new Date();
+    this.symbolCooldownMap.set(symbol, exitTime);
+    this.logger.info(`🔒 Symbol cooldown started: ${symbol} (30 min cooldown until ${new Date(exitTime.getTime() + this.SYMBOL_COOLDOWN_MS).toLocaleTimeString()})`);
+  }
+
+  /**
+   * Get remaining cooldown time for a symbol (in minutes)
+   * @param symbol - Stock symbol to check
+   * @returns Remaining cooldown in minutes, or 0 if not in cooldown
+   */
+  public getSymbolCooldownRemaining(symbol: string): number {
+    const lastExitTime = this.symbolCooldownMap.get(symbol);
+    if (!lastExitTime) return 0;
+    
+    const timeSinceExit = Date.now() - lastExitTime.getTime();
+    const remainingMs = this.SYMBOL_COOLDOWN_MS - timeSinceExit;
+    
+    return remainingMs > 0 ? Math.ceil(remainingMs / 60000) : 0;
+  }
+
+  /**
+   * STATIC: Record symbol exit from any strategy (callable without instance reference)
+   * Called by BollingerBandStrategy.executeExit() when positions close
+   * @param symbol - Stock symbol that just exited (e.g., "ASIANPAINT")
+   */
+  public static recordSymbolExitStatic(symbol: string): void {
+    if (StrategyManager.instance) {
+      StrategyManager.instance.recordSymbolExit(symbol);
+    } else {
+      console.warn(`⚠️ StrategyManager not initialized - cannot record cooldown for ${symbol}`);
+    }
+  }
+
+  /**
+   * Clear all symbol cooldowns (used for daily reset)
+   */
+  private clearSymbolCooldowns(): void {
+    const count = this.symbolCooldownMap.size;
+    this.symbolCooldownMap.clear();
+    if (count > 0) {
+      this.logger.info(`🧹 Cleared ${count} symbol cooldowns`);
+    }
+  }
+
   /**
    * Shutdown the strategy manager and all strategies
    */
@@ -777,6 +863,9 @@ export class StrategyManager {
         }
         this.logger.info('🧹 Slot states reset for next trading day');
         
+        // Clear symbol cooldowns for next day
+        this.clearSymbolCooldowns();
+        
         if (global.gc) {
           global.gc();
         }
@@ -801,21 +890,21 @@ export class StrategyManager {
   }
 
   /**
-   * Schedule hourly scanner with Smart Retention
-   * Uses precise setTimeout to fire at exactly XX:35:05 (5 seconds after candle close)
+   * Schedule 5-minute scanner with Smart Retention
+   * Uses precise setTimeout to fire at exactly XX:YY:05 (5 seconds after minute mark)
    */
   private scheduleHourlyScanner(): void {
-    this.logger.info('📅 Scheduling hourly Smart Retention scanner');
-    this.logger.info(`📅 Scan times: ${this.smartRetentionConfig.scanTimes.join(', ')} (at :05 seconds)`);
+    this.logger.info('📅 Scheduling 5-min Smart Retention scanner');
+    this.logger.info(`📅 Scan times: ${this.smartRetentionConfig.scanTimes.slice(0, 5).join(', ')}... (${this.smartRetentionConfig.scanTimes.length} total)`);
 
     // Schedule the first scan
     this.scheduleNextScan();
     
-    this.logger.info('✅ Hourly scanner scheduled');
+    this.logger.info('✅ 5-min scanner scheduled');
   }
 
   /**
-   * Calculate the next scan time (XX:35:05)
+   * Calculate the next scan time
    * Returns Date object for next scheduled scan
    */
   private getNextScanTime(): Date | null {
@@ -1222,6 +1311,19 @@ export class StrategyManager {
         continue;
       }
       
+      // CASE 4.5: Strategy is stale (3+ candles outside band) - eject to make room for fresh candidates
+      // Only swap if no active position (safety check, though hasActivePosition should have caught it earlier)
+      const isStrategyStale = typeof (strategy as any).isStale === 'function' && slotState.lastScanBias
+        ? (strategy as any).isStale(slotState.lastScanBias)
+        : false;
+      
+      if (isStrategyStale && !hasActivePosition) {
+        this.logRetentionDecision(slotIndex, slotState.symbol, 'SWAP', 'stale_breakout',
+          `Breakout expired (3+ candles outside band)`);
+        await this.swapStrategy(slotIndex, selectedCandidates, deployedSymbols);
+        continue;
+      }
+      
       // Update slot state with latest scan data
       slotState.lastScanScore = stockInScan.score;
       slotState.lastScanBias = stockInScan.bias;
@@ -1258,9 +1360,11 @@ export class StrategyManager {
         .map(s => s.symbol!)
     );
     
-    // Find first candidate not already deployed (check BOTH the passed set AND slot states)
+    // Find first candidate not already deployed AND not in cooldown
     const availableCandidate = candidates.find(c => 
-      !deployedSymbols.has(c.symbol) && !alreadyDeployedInSlots.has(c.symbol)
+      !deployedSymbols.has(c.symbol) && 
+      !alreadyDeployedInSlots.has(c.symbol) &&
+      !this.isSymbolInCooldown(c.symbol)
     );
     
     if (!availableCandidate) {
@@ -1422,6 +1526,7 @@ export class StrategyManager {
       'momentum_died': 'Momentum dropped',
       'bias_flip': 'Bias reversed',
       'not_in_scan': 'Dropped from scan (sector flat/filtered)',
+      'stale_breakout': 'Breakout too old (3+ candles outside band)',
     };
     
     // Store decision on slot state for dashboard display

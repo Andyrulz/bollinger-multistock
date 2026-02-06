@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { Logger } from '../../utils/Logger';
 import { StrategyBase, StrategyConfig, StrategyStatus } from '../../core/StrategyBase';
+import { StrategyManager } from '../../core/StrategyManager';
 
 /**
  * Bollinger Band Strategy - Complete Implementation
@@ -104,6 +105,7 @@ export class BollingerBandStrategy extends StrategyBase {
     bollingerBands: BollingerBands;
   } | null = null;
   private dailyPivots: PivotLevels | null = null;
+  private previousDayClose: number = 0; // For Extended Gap Trap filter
   
   // Signal instrument token (stock spot from config.instruments[0], e.g., BRITANNIA, TCS)
   private signalInstrumentToken: number = 0; // Will be fetched dynamically from stock symbol
@@ -832,9 +834,9 @@ export class BollingerBandStrategy extends StrategyBase {
         detail: `₹${price.toFixed(2)} ${price < bollingerBands.lower ? '<' : '>='} ₹${bollingerBands.lower.toFixed(2)}`
       },
       {
-        name: 'RSI 10-30',
-        met: rsi >= 10 && rsi <= 30,
-        detail: `${rsi.toFixed(2)} ${rsi >= 10 && rsi <= 30 ? 'in range' : 'out of range'}`
+        name: 'RSI 15-40',
+        met: rsi >= 15 && rsi <= 40,
+        detail: `${rsi.toFixed(2)} ${rsi >= 15 && rsi <= 40 ? 'in range' : 'out of range'}`
       },
       {
         name: 'Supertrend DOWN',
@@ -995,6 +997,27 @@ export class BollingerBandStrategy extends StrategyBase {
     } as StrategyStatus;
   }
 
+  /**
+   * Check if the strategy has an active (open) position
+   * Used by StrategyManager to prevent ejecting strategies managing live trades
+   */
+  public hasActivePosition(): boolean {
+    return this.currentPosition !== null;
+  }
+
+  /**
+   * Check if the current breakout is stale for the given direction
+   * A stale breakout has had 3+ consecutive candles outside band + RSI range
+   * Used by StrategyManager to eject untradeable strategies during retention checks
+   * @param direction 'LONG' or 'SHORT' - the bias assigned to this strategy
+   * @returns true if the breakout is stale and entry would be blocked
+   */
+  public isStale(direction: 'LONG' | 'SHORT'): boolean {
+    const result = this.checkBreakoutStaleness(direction);
+    this.logger.debug(`[STALE CHECK] ${this.signalSymbol} ${direction}: isStale=${result.isStale}, consecutive=${result.consecutiveCount}`);
+    return result.isStale;
+  }
+
   // Implement abstract method from StrategyBase
   public async processMarketData(data: any): Promise<void> {
     // NOTE: This strategy uses polling-based architecture via fetchLatest5MinuteCandle()
@@ -1142,6 +1165,70 @@ export class BollingerBandStrategy extends StrategyBase {
       middle: sma,
       lower: sma - (stdDev * stdDevMultiplier)
     };
+  }
+
+  /**
+   * Check if a breakout is stale (already 3+ consecutive candles outside band + RSI range)
+   * Prevents entering moves that are 10-15+ minutes old and likely exhausted
+   * @param direction 'LONG' or 'SHORT'
+   * @returns { isStale: boolean, consecutiveCount: number }
+   */
+  private checkBreakoutStaleness(direction: 'LONG' | 'SHORT'): { isStale: boolean; consecutiveCount: number } {
+    // Need at least 3 completed candles to check
+    if (this.candleHistory.length < 3) {
+      return { isStale: false, consecutiveCount: 0 };
+    }
+    
+    // Helper to check if a candle at given index meets staleness criteria
+    // We calculate indicators using historical data up to that candle
+    const checkCandleMeetsCondition = (candleIndex: number): boolean => {
+      const historicalSlice = this.candleHistory.slice(0, candleIndex + 1);
+      
+      if (historicalSlice.length < 20) return false; // Need enough data for BB calculation
+      
+      const candle = historicalSlice[historicalSlice.length - 1];
+      if (!candle) return false;
+      
+      const bb = this.calculateBollingerBands(historicalSlice, 20, 2);
+      const rsi = this.calculateRSI(historicalSlice, 10);
+      const close = candle.close;
+      
+      if (direction === 'LONG') {
+        // LONG staleness: close > upper BB AND RSI in [68, 85]
+        return close > bb.upper && rsi >= 68 && rsi <= 85;
+      } else {
+        // SHORT staleness: close < lower BB AND RSI in [15, 32]
+        return close < bb.lower && rsi >= 15 && rsi <= 32;
+      }
+    };
+    
+    // Check last 3 completed candles (indices: length-1, length-2, length-3)
+    const idx1 = this.candleHistory.length - 1; // Most recent completed
+    const idx2 = this.candleHistory.length - 2;
+    const idx3 = this.candleHistory.length - 3;
+    
+    const candle1Meets = checkCandleMeetsCondition(idx1);
+    const candle2Meets = checkCandleMeetsCondition(idx2);
+    const candle3Meets = checkCandleMeetsCondition(idx3);
+    
+    // Count consecutive from most recent - must be unbroken chain
+    let consecutiveCount = 0;
+    if (candle1Meets) {
+      consecutiveCount = 1;
+      if (candle2Meets) {
+        consecutiveCount = 2;
+        if (candle3Meets) {
+          consecutiveCount = 3;
+        }
+      }
+    }
+    
+    // Stale if all 3 consecutive candles meet conditions (Count > 2)
+    const isStale = consecutiveCount >= 3;
+    
+    this.logger.debug(`[STALENESS CHECK] ${direction}: Candle1=${candle1Meets}, Candle2=${candle2Meets}, Candle3=${candle3Meets}, Consecutive=${consecutiveCount}, IsStale=${isStale}`);
+    
+    return { isStale, consecutiveCount };
   }
 
   /**
@@ -1619,6 +1706,9 @@ export class BollingerBandStrategy extends StrategyBase {
       // Get the most recent completed trading day
       const previousDay = dailyData[dailyData.length - 1];
       
+      // Store previous day close for Extended Gap Trap filter
+      this.previousDayClose = previousDay.close;
+      
       this.dailyPivots = this.calculateDailyPivots({
         high: previousDay.high,
         low: previousDay.low,
@@ -2059,6 +2149,30 @@ export class BollingerBandStrategy extends StrategyBase {
           
           // Update indicators with new/updated candle
           this.updateTechnicalIndicators();
+          
+          // 📊 UPDATE DASHBOARD PRICE: Fetch option premium for display (every 5-min candle)
+          // This was previously done by real-time polling, but now we update at candle boundaries
+          if (this.currentPosition) {
+            try {
+              const optionPremium = await this.getLiveOptionPremium(this.currentPosition.instrument.instrument_token);
+              if (optionPremium > 0) {
+                this.cachedCurrentPrice = optionPremium;
+                // Update highest premium tracking
+                if (optionPremium > (this.currentPosition.highestPremium || 0)) {
+                  this.currentPosition.highestPremium = optionPremium;
+                }
+                // Calculate unrealized P&L
+                const priceDiff = optionPremium - this.currentPosition.entryPrice;
+                const totalQuantity = this.currentPosition.quantity * this.currentPosition.instrument.lot_size;
+                this.cachedUnrealizedPnL = priceDiff * totalQuantity;
+                this.lastPriceUpdateTime = new Date();
+                
+                this.logger.info(`📊 Dashboard price updated: ${this.currentPosition.instrument.tradingsymbol} @ ₹${optionPremium.toFixed(2)} | P&L: ₹${this.cachedUnrealizedPnL.toFixed(2)}`);
+              }
+            } catch (priceError) {
+              this.logger.warn('⚠️ Failed to update dashboard price:', priceError);
+            }
+          }
           
           // CRITICAL ORDER: Check exits BEFORE entries (exit existing position before considering new entry)
           const hadPositionBeforeExitCheck = this.currentPosition !== null;
@@ -2571,6 +2685,47 @@ export class BollingerBandStrategy extends StrategyBase {
         r2: r2.toFixed(2)
       });
       
+      // ═══════════════════════════════════════════════════════════════
+      // EXTENDED GAP TRAP FILTER (LONG)
+      // Block entry when: Extended UP + Late + RSI Falling (exhaustion)
+      // ═══════════════════════════════════════════════════════════════
+      const todayChangePctLong = this.previousDayClose > 0 
+        ? ((close - this.previousDayClose) / this.previousDayClose) * 100 
+        : 0;
+      const isExtendedLong = todayChangePctLong > 3.0;  // Already UP 3%+
+      const isLateLong = currentMinutes > 10 * 60 + 30;  // After 10:30 AM
+      
+      // RSI 5 candles ago (require -2 fall to confirm exhaustion, not noise)
+      const rsi5CandlesAgoLong = this.candleHistory.length >= 6 
+        ? this.calculateRSI(this.candleHistory.slice(0, -5), 10) 
+        : rsi;
+      const isRsiFalling = rsi < (rsi5CandlesAgoLong - 2.0);
+      
+      if (isExtendedLong && isLateLong && isRsiFalling) {
+        this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Extended Gap Trap detected', {
+          todayChange: `+${todayChangePctLong.toFixed(2)}% (threshold: +3%)`,
+          time: now.toLocaleTimeString(),
+          rsiNow: rsi.toFixed(2),
+          rsi5CandlesAgo: rsi5CandlesAgoLong.toFixed(2),
+          rsiFall: (rsi5CandlesAgoLong - rsi).toFixed(2)
+        });
+        return;  // Skip LONG entry
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // STALE BREAKOUT FILTER (LONG)
+      // Block entry if last 3 consecutive candles were outside band + RSI range
+      // ═══════════════════════════════════════════════════════════════
+      const longStaleness = this.checkBreakoutStaleness('LONG');
+      if (longStaleness.isStale) {
+        this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Stale Breakout detected', {
+          consecutiveCandles: longStaleness.consecutiveCount,
+          message: `${longStaleness.consecutiveCount} candles already outside band`,
+          reason: 'Move is 10-15+ minutes old, likely exhausted'
+        });
+        return;  // Skip LONG entry
+      }
+      
       // Extract entry candle values BEFORE async operations
       const entryCandleHigh = latestCandle.high;
       const entryCandleLow = latestCandle.low;
@@ -2588,10 +2743,10 @@ export class BollingerBandStrategy extends StrategyBase {
       });
     }
     
-    // SHORT Entry Signal - RSI range optimized for oversold momentum
+    // SHORT Entry Signal - RSI range widened for better momentum capture
     const shortConditions = {
       priceBelowLowerBB: close < bollingerBands.lower,
-      rsiInRange: rsi >= 10 && rsi <= 30, // Oversold momentum confirmation
+      rsiInRange: rsi >= 15 && rsi <= 40, // Widened from 10-30 to capture momentum before exhaustion
       supertrendBearish: supertrend.trend === 'DOWN',
       belowPP: close <= pp, // High-confidence SHORT filter using central pivot point
       candleIsBearish: candleBearishCheck // FIRST CANDLE EXCEPTION: Bypass bearish check at 9:15-9:25
@@ -2622,6 +2777,47 @@ export class BollingerBandStrategy extends StrategyBase {
         return;  // Skip SHORT entry
       }
       
+      // ═══════════════════════════════════════════════════════════════
+      // EXTENDED GAP TRAP FILTER (SHORT)
+      // Block entry when: Extended DOWN + Late + RSI Recovering
+      // ═══════════════════════════════════════════════════════════════
+      const todayChangePctShort = this.previousDayClose > 0 
+        ? ((close - this.previousDayClose) / this.previousDayClose) * 100 
+        : 0;
+      const isExtendedShort = todayChangePctShort < -3.0;  // Already DOWN 3%+
+      const isLateShort = currentMinutes > 10 * 60 + 30;  // After 10:30 AM
+      
+      // RSI 5 candles ago (require +2 rise to confirm recovery, not noise)
+      const rsi5CandlesAgoShort = this.candleHistory.length >= 6 
+        ? this.calculateRSI(this.candleHistory.slice(0, -5), 10) 
+        : rsi;
+      const isRsiRecovering = rsi > (rsi5CandlesAgoShort + 2.0);
+      
+      if (isExtendedShort && isLateShort && isRsiRecovering) {
+        this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Extended Gap Trap detected', {
+          todayChange: `${todayChangePctShort.toFixed(2)}% (threshold: -3%)`,
+          time: now.toLocaleTimeString(),
+          rsiNow: rsi.toFixed(2),
+          rsi5CandlesAgo: rsi5CandlesAgoShort.toFixed(2),
+          rsiRise: (rsi - rsi5CandlesAgoShort).toFixed(2)
+        });
+        return;  // Skip SHORT entry
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // STALE BREAKOUT FILTER (SHORT)
+      // Block entry if last 3 consecutive candles were outside band + RSI range
+      // ═══════════════════════════════════════════════════════════════
+      const shortStaleness = this.checkBreakoutStaleness('SHORT');
+      if (shortStaleness.isStale) {
+        this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Stale Breakout detected', {
+          consecutiveCandles: shortStaleness.consecutiveCount,
+          message: `${shortStaleness.consecutiveCount} candles already outside band`,
+          reason: 'Move is 10-15+ minutes old, likely exhausted'
+        });
+        return;  // Skip SHORT entry
+      }
+      
       // Extract entry candle values BEFORE async operations
       const entryCandleHigh = latestCandle.high;
       const entryCandleLow = latestCandle.low;
@@ -2632,7 +2828,7 @@ export class BollingerBandStrategy extends StrategyBase {
       // Show why SHORT was blocked
       this.logger.info('[BOLLINGER] ❌ SHORT conditions not met:', {
         priceBelowLowerBB: `${shortConditions.priceBelowLowerBB} (${close.toFixed(2)} < ${bollingerBands.lower.toFixed(2)})`,
-        rsiInRange: `${shortConditions.rsiInRange} (${rsi.toFixed(2)} in 10-30)`,
+        rsiInRange: `${shortConditions.rsiInRange} (${rsi.toFixed(2)} in 15-40)`,
         supertrendBearish: `${shortConditions.supertrendBearish} (${supertrend.trend})`,
         belowPP: `${shortConditions.belowPP} (${close.toFixed(2)} <= ${pp.toFixed(2)})`,
         candleIsBearish: `${shortConditions.candleIsBearish}`
@@ -3078,6 +3274,10 @@ export class BollingerBandStrategy extends StrategyBase {
           newCapital: this.currentCapital.toFixed(2)
         });
         
+        // P0-FIX: Record symbol exit for cooldown tracking (prevents repeated losses)
+        // This notifies StrategyManager to block re-entry for 30 minutes
+        StrategyManager.recordSymbolExitStatic(this.signalSymbol);
+        
         // Position cleared - REST API polling will stop automatically
         
         this.currentPosition = null;
@@ -3163,14 +3363,14 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
-   * P0: Schedule EOD safety exit at 3:24 PM
+   * P0: Schedule EOD safety exit at 3:19 PM
    * Critical fix to exit BEFORE broker's MIS auto-squareoff (~3:25 PM)
    * This avoids broker squareoff charges (₹50+ per order)
    */
   private scheduleEODExit(): void {
     const now = new Date();
     const eodTime = new Date();
-    eodTime.setHours(15, 24, 0, 0); // 3:24 PM - 1 minute before broker squareoff
+    eodTime.setHours(15, 19, 0, 0); // 3:19 PM - 6 minutes before broker squareoff
     
     // Clear any existing timer first
     if (this.eodExitTimer) {
@@ -3178,21 +3378,21 @@ export class BollingerBandStrategy extends StrategyBase {
       delete this.eodExitTimer;
     }
     
-    // Only schedule if we haven't passed 3:24 PM today
+    // Only schedule if we haven't passed 3:19 PM today
     if (now < eodTime) {
       const delay = eodTime.getTime() - now.getTime();
-      this.logger.info(`📅 EOD safety exit scheduled for 3:24 PM (in ${Math.round(delay / 60000)} minutes)`);
+      this.logger.info(`📅 EOD safety exit scheduled for 3:19 PM (in ${Math.round(delay / 60000)} minutes)`);
       
       this.eodExitTimer = setTimeout(async () => {
         if (this.currentPosition) {
-          this.logger.warn('🕒 EOD safety exit triggered at 3:24 PM');
-          await this.forceClosePosition('EOD_SAFETY_EXIT_3:24PM');
+          this.logger.warn('🕒 EOD safety exit triggered at 3:19 PM');
+          await this.forceClosePosition('EOD_SAFETY_EXIT_3:19PM');
         } else {
-          this.logger.info('✅ No active position at 3:24 PM, no EOD exit needed');
+          this.logger.info('✅ No active position at 3:19 PM, no EOD exit needed');
         }
       }, delay);
     } else {
-      this.logger.info('⏰ Already past 3:24 PM today, no EOD exit scheduled');
+      this.logger.info('⏰ Already past 3:19 PM today, no EOD exit scheduled');
     }
   }
 
