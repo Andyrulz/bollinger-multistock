@@ -150,7 +150,7 @@ interface SlotState {
 
 TMV (Trend, Momentum, Volume) scoring engine with tradeability guards and tactical bonus system.
 
-**Scoring Structure (Max 21.5 = Base 12.5 + Tactical 9.0):**
+**Scoring Structure (Max 22.5 = Base 12.5 + Tactical 10.0):**
 
 ### Base Score Components (Max 12.5)
 
@@ -162,16 +162,35 @@ TMV (Trend, Momentum, Volume) scoring engine with tradeability guards and tactic
 | Sector      | 2.0       | Sector alignment bonus          |
 | Smart Money | 2.0       | OI analysis (Coiled Spring)     |
 
-### Tactical Bonus Components (Max 9.0)
+### Tactical Bonus Components (Max 10.0)
 
-| Bonus                 | Points     | Condition                                            |
-| --------------------- | ---------- | ---------------------------------------------------- |
-| Fresh Breakout (FB)   | +3.0       | First scan where price crossed band + confirming RSI |
-| RVOL Surge (RV)       | +2.0       | Volume > 2.5× average (exploding volume)             |
-| Proximity (PX)        | +1.5       | Price within 0.5% of Bollinger Band                  |
-| RSI Acceleration (RA) | +1.0       | RSI moved 5+ points in signal direction              |
-| Squeeze (SQ)          | +0 to +1.0 | Gradient: (3.5 - bandwidth) / 2.5 (tighter = higher) |
-| Gamma Wall (GW)       | +0.5       | 3-strike OI leader has ≥2× OI of next highest        |
+| Bonus                 | Points       | Condition                                               |
+| --------------------- | ------------ | ------------------------------------------------------- |
+| Fresh Breakout (FB)   | +3.0         | First scan where price crossed band + confirming RSI    |
+| RVOL Surge (RV)       | +2.0         | Volume > 2.5× average (exploding volume)                |
+| Proximity (PX)        | +1.5         | Price within 0.5% of Bollinger Band                     |
+| Eiffel Tower (GW)     | +0.5 to +1.5 | Tiered: Concentration Gate + Runway Clarity (see below) |
+| RSI Acceleration (RA) | +1.0         | RSI moved 5+ points in signal direction                 |
+| Squeeze (SQ)          | +0 to +1.0   | Gradient: (3.5 - bandwidth) / 2.5 (tighter = higher)    |
+
+**Eiffel Tower (GW) Two-Stage Filter:**
+
+_Stage 1: Concentration Gate (Mandatory)_
+
+- Selected strike must have ≥2× OI of next highest in 3-strike window
+- If FAIL: GW = 0
+
+_Stage 2: Runway Tiers (Only if Stage 1 passes)_
+
+- Fetch 3 OTM strikes in trade direction (ATM+2,+3,+4 for LONG; ATM-2,-3,-4 for SHORT)
+- Calculate: Runway Ratio = Avg Runway OI / Selected Strike OI
+
+| Runway Ratio | State     | Bonus |
+| ------------ | --------- | ----- |
+| < 25%        | VACUUM    | +1.5  |
+| 25% – 40%    | CLEAN     | +1.0  |
+| 40% – 60%    | PASSABLE  | +0.5  |
+| > 60%        | CONGESTED | +0    |
 
 **Squeeze Gradient Examples:**
 | Bandwidth | Squeeze Bonus |
@@ -290,14 +309,14 @@ The scanner runs every 5 minutes (09:23, 09:28, etc.) and follows this pipeline:
 │  │ • Circuit Limit: Price within 1.5% of circuit → DISCARD            │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                              ↓                                           │
-│  Step 5: TACTICAL SCORING (Max 9.0) - Only if Base >= 5.0               │
+│  Step 5: TACTICAL SCORING (Max 10.0) - Only if Base >= 5.0              │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │ • Fresh Breakout: First scan with band cross + RSI → +3.0          │ │
 │  │ • RVOL Surge: Volume > 2.5× average → +2.0                         │ │
 │  │ • Proximity: Price within 0.5% of band → +1.5                      │ │
 │  │ • RSI Acceleration: RSI ±5 points in direction → +1.0              │ │
 │  │ • Squeeze: Gradient (3.5-bandwidth)/2.5 → +0 to +1.0               │ │
-│  │ • Gamma Wall: 3-strike OI leader with 2×+ OI → +0.5 (at selection) │ │
+│  │ • Eiffel Tower: Concentration Gate + Runway Tier → +0.5 to +1.5    │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                              ↓                                           │
 │  Step 6: OPTION VALIDATION & SECTOR DIVERSITY                            │
@@ -872,7 +891,7 @@ PORT=3000
    - Base score floor (5.0) filters garbage stocks before tactical bonuses
    - Fresh Breakout (+3.0) prioritizes "just exploding" stocks
    - RVOL Surge (+2.0) rewards explosive volume
-   - Stock can score up to 21.5 (Base 12.5 + Tactical 9.0)
+   - Stock can score up to 22.5 (Base 12.5 + Tactical 10.0)
 
 8. **Staleness Guard (Added Feb 2026)**
    - Blocks entries on moves 3+ candles old (already extended)
@@ -885,11 +904,13 @@ PORT=3000
    - Unconditional application enables preemptive slot positioning
    - Tighter bands = more stored energy = explosive breakout potential
 
-10. **3-Strike OI-Leader Selection (Added Feb 2026)**
-    - Selects option strike with highest OI among ATM, ATM+1, ATM-1
-    - 1% safety buffer prevents selecting strikes too far from spot
-    - Gamma Wall Bonus (+0.5) when selected strike has ≥2× OI of next
-    - Captures "Writer's Panic" zones for amplified moves
+10. **Tiered Eiffel Tower Setup (Added Feb 2026)**
+    - Two-stage filter for Gamma Wall bonus:
+      1. Concentration Gate: Selected strike must have ≥2× OI of next highest
+      2. Runway Tiers: Average OI of next 3 OTM strikes determines bonus
+    - Runway Ratio tiers: VACUUM (<25%: +1.5), CLEAN (25-40%: +1.0), PASSABLE (40-60%: +0.5), CONGESTED (>60%: 0)
+    - Captures "Path of Least Resistance" for explosive moves
+    - The "Holy Trinity": Trigger (FB) + Fuel (RV) + Path (GW)
 
 ---
 
@@ -901,7 +922,8 @@ PORT=3000
 | 2.0     | Feb 6, 2026 | 5-minute tactical scanning, Base+Tactical scoring, staleness guards |
 | 2.1     | Feb 7, 2026 | Squeeze Gradient bonus (+1.0 max) for volatility compression        |
 | 2.2     | Feb 7, 2026 | 3-Strike OI-Leader selection, Gamma Wall bonus (+0.5)               |
+| 3.0     | Feb 7, 2026 | Tiered Eiffel Tower setup (max GW +1.5), max score 22.5             |
 
 ---
 
-_Document generated for Trading Bot v3.2 - Tactical Scanner with Gamma Wall Detection_
+_Document generated for Trading Bot v3.1 - Eiffel Hunter Edition_

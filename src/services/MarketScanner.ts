@@ -36,8 +36,10 @@ export interface TacticalBonus {
   proximity: number;      // 0 or 1.5 - Close to band and approaching
   rsiAccel: number;       // 0 or 1.0 - RSI acceleration in bias direction
   squeeze: number;        // 0 to 1.0 - Gradient based on BB width (tighter = higher)
-  gammaWall: number;      // 0 or 0.5 - 3-strike OI leader with 2x+ OI of next
-  total: number;          // Sum of above
+  gammaWall: number;      // 0, 0.5, 1.0, or 1.5 - Tiered Eiffel Tower bonus (Concentration Gate + Runway)
+  runwayTier?: 'VACUUM' | 'CLEAN' | 'PASSABLE' | 'CONGESTED' | 'NO_WALL';  // Runway classification
+  runwayRatio?: number;   // Runway OI ratio for logging (0-100%)
+  total: number;          // Sum of above (max 10.0)
 }
 
 export interface ScoredStock {
@@ -959,9 +961,11 @@ export class MarketScanner {
         stock.atmOption = atmOption;
         stock.valid = true;
         
-        // Apply Gamma Wall Bonus from 3-Strike OI selection (if earned)
+        // Apply Tiered Eiffel Tower Gamma Wall Bonus (if earned)
+        stock.tacticalBonus.gammaWall = atmOption.gammaWallBonus;
+        stock.tacticalBonus.runwayTier = atmOption.runwayTier;
+        stock.tacticalBonus.runwayRatio = atmOption.runwayRatio;
         if (atmOption.gammaWallBonus > 0) {
-          stock.tacticalBonus.gammaWall = atmOption.gammaWallBonus;
           stock.tacticalBonus.total += atmOption.gammaWallBonus;
           stock.score += atmOption.gammaWallBonus;
         }
@@ -971,8 +975,10 @@ export class MarketScanner {
         // Update sector count for diversity tracking
         sectorCounts.set(stock.sector, (sectorCounts.get(stock.sector) || 0) + 1);
         
-        // Log with Gamma Wall indicator
-        const gwIndicator = atmOption.gammaWallBonus > 0 ? ' 🎯GW' : '';
+        // Log with Gamma Wall tier indicator
+        const gwIndicator = atmOption.gammaWallBonus > 0 
+          ? ` 🎯GW:${atmOption.gammaWallBonus}[${atmOption.runwayTier}]` 
+          : '';
         this.logger.info(
           `✅ ${stock.symbol}: Valid option found - ${atmOption.tradingsymbol} @ ₹${atmOption.premium.toFixed(1)} | OI:${atmOption.oi.toLocaleString()}, Vol:${atmOption.volume}${gwIndicator} | Sector: ${stock.sector} (${sectorCounts.get(stock.sector)}/${MAX_STOCKS_PER_SECTOR}) (${validStocks.length}/${this.config.topCount} slots filled)`,
         );
@@ -987,9 +993,15 @@ export class MarketScanner {
   }
 
   /**
-   * Find ATM option for stock with 3-Strike OI-Leader Selection
-   * Selects the strike with highest OI among ATM, ATM+1, ATM-1 within 1% of spot
-   * Returns gammaWallBonus = 0.5 if selected strike has 2x+ OI of next highest
+   * Find ATM option for stock with 3-Strike OI-Leader Selection + Tiered Eiffel Tower Analysis
+   * 
+   * Two-Stage Filter:
+   * Stage 1: Concentration Gate - Selected strike must have 2x+ OI of next highest in 3-strike window
+   * Stage 2: Runway Tiers - Average OI of next 3 OTM strikes determines bonus tier
+   *   - VACUUM (<25%): +1.5
+   *   - CLEAN (25-40%): +1.0
+   *   - PASSABLE (40-60%): +0.5
+   *   - CONGESTED (>60%): +0
    */
   private async findATMOption(
     symbol: string,
@@ -1003,7 +1015,9 @@ export class MarketScanner {
     oi: number;
     volume: number;
     lotSize: number;
-    gammaWallBonus: number;  // NEW: 0.5 if 3-strike OI leader with 2x+ OI
+    gammaWallBonus: number;      // Tiered: 0, 0.5, 1.0, or 1.5
+    runwayTier: 'VACUUM' | 'CLEAN' | 'PASSABLE' | 'CONGESTED' | 'NO_WALL';
+    runwayRatio: number;          // For logging (0-100%)
   }> {
     // Fetch all NFO instruments from cache
     const instruments = await this.instrumentCache.getNFOInstruments();
@@ -1102,11 +1116,94 @@ export class MarketScanner {
     const selected = sortedByOI[0]!;
     const secondHighestOI = sortedByOI[1]?.oi || 0;
 
-    // Calculate Gamma Wall Bonus: +0.5 if selected has ≥2× OI of next highest
+    // =========================================================================
+    // TIERED EIFFEL TOWER ANALYSIS (Two-Stage Filter)
+    // =========================================================================
+    
+    // Stage 1: Concentration Gate (The Wall)
+    // Selected strike must have ≥2× OI of next highest in 3-strike window
+    const passesConcentrationGate = secondHighestOI > 0 && selected.oi >= secondHighestOI * 2;
+    
     let gammaWallBonus = 0;
-    if (secondHighestOI > 0 && selected.oi >= secondHighestOI * 2) {
-      gammaWallBonus = 0.5;
-      this.logger.info(`🎯 Gamma Wall Strike: ${symbol} ${selected.strike}${optionType} (OI: ${selected.oi.toLocaleString()} vs next: ${secondHighestOI.toLocaleString()}) → +0.5 bonus`);
+    let runwayTier: 'VACUUM' | 'CLEAN' | 'PASSABLE' | 'CONGESTED' | 'NO_WALL' = 'NO_WALL';
+    let runwayRatio = 0;
+    
+    if (!passesConcentrationGate) {
+      // No dominant wall → GW = 0
+      this.logger.debug(`📊 ${symbol}: No Concentration Gate (${selected.oi.toLocaleString()} vs ${secondHighestOI.toLocaleString()}) - GW:0`);
+    } else {
+      // Stage 2: Runway Tier Analysis (The Path)
+      // Fetch 3 OTM strikes in the direction of trade
+      const selectedIndex = allStrikes.indexOf(selected.strike);
+      const runwayStrikes: number[] = [];
+      
+      if (type === 'LONG') {
+        // For CE options: Runway is at HIGHER strikes (ATM+2, +3, +4)
+        for (let i = selectedIndex + 1; i <= Math.min(selectedIndex + 3, allStrikes.length - 1); i++) {
+          if (allStrikes[i] !== undefined) runwayStrikes.push(allStrikes[i]!);
+        }
+      } else {
+        // For PE options: Runway is at LOWER strikes (ATM-2, -3, -4)
+        for (let i = selectedIndex - 1; i >= Math.max(selectedIndex - 3, 0); i--) {
+          if (allStrikes[i] !== undefined) runwayStrikes.push(allStrikes[i]!);
+        }
+      }
+      
+      // Fetch runway OI in single batch call
+      const runwayOptions = options.filter((o: any) => runwayStrikes.includes(o.strike));
+      let avgRunwayOI = 0;
+      
+      if (runwayOptions.length > 0) {
+        try {
+          const runwayQuoteKeys = runwayOptions.map((o: any) => `NFO:${o.tradingsymbol}`);
+          const runwayQuotes = await this.kiteConnect.getQuote(runwayQuoteKeys);
+          
+          const runwayOIs = runwayOptions.map((o: any) => {
+            const data = runwayQuotes[`NFO:${o.tradingsymbol}`] || {};
+            return (data.oi as number) || 0;
+          });
+          avgRunwayOI = runwayOIs.length > 0 
+            ? runwayOIs.reduce((a, b) => a + b, 0) / runwayOIs.length 
+            : 0;
+            
+          // Calculate runway ratio (percentage)
+          runwayRatio = selected.oi > 0 ? (avgRunwayOI / selected.oi) * 100 : 100;
+          
+          // Apply tiered bonus based on runway ratio
+          if (runwayRatio < 25) {
+            gammaWallBonus = 1.5;
+            runwayTier = 'VACUUM';
+          } else if (runwayRatio < 40) {
+            gammaWallBonus = 1.0;
+            runwayTier = 'CLEAN';
+          } else if (runwayRatio < 60) {
+            gammaWallBonus = 0.5;
+            runwayTier = 'PASSABLE';
+          } else {
+            gammaWallBonus = 0;
+            runwayTier = 'CONGESTED';
+          }
+          
+          // Log with tier details
+          if (gammaWallBonus > 0) {
+            this.logger.info(`🎯 GW:${gammaWallBonus} [${runwayTier}] (Ratio: ${runwayRatio.toFixed(0)}%) | ${symbol} Wall=${selected.strike}${optionType} (OI:${selected.oi.toLocaleString()}) RunwayAvg=${avgRunwayOI.toLocaleString()}`);
+          } else {
+            this.logger.debug(`⚠️ GW Rejected: Messy Runway (Ratio: ${runwayRatio.toFixed(0)}%) for ${symbol} ${selected.strike}${optionType}`);
+          }
+          
+        } catch (err) {
+          // Fallback: runway fetch failed → Risk-Off approach
+          this.logger.warn(`⚠️ Runway fetch failed for ${symbol}: ${err}`);
+          gammaWallBonus = 0;
+          runwayTier = 'CONGESTED';
+          runwayRatio = 100;
+        }
+      } else {
+        // No runway strikes available (edge of strike ladder)
+        this.logger.debug(`📊 ${symbol}: No runway strikes available - GW:0`);
+        runwayTier = 'CONGESTED';
+        runwayRatio = 100;
+      }
     }
 
     // Log selection rationale
@@ -1122,6 +1219,8 @@ export class MarketScanner {
       volume: selected.volume,
       lotSize: selected.option.lot_size || 1,
       gammaWallBonus,
+      runwayTier,
+      runwayRatio,
     };
   }
 

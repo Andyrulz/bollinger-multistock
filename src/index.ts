@@ -1124,7 +1124,7 @@ class TradingBot {
                         </div>
                         ${stock.tacticalBonus && stock.tacticalBonus.total > 0 ? `
                         <div style="font-size: 0.7rem; color: #7c3aed; margin-top: 4px; font-family: monospace;">
-                            ⚡ FB:${stock.tacticalBonus.freshBreakout} RV:${stock.tacticalBonus.rvolSurge} PX:${stock.tacticalBonus.proximity} RA:${stock.tacticalBonus.rsiAccel} SQ:${stock.tacticalBonus.squeeze?.toFixed(1) || 0} GW:${stock.tacticalBonus.gammaWall || 0}
+                            ⚡ FB:${stock.tacticalBonus.freshBreakout} RV:${stock.tacticalBonus.rvolSurge} PX:${stock.tacticalBonus.proximity} RA:${stock.tacticalBonus.rsiAccel} SQ:${stock.tacticalBonus.squeeze?.toFixed(1) || 0} GW:${stock.tacticalBonus.gammaWall || 0}${stock.tacticalBonus.runwayTier ? `[${stock.tacticalBonus.runwayTier.slice(0,3)}]` : ''}
                         </div>
                         ` : ''}
                         <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e2e8f0; font-size: 0.8rem; font-weight: 600; color: ${isDeployed ? '#059669' : '#d97706'};">

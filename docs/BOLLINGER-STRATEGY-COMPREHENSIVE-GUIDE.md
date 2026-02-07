@@ -23,7 +23,7 @@ The system trades **individual stock options** (like RELIANCE, HDFCBANK, TCS, IN
 ┌─────────────────────────────────────────────────────────────────┐
 │                     MARKET SCANNER                              │
 │  • Runs every 5 mins (09:23 - 14:58)                           │
-│  • Scores 100+ F&O stocks on TMV + Tactical (max 21.5)         │
+│  • Scores 100+ F&O stocks on TMV + Tactical (max 22.5)         │
 │  • Selects top 3 with Base Score ≥5.0                          │
 │  • Determines LONG or SHORT bias for each                      │
 └─────────────────────┬───────────────────────────────────────────┘
@@ -241,18 +241,27 @@ Each strategy instance independently:
 | Stock bias matches sector direction (>0.25%)         | 1.0    |
 | Mismatch                                             | 0.0    |
 
-### Tactical Bonus Components (Max 9.0)
+### Tactical Bonus Components (Max 10.0)
 
 Stocks with Base Score ≥5.0 receive additional tactical bonuses:
 
-| Component             | Max   | Condition                                            |
-| --------------------- | ----- | ---------------------------------------------------- |
-| Fresh Breakout (FB)   | +3.0  | Breakout in last 30 mins with RSI/ADX confirmation   |
-| Range Volatility (RV) | +2.0  | Large intraday range (>2%) with clean directional %  |
-| Proximity (PX)        | +1.5  | Within 0.5% of upper/lower band                      |
-| Rate of Approach (RA) | +1.0  | Fast band approach (>0.3% in 5 mins)                 |
-| Squeeze (SQ)          | +1.0  | Gradient: (3.5 - bandwidth) / 2.5                    |
-| Gamma Wall (GW)       | +0.5  | 3-strike OI leader has ≥2× OI of next highest        |
+| Component             | Max          | Condition                                           |
+| --------------------- | ------------ | --------------------------------------------------- |
+| Fresh Breakout (FB)   | +3.0         | Breakout in last 30 mins with RSI/ADX confirmation  |
+| Range Volatility (RV) | +2.0         | Large intraday range (>2%) with clean directional % |
+| Proximity (PX)        | +1.5         | Within 0.5% of upper/lower band                     |
+| Eiffel Tower (GW)     | +0.5 to +1.5 | Tiered: Concentration Gate + Runway Clarity         |
+| Rate of Approach (RA) | +1.0         | Fast band approach (>0.3% in 5 mins)                |
+| Squeeze (SQ)          | +1.0         | Gradient: (3.5 - bandwidth) / 2.5                   |
+
+**Eiffel Tower (GW) - The "Holy Trinity" Path Factor:**
+
+| Runway Ratio | Tier      | Bonus | Description                               |
+| ------------ | --------- | ----- | ----------------------------------------- |
+| < 25%        | VACUUM    | +1.5  | No resistance ahead - "permission to fly" |
+| 25% – 40%    | CLEAN     | +1.0  | Minimal friction in trade direction       |
+| 40% – 60%    | PASSABLE  | +0.5  | Some resistance but manageable            |
+| > 60%        | CONGESTED | +0    | Messy runway - multiple OI walls ahead    |
 
 > **Note:** For complete scoring details, see [SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md).
 
@@ -634,6 +643,6 @@ If trading NIFTY/BANKNIFTY instead of stocks:
 
 ---
 
-_Last Updated: January 26, 2026_
-_Document Version: 2.0 (Code-Verified)_
-_System Version: Multi-Stock Scanner + Bollinger Band Strategy_
+_Last Updated: February 7, 2026_
+_Document Version: 3.1 (Eiffel Hunter Edition)_
+_System Version: Multi-Stock Scanner + Bollinger Band Strategy with Holy Trinity Scoring_
