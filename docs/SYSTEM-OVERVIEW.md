@@ -138,25 +138,40 @@ interface SlotState {
 **Responsibilities:**
 
 - Initialize and register strategy classes
-- Schedule hourly scans at XX:18:05
-- Execute Smart Retention rebalancing
+- Schedule 5-minute scans (68 scans per day from 09:23 to 14:58)
+- Execute Smart Retention rebalancing with staleness detection
 - Manage strategy lifecycle (start/stop/swap)
 - Track slot states and position locks
+- Eject stale strategies to free slots for fresh candidates
 
 ### 3. MarketScanner
 
 **Location:** [src/services/MarketScanner.ts](../src/services/MarketScanner.ts)
 
-TMV (Trend, Momentum, Volume) scoring engine with tradeability guards.
+TMV (Trend, Momentum, Volume) scoring engine with tradeability guards and tactical bonus system.
 
-**Scoring Components (Max 10.0):**
-| Component | Max Score | Description |
-|-----------|-----------|-------------|
-| Trend | 3.0 | EMA alignment, VWAP position |
-| Momentum | 3.5 | RSI sweet spot, multi-timeframe |
-| Volume | 2.0 | RVOL, volume surge |
-| Sector | 2.0 | Sector alignment bonus |
-| Smart Money | 2.0 | OI analysis (Coiled Spring) |
+**Scoring Structure (Max 20.0 = Base 12.5 + Tactical 7.5):**
+
+### Base Score Components (Max 12.5)
+
+| Component   | Max Score | Description                     |
+| ----------- | --------- | ------------------------------- |
+| Trend       | 3.0       | EMA alignment, VWAP position    |
+| Momentum    | 3.5       | RSI sweet spot, multi-timeframe |
+| Volume      | 2.0       | RVOL, volume surge              |
+| Sector      | 2.0       | Sector alignment bonus          |
+| Smart Money | 2.0       | OI analysis (Coiled Spring)     |
+
+### Tactical Bonus Components (Max 7.5)
+
+| Bonus                 | Points | Condition                                            |
+| --------------------- | ------ | ---------------------------------------------------- |
+| Fresh Breakout (FB)   | +3.0   | First scan where price crossed band + confirming RSI |
+| RVOL Surge (RV)       | +2.0   | Volume > 2.5× average (exploding volume)             |
+| Proximity (PX)        | +1.5   | Price within 0.5% of Bollinger Band                  |
+| RSI Acceleration (RA) | +1.0   | RSI moved 5+ points in signal direction              |
+
+**Base Score Floor:** Tactical bonuses only apply if Base Score ≥ 5.0 (prevents garbage stocks with volume spikes from ranking high)
 
 **Tradeability Guards:**
 
@@ -187,11 +202,26 @@ The actual trading strategy with entry/exit logic.
 | RSI | Period: 14 | Momentum confirmation |
 | Daily Pivots | PP, R1-R3, S1-S3 | Support/resistance levels |
 
+**Staleness Guard:**
+
+Prevents entering trades where the breakout move is already exhausted:
+
+```typescript
+checkBreakoutStaleness(direction: 'LONG' | 'SHORT'):
+  - Count consecutive candles outside Bollinger Band
+  - Check RSI is in confirmation zone (not exhausted)
+  - If 3+ candles outside band → Move is STALE → BLOCK entry
+
+Staleness Thresholds:
+  - LONG:  3+ candles above upper BB + RSI in [68-85] = Stale
+  - SHORT: 3+ candles below lower BB + RSI in [15-32] = Stale
+```
+
 ---
 
 ## Stock Selection Pipeline
 
-The scanner runs hourly at XX:18:05 (e.g., 09:18, 10:18, etc.) and follows this pipeline:
+The scanner runs every 5 minutes (09:23, 09:28, etc.) and follows this pipeline:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -215,7 +245,7 @@ The scanner runs hourly at XX:18:05 (e.g., 09:18, 10:18, etc.) and follows this 
 │  │   → REJECT if > 3.5%                                               │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                              ↓                                           │
-│  Step 3: TMV SCORING (Max 10.0)                                          │
+│  Step 3: BASE SCORING (Max 12.5)                                         │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │ TREND (Max 3.0):                                                   │ │
 │  │ • Close > VWAP → +1.5                                              │ │
@@ -248,7 +278,15 @@ The scanner runs hourly at XX:18:05 (e.g., 09:18, 10:18, etc.) and follows this 
 │  │ • Circuit Limit: Price within 1.5% of circuit → DISCARD            │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                              ↓                                           │
-│  Step 5: OPTION VALIDATION & SECTOR DIVERSITY                            │
+│  Step 5: TACTICAL SCORING (Max 7.5) - Only if Base >= 5.0               │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │ • Fresh Breakout: First scan with band cross + RSI → +3.0          │ │
+│  │ • RVOL Surge: Volume > 2.5× average → +2.0                         │ │
+│  │ • Proximity: Price within 0.5% of band → +1.5                      │ │
+│  │ • RSI Acceleration: RSI ±5 points in direction → +1.0              │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                              ↓                                           │
+│  Step 6: OPTION VALIDATION & SECTOR DIVERSITY                            │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │ For stocks with score ≥ 7.0 (sorted by score descending):          │ │
 │  │ • Sector Diversity: Max 2 stocks per sector                        │ │
@@ -398,13 +436,18 @@ This eliminates "wick noise" where intra-candle price spikes would trigger false
 
 ## Smart Retention System
 
-The Smart Retention system manages which stocks stay in slots across hourly scans.
+The Smart Retention system manages which stocks stay in slots across 5-minute scans.
 
 ### Scan Schedule
 
 ```
-Scan Times: 09:18, 10:18, 11:18, 12:18, 13:18, 14:18
-Last Scan Cutoff: 14:18 (no scans after this)
+68 Scan Times (every 5 minutes from 09:23 to 14:58):
+09:23, 09:28, 09:33, 09:38, 09:43, 09:48, 09:53, 09:58,
+10:03, 10:08, 10:13, 10:18, 10:23, 10:28, 10:33, 10:38, 10:43, 10:48, 10:53, 10:58,
+... (continues every 5 minutes)
+14:43, 14:48, 14:53, 14:58
+
+Last Scan Cutoff: 14:58 (no scans after this)
 ```
 
 ### Retention Decision Matrix
@@ -441,13 +484,19 @@ Last Scan Cutoff: 14:18 (no scans after this)
 │  └─────────────────────────────────────────────────────────────────────┘│
 │                                                                          │
 │  ┌─────────────────────────────────────────────────────────────────────┐│
-│  │ IF score DROPPED below keepThreshold (6.0):                         ││
+│  │ IF score DROPPED below keepThreshold (5.0):                         ││
 │  │    → SWAP to new candidate                                          ││
 │  │    → Decision: "SWAP" (momentum_died)                               ││
 │  └─────────────────────────────────────────────────────────────────────┘│
 │                                                                          │
 │  ┌─────────────────────────────────────────────────────────────────────┐│
-│  │ IF stock STILL QUALIFIES (score ≥ 6.0, same bias):                  ││
+│  │ IF breakout is STALE (3+ candles outside BB):                       ││
+│  │    → SWAP to new candidate (free slot for fresh breakout)           ││
+│  │    → Decision: "SWAP" (stale_breakout)                              ││
+│  └─────────────────────────────────────────────────────────────────────┘│
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │ IF stock STILL QUALIFIES (score ≥ 5.0, same bias, not stale):       ││
 │  │    → KEEP in slot (no change)                                       ││
 │  │    → Decision: "KEEP" (still_top_tier)                              ││
 │  └─────────────────────────────────────────────────────────────────────┘│
@@ -460,8 +509,8 @@ Last Scan Cutoff: 14:18 (no scans after this)
 ```typescript
 const smartRetentionConfig = {
   enabled: true,
-  scanTimes: ["09:18", "10:18", "11:18", "12:18", "13:18", "14:18"],
-  keepThreshold: 6.0, // Minimum score to retain existing strategy
+  scanTimes: ["09:23", "09:28", ..."14:58"], // 68 times, every 5 min
+  keepThreshold: 5.0, // Minimum base score to retain existing strategy
   minDeployScore: 7.0, // Minimum score to deploy NEW strategy
   lockOnActivePosition: true,
   swapOnBiasFlip: true,
@@ -507,14 +556,14 @@ const smartRetentionConfig = {
 
 ## Data Flow Diagrams
 
-### Hourly Scan Flow
+### 5-Minute Scan Flow
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│                          HOURLY SCAN FLOW                             │
+│                        5-MINUTE TACTICAL SCAN FLOW                    │
 ├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
-│  Timer fires at XX:18:05                                              │
+│  Timer fires at configured scan times (09:23, 09:28, ... 14:58)      │
 │        ↓                                                              │
 │  [Authentication Check]                                               │
 │        ↓ (authenticated)                                              │
@@ -525,9 +574,11 @@ const smartRetentionConfig = {
 │  │ 2. Analyze sector indices (green/red/flat)                     │  │
 │  │ 3. Filter by sector status                                     │  │
 │  │ 4. Apply tradeability guards (risk, bandwidth)                 │  │
-│  │ 5. Score stocks using TMV algorithm                            │  │
+│  │ 5. Calculate BASE score (TMV algorithm, max 12.5)              │  │
 │  │ 6. Apply safety filters (RSI, gap, circuit)                    │  │
-│  │ 7. Select top 3 with valid options + sector diversity          │  │
+│  │ 7. Calculate TACTICAL bonus (max 7.5) if base >= 5.0           │  │
+│  │ 8. Sort by FINAL score (base + tactical)                       │  │
+│  │ 9. Select top 3 with valid options + sector diversity          │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │        ↓                                                              │
 │  [ScannerResult] → [StrategyManager.rebalanceStrategies()]            │
@@ -535,12 +586,13 @@ const smartRetentionConfig = {
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │ For each slot (0, 1, 2):                                       │  │
 │  │   - Evaluate retention decision (LOCK/KEEP/SWAP/DEPLOY)        │  │
+│  │   - Check staleness (3+ candles outside BB = eject)            │  │
 │  │   - Stop old strategy if swapping                              │  │
 │  │   - Deploy new strategy if needed                              │  │
 │  │   - Update slot state                                          │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │        ↓                                                              │
-│  Schedule next scan at (XX+1):18:05                                   │
+│  Wait for next scheduled scan time (every 5 minutes)                 │
 │                                                                       │
 └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -724,7 +776,7 @@ PORT=3000
 2. AuthService attempts to restore encrypted session
 3. If session invalid, visit http://localhost:3000/auth/login
 4. After authentication, scanner initializes
-5. First scan runs at next XX:18 boundary
+5. First scan runs at 09:23 (or next scheduled 5-min scan time)
 ```
 
 ### Pre-Market Checklist
@@ -738,12 +790,14 @@ PORT=3000
 
 ```
 09:15 - Market opens
-09:18 - First hourly scan runs
-09:20 - Strategies deployed to slots
+09:23 - First 5-minute scan runs
+09:25 - Strategies deployed to slots
+       - Scans run every 5 minutes (09:28, 09:33, 09:38...)
        - Entry signals checked at each 5-min candle close
+       - Staleness guard blocks extended moves (3+ candles old)
        - Exit signals checked at each 5-min candle close
 ...
-14:18 - Last hourly scan
+14:58 - Last scan of the day
 15:24 - EOD safety exit (if any positions)
 15:30 - Market closes
 ```
@@ -795,14 +849,31 @@ PORT=3000
    - Bandwidth > 3.5% rejected early
    - Saves computation on geometrically untradeable setups
 
+6. **5-Minute Tactical Scanning (Added Feb 2026)**
+   - Previous 15-min scans caused late entries (25+ minutes after signal)
+   - 68 scans per day (09:23 to 14:58) catches breakouts while fresh
+   - Balances API rate limits with opportunity capture
+
+7. **Tactical Bonus Scoring (Added Feb 2026)**
+   - Base score floor (5.0) filters garbage stocks before tactical bonuses
+   - Fresh Breakout (+3.0) prioritizes "just exploding" stocks
+   - RVOL Surge (+2.0) rewards explosive volume
+   - Stock can score up to 20.0 (Base 12.5 + Tactical 7.5)
+
+8. **Staleness Guard (Added Feb 2026)**
+   - Blocks entries on moves 3+ candles old (already extended)
+   - Prevents chasing stocks that gave signal 15+ minutes ago
+   - Manager ejects stale strategies to free slots for fresh candidates
+
 ---
 
 ## Version History
 
-| Version | Date        | Changes                             |
-| ------- | ----------- | ----------------------------------- |
-| 1.0     | Feb 2, 2026 | Initial comprehensive documentation |
+| Version | Date        | Changes                                                             |
+| ------- | ----------- | ------------------------------------------------------------------- |
+| 1.0     | Feb 2, 2026 | Initial comprehensive documentation                                 |
+| 2.0     | Feb 6, 2026 | 5-minute tactical scanning, Base+Tactical scoring, staleness guards |
 
 ---
 
-_Document generated for Trading Bot v2.0_
+_Document generated for Trading Bot v3.0 - Tactical Scanner Edition_
