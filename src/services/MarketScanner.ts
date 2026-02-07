@@ -35,6 +35,8 @@ export interface TacticalBonus {
   rvolSurge: number;      // 0, 1.0, 1.5, or 2.0 - Volume spike
   proximity: number;      // 0 or 1.5 - Close to band and approaching
   rsiAccel: number;       // 0 or 1.0 - RSI acceleration in bias direction
+  squeeze: number;        // 0 to 1.0 - Gradient based on BB width (tighter = higher)
+  gammaWall: number;      // 0 or 0.5 - 3-strike OI leader with 2x+ OI of next
   total: number;          // Sum of above
 }
 
@@ -505,7 +507,7 @@ export class MarketScanner {
             sector: stock.sector,
             sectorToken: stock.sectorToken,
             breakdown: { trend: 0, momentum: 0, volume: 0, sector: 0, smartMoney: 0 },
-            tacticalBonus: { freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, total: 0 },
+            tacticalBonus: { freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, squeeze: 0, gammaWall: 0, total: 0 },
             spotPrice,
             upperCircuitLimit: 0,
             lowerCircuitLimit: 0,
@@ -531,7 +533,7 @@ export class MarketScanner {
             sector: stock.sector,
             sectorToken: stock.sectorToken,
             breakdown: { trend: 0, momentum: 0, volume: 0, sector: 0, smartMoney: 0 },
-            tacticalBonus: { freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, total: 0 },
+            tacticalBonus: { freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, squeeze: 0, gammaWall: 0, total: 0 },
             spotPrice,
             upperCircuitLimit: 0,
             lowerCircuitLimit: 0,
@@ -729,14 +731,14 @@ export class MarketScanner {
         // Step 3: Calculate TACTICAL bonuses (only if base quality is high enough)
         const BASE_SCORE_FLOOR = 5.0;
         let tacticalBonus: TacticalBonus = {
-          freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, total: 0
+          freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, squeeze: 0, gammaWall: 0, total: 0
         };
 
         if (baseScore >= BASE_SCORE_FLOOR) {
-          tacticalBonus = this.calculateTacticalBonus(candles, spotPrice, bias, bollingerBands);
+          tacticalBonus = this.calculateTacticalBonus(candles, spotPrice, bias, bollingerBands, bandwidthPercent);
           
           if (tacticalBonus.total > 0) {
-            this.logger.debug(`📈 ${stock.symbol}: Tactical Bonus +${tacticalBonus.total.toFixed(1)} (FB:${tacticalBonus.freshBreakout} RV:${tacticalBonus.rvolSurge} PX:${tacticalBonus.proximity} RA:${tacticalBonus.rsiAccel})`);
+            this.logger.debug(`📈 ${stock.symbol}: Tactical Bonus +${tacticalBonus.total.toFixed(1)} (FB:${tacticalBonus.freshBreakout} RV:${tacticalBonus.rvolSurge} PX:${tacticalBonus.proximity} RA:${tacticalBonus.rsiAccel} SQ:${tacticalBonus.squeeze.toFixed(1)} GW:${tacticalBonus.gammaWall})`);
           }
         }
 
@@ -885,7 +887,7 @@ export class MarketScanner {
     sorted.slice(0, 10).forEach((stock, i) => {
       const smDisplay = stock.breakdown.smartMoney > 0 ? ` SM:${stock.breakdown.smartMoney.toFixed(1)}` : '';
       const tacDisplay = stock.tacticalBonus.total > 0 
-        ? ` | Tac: FB:${stock.tacticalBonus.freshBreakout} RV:${stock.tacticalBonus.rvolSurge} PX:${stock.tacticalBonus.proximity} RA:${stock.tacticalBonus.rsiAccel}`
+        ? ` | Tac: FB:${stock.tacticalBonus.freshBreakout} RV:${stock.tacticalBonus.rvolSurge} PX:${stock.tacticalBonus.proximity} RA:${stock.tacticalBonus.rsiAccel} SQ:${stock.tacticalBonus.squeeze.toFixed(1)} GW:${stock.tacticalBonus.gammaWall}`
         : '';
       this.logger.info(`  ${i + 1}. ${stock.symbol}: Score=${stock.score.toFixed(2)} (Base:${stock.baseScore.toFixed(1)} + Tac:${stock.tacticalBonus.total.toFixed(1)}) [${stock.bias}] | T:${stock.breakdown.trend.toFixed(1)} M:${stock.breakdown.momentum.toFixed(1)} V:${stock.breakdown.volume.toFixed(1)} S:${stock.breakdown.sector.toFixed(1)}${smDisplay}${tacDisplay}`);
     });
@@ -956,13 +958,23 @@ export class MarketScanner {
         // Valid stock found!
         stock.atmOption = atmOption;
         stock.valid = true;
+        
+        // Apply Gamma Wall Bonus from 3-Strike OI selection (if earned)
+        if (atmOption.gammaWallBonus > 0) {
+          stock.tacticalBonus.gammaWall = atmOption.gammaWallBonus;
+          stock.tacticalBonus.total += atmOption.gammaWallBonus;
+          stock.score += atmOption.gammaWallBonus;
+        }
+        
         validStocks.push(stock);
         
         // Update sector count for diversity tracking
         sectorCounts.set(stock.sector, (sectorCounts.get(stock.sector) || 0) + 1);
         
+        // Log with Gamma Wall indicator
+        const gwIndicator = atmOption.gammaWallBonus > 0 ? ' 🎯GW' : '';
         this.logger.info(
-          `✅ ${stock.symbol}: Valid option found - ${atmOption.tradingsymbol} @ ₹${atmOption.premium.toFixed(1)} | OI:${atmOption.oi}, Vol:${atmOption.volume} | Sector: ${stock.sector} (${sectorCounts.get(stock.sector)}/${MAX_STOCKS_PER_SECTOR}) (${validStocks.length}/${this.config.topCount} slots filled)`,
+          `✅ ${stock.symbol}: Valid option found - ${atmOption.tradingsymbol} @ ₹${atmOption.premium.toFixed(1)} | OI:${atmOption.oi.toLocaleString()}, Vol:${atmOption.volume}${gwIndicator} | Sector: ${stock.sector} (${sectorCounts.get(stock.sector)}/${MAX_STOCKS_PER_SECTOR}) (${validStocks.length}/${this.config.topCount} slots filled)`,
         );
       } catch (error) {
         this.logger.error(`Failed to find option for ${stock.symbol}:`, error);
@@ -975,7 +987,9 @@ export class MarketScanner {
   }
 
   /**
-   * Find ATM option for stock
+   * Find ATM option for stock with 3-Strike OI-Leader Selection
+   * Selects the strike with highest OI among ATM, ATM+1, ATM-1 within 1% of spot
+   * Returns gammaWallBonus = 0.5 if selected strike has 2x+ OI of next highest
    */
   private async findATMOption(
     symbol: string,
@@ -988,7 +1002,8 @@ export class MarketScanner {
     expiry: Date;
     oi: number;
     volume: number;
-    lotSize: number;  // Added for dynamic liquidity calculation
+    lotSize: number;
+    gammaWallBonus: number;  // NEW: 0.5 if 3-strike OI leader with 2x+ OI
   }> {
     // Fetch all NFO instruments from cache
     const instruments = await this.instrumentCache.getNFOInstruments();
@@ -1020,43 +1035,93 @@ export class MarketScanner {
     const expiry = new Date(nearestExpiryTime);
     this.logger.info(`📅 Using expiry for ${symbol}: ${expiry.toDateString()} (from instrument data)`);
 
-    // Filter for this specific expiry
-    const options = symbolOptions.filter(
-      (i: any) => new Date(i.expiry).getTime() === nearestExpiryTime,
-    );
-
-    // Find ATM strike (closest to spot)
-    const atmStrike = this.findClosestStrike(
-      spotPrice,
-      options.map((o: any) => o.strike),
-    );
-
-    // Select CE or PE based on bias
+    // Filter for this specific expiry and option type
     const optionType = type === "LONG" ? "CE" : "PE";
-    const atmOption = options.find(
-      (o: any) => o.strike === atmStrike && o.instrument_type === optionType,
+    const options = symbolOptions.filter(
+      (i: any) => new Date(i.expiry).getTime() === nearestExpiryTime && i.instrument_type === optionType,
     );
 
-    if (!atmOption) {
-      throw new Error(`ATM option not found: ${symbol} ${atmStrike}${optionType}`);
+    // Get unique sorted strikes
+    const allStrikes = [...new Set(options.map((o: any) => o.strike as number))].sort((a, b) => a - b);
+    
+    // Find ATM strike (closest to spot)
+    const atmStrike = this.findClosestStrike(spotPrice, allStrikes);
+    const atmIndex = allStrikes.indexOf(atmStrike);
+
+    // Build 3-strike window: [ATM-1, ATM, ATM+1]
+    const candidateStrikes: number[] = [];
+    if (atmIndex > 0) candidateStrikes.push(allStrikes[atmIndex - 1]!);
+    candidateStrikes.push(allStrikes[atmIndex]!);
+    if (atmIndex < allStrikes.length - 1) candidateStrikes.push(allStrikes[atmIndex + 1]!);
+
+    // Get instruments for candidate strikes
+    const candidateOptions = options.filter((o: any) => candidateStrikes.includes(o.strike));
+    
+    // Fetch quotes for all candidates in one API call
+    const quoteKeys = candidateOptions.map((o: any) => `NFO:${o.tradingsymbol}`);
+    const quotes = await this.kiteConnect.getQuote(quoteKeys);
+
+    // Build candidate list with OI, distance, and option data
+    interface StrikeCandidate {
+      strike: number;
+      option: any;
+      oi: number;
+      volume: number;
+      premium: number;
+      distancePercent: number;
+      tradingsymbol: string;
     }
 
-    // Get current premium, OI, and volume
-    const quoteKey = `NFO:${atmOption.tradingsymbol}`;
-    const quote = await this.kiteConnect.getQuote([quoteKey]);
-    const quoteData = quote[quoteKey];
-    const premium = quoteData.last_price;
-    const oi = quoteData.oi || 0;
-    const volume = quoteData.volume || 0;
+    const candidates: StrikeCandidate[] = candidateOptions.map((option: any) => {
+      const quoteKey = `NFO:${option.tradingsymbol}`;
+      const quoteData = quotes[quoteKey] || {};
+      return {
+        strike: option.strike,
+        option,
+        oi: quoteData.oi || 0,
+        volume: quoteData.volume || 0,
+        premium: quoteData.last_price || 0,
+        distancePercent: Math.abs(option.strike - spotPrice) / spotPrice * 100,
+        tradingsymbol: option.tradingsymbol,
+      };
+    });
+
+    // Filter by 1% safety buffer
+    const validCandidates = candidates.filter(c => c.distancePercent <= 1.0);
+    
+    // If no valid candidates within 1%, fallback to all candidates (pure ATM)
+    const finalCandidates = validCandidates.length > 0 ? validCandidates : candidates;
+
+    // Sort by OI descending to select highest
+    const sortedByOI = [...finalCandidates].sort((a, b) => b.oi - a.oi);
+    
+    if (sortedByOI.length === 0) {
+      throw new Error(`No valid options found for ${symbol} ${optionType}`);
+    }
+
+    const selected = sortedByOI[0]!;
+    const secondHighestOI = sortedByOI[1]?.oi || 0;
+
+    // Calculate Gamma Wall Bonus: +0.5 if selected has ≥2× OI of next highest
+    let gammaWallBonus = 0;
+    if (secondHighestOI > 0 && selected.oi >= secondHighestOI * 2) {
+      gammaWallBonus = 0.5;
+      this.logger.info(`🎯 Gamma Wall Strike: ${symbol} ${selected.strike}${optionType} (OI: ${selected.oi.toLocaleString()} vs next: ${secondHighestOI.toLocaleString()}) → +0.5 bonus`);
+    }
+
+    // Log selection rationale
+    const candidateLog = candidates.map(c => `${c.strike}:${c.oi.toLocaleString()}`).join(', ');
+    this.logger.debug(`📊 3-Strike Selection: ${symbol} | ATM=${atmStrike} | Candidates=[${candidateLog}] | Selected=${selected.strike} (OI: ${selected.oi.toLocaleString()})`);
 
     return {
-      tradingsymbol: atmOption.tradingsymbol,
-      strike: atmStrike,
-      premium,
+      tradingsymbol: selected.tradingsymbol,
+      strike: selected.strike,
+      premium: selected.premium,
       expiry,
-      oi,
-      volume,
-      lotSize: atmOption.lot_size || 1,  // Extract lot size from instrument data
+      oi: selected.oi,
+      volume: selected.volume,
+      lotSize: selected.option.lot_size || 1,
+      gammaWallBonus,
     };
   }
 
@@ -1276,18 +1341,22 @@ export class MarketScanner {
    * - RVOL Surge (+2.0 max): Volume spike tiered scoring
    * - Proximity (+1.5): Close to band AND approaching (not after fresh breakout)
    * - RSI Acceleration (+1.0): RSI moved 5+ points in bias direction
+   * - Squeeze (+1.0 max): Gradient based on BB width (tighter bands = more stored energy)
    */
   private calculateTacticalBonus(
     candles: Candle[],
     currentPrice: number,
     bias: 'LONG' | 'SHORT',
-    bb: { upper: number; middle: number; lower: number }
+    bb: { upper: number; middle: number; lower: number },
+    bandwidthPercent: number
   ): TacticalBonus {
     const tactical: TacticalBonus = {
       freshBreakout: 0,
       rvolSurge: 0,
       proximity: 0,
       rsiAccel: 0,
+      squeeze: 0,
+      gammaWall: 0,  // Set later during option selection
       total: 0
     };
     
@@ -1377,9 +1446,18 @@ export class MarketScanner {
       }
     }
     
+    // === E. SQUEEZE GRADIENT (+1.0 max) ===
+    // Linear decay: 1.0 at ≤1.0% bandwidth, 0.0 at 3.5% bandwidth
+    // Formula: max(0, (3.5 - bandwidth) / 2.5)
+    // Unconditional - tighter bands = more stored energy
+    tactical.squeeze = Math.max(0, (3.5 - bandwidthPercent) / 2.5);
+    if (tactical.squeeze > 0.1) {
+      this.logger.debug(`  💠 Squeeze: Bandwidth ${bandwidthPercent.toFixed(2)}% → +${tactical.squeeze.toFixed(2)} bonus`);
+    }
+    
     // Calculate total
     tactical.total = tactical.freshBreakout + tactical.rvolSurge + 
-                     tactical.proximity + tactical.rsiAccel;
+                     tactical.proximity + tactical.rsiAccel + tactical.squeeze;
     
     return tactical;
   }

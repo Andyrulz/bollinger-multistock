@@ -1113,7 +1113,7 @@ class TradingBot {
                     <div class="result-card" style="border-color: ${isDeployed ? '#10b981' : '#fbbf24'}; background: ${isDeployed ? 'linear-gradient(135deg, #ecfdf5 0%, #ffffff 100%)' : 'linear-gradient(135deg, #fffbeb 0%, #ffffff 100%)'};">
                         <div class="rank-badge">#${index + 1}</div>
                         <div class="result-symbol">${stock.symbol}</div>
-                        <div class="result-score">Score: ${stock.score.toFixed(1)}/10</div>
+                        <div class="result-score">Score: ${stock.score.toFixed(1)} <span style="color: #94a3b8; font-size: 0.75rem;">(Base:${stock.baseScore?.toFixed(1) || '?'}+Tac:${stock.tacticalBonus?.total?.toFixed(1) || '0'})</span></div>
                         <div class="result-bias ${stock.bias === 'LONG' ? 'bias-long' : 'bias-short'}">${stock.bias}</div>
                         <div class="result-sector">${stock.sector}</div>
                         <div class="result-breakdown">
@@ -1122,6 +1122,11 @@ class TradingBot {
                             V:${stock.breakdown.volume.toFixed(1)} | 
                             S:${stock.breakdown.sector.toFixed(1)}
                         </div>
+                        ${stock.tacticalBonus && stock.tacticalBonus.total > 0 ? `
+                        <div style="font-size: 0.7rem; color: #7c3aed; margin-top: 4px; font-family: monospace;">
+                            ⚡ FB:${stock.tacticalBonus.freshBreakout} RV:${stock.tacticalBonus.rvolSurge} PX:${stock.tacticalBonus.proximity} RA:${stock.tacticalBonus.rsiAccel} SQ:${stock.tacticalBonus.squeeze?.toFixed(1) || 0} GW:${stock.tacticalBonus.gammaWall || 0}
+                        </div>
+                        ` : ''}
                         <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e2e8f0; font-size: 0.8rem; font-weight: 600; color: ${isDeployed ? '#059669' : '#d97706'};">
                             ${isDeployed ? `✅ Deployed → Slot #${deployedSlotNum}` : '⏸️ Not deployed (existing slots retained)'}
                         </div>
@@ -1188,7 +1193,7 @@ class TradingBot {
                         <div class="slot-symbol">${slot.symbol || '—'}</div>
                         ${slot.symbol ? `
                         <div class="slot-score">
-                            <span class="slot-score-value">${slot.lastScanScore !== null ? slot.lastScanScore.toFixed(1) : '—'}/10</span>
+                            <span class="slot-score-value">${slot.lastScanScore !== null ? slot.lastScanScore.toFixed(1) : '—'}</span>
                             <span class="slot-bias ${slot.lastScanBias?.toLowerCase() || ''}">${slot.lastScanBias || '—'}</span>
                         </div>
                         
@@ -1697,7 +1702,7 @@ class TradingBot {
                     <div style="font-size: 1.1rem; font-weight: 700;">${slot.symbol || '— Empty —'}</div>
                     ${slot.symbol ? `
                     <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center;">
-                        <span style="font-weight: 600; color: #059669;">${slot.lastScanScore !== null ? slot.lastScanScore.toFixed(1) : '—'}/10</span>
+                        <span style="font-weight: 600; color: #059669;">${slot.lastScanScore !== null ? slot.lastScanScore.toFixed(1) : '—'}</span>
                         <span style="padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600;
                                      background: ${slot.lastScanBias === 'LONG' ? '#d1fae5' : '#fee2e2'};
                                      color: ${slot.lastScanBias === 'LONG' ? '#065f46' : '#991b1b'};">
@@ -1730,7 +1735,7 @@ class TradingBot {
                     <tr>
                         <td><strong>${idx + 1}</strong></td>
                         <td><strong>${stock.symbol}</strong></td>
-                        <td><span class="score ${stock.score >= 8 ? 'high' : stock.score >= 7 ? 'medium' : 'low'}">${stock.score.toFixed(2)}</span></td>
+                        <td><span class="score ${stock.score >= 12 ? 'high' : stock.score >= 9 ? 'medium' : 'low'}">${stock.score.toFixed(2)}</span></td>
                         <td><span class="badge ${stock.bias.toLowerCase()}">${stock.bias}</span></td>
                         <td style="text-align: center;">
                             ${stock.smartMoneySignal === 'ACCUMULATION' ? '<span title="Coiled Spring: Accumulation (OI↑ Price→)" style="font-size: 1.2rem;">💎🟢</span>' :
@@ -1748,6 +1753,7 @@ class TradingBot {
                             V:${stock.breakdown.volume.toFixed(1)} 
                             S:${stock.breakdown.sector.toFixed(1)}
                             ${stock.breakdown.smartMoney > 0 ? '<span style="color: #10b981; font-weight: 600;"> 💎:+' + stock.breakdown.smartMoney.toFixed(1) + '</span>' : ''}
+                            ${stock.tacticalBonus && stock.tacticalBonus.total > 0 ? '<br/><span style="color: #7c3aed; font-size: 0.8rem;">⚡' + stock.tacticalBonus.total.toFixed(1) + '</span>' : ''}
                         </td>
                         <td>₹${stock.spotPrice.toFixed(2)}</td>
                     </tr>

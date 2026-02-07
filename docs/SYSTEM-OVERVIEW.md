@@ -150,7 +150,7 @@ interface SlotState {
 
 TMV (Trend, Momentum, Volume) scoring engine with tradeability guards and tactical bonus system.
 
-**Scoring Structure (Max 20.0 = Base 12.5 + Tactical 7.5):**
+**Scoring Structure (Max 21.5 = Base 12.5 + Tactical 9.0):**
 
 ### Base Score Components (Max 12.5)
 
@@ -162,14 +162,26 @@ TMV (Trend, Momentum, Volume) scoring engine with tradeability guards and tactic
 | Sector      | 2.0       | Sector alignment bonus          |
 | Smart Money | 2.0       | OI analysis (Coiled Spring)     |
 
-### Tactical Bonus Components (Max 7.5)
+### Tactical Bonus Components (Max 9.0)
 
-| Bonus                 | Points | Condition                                            |
-| --------------------- | ------ | ---------------------------------------------------- |
-| Fresh Breakout (FB)   | +3.0   | First scan where price crossed band + confirming RSI |
-| RVOL Surge (RV)       | +2.0   | Volume > 2.5× average (exploding volume)             |
-| Proximity (PX)        | +1.5   | Price within 0.5% of Bollinger Band                  |
-| RSI Acceleration (RA) | +1.0   | RSI moved 5+ points in signal direction              |
+| Bonus                 | Points     | Condition                                            |
+| --------------------- | ---------- | ---------------------------------------------------- |
+| Fresh Breakout (FB)   | +3.0       | First scan where price crossed band + confirming RSI |
+| RVOL Surge (RV)       | +2.0       | Volume > 2.5× average (exploding volume)             |
+| Proximity (PX)        | +1.5       | Price within 0.5% of Bollinger Band                  |
+| RSI Acceleration (RA) | +1.0       | RSI moved 5+ points in signal direction              |
+| Squeeze (SQ)          | +0 to +1.0 | Gradient: (3.5 - bandwidth) / 2.5 (tighter = higher) |
+| Gamma Wall (GW)       | +0.5       | 3-strike OI leader has ≥2× OI of next highest        |
+
+**Squeeze Gradient Examples:**
+| Bandwidth | Squeeze Bonus |
+|-----------|---------------|
+| ≤1.0% | +1.0 (max) |
+| 1.5% | +0.8 |
+| 2.0% | +0.6 |
+| 2.5% | +0.4 |
+| 3.0% | +0.2 |
+| 3.5% | 0.0 (guard) |
 
 **Base Score Floor:** Tactical bonuses only apply if Base Score ≥ 5.0 (prevents garbage stocks with volume spikes from ranking high)
 
@@ -278,12 +290,14 @@ The scanner runs every 5 minutes (09:23, 09:28, etc.) and follows this pipeline:
 │  │ • Circuit Limit: Price within 1.5% of circuit → DISCARD            │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                              ↓                                           │
-│  Step 5: TACTICAL SCORING (Max 7.5) - Only if Base >= 5.0               │
+│  Step 5: TACTICAL SCORING (Max 9.0) - Only if Base >= 5.0               │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │ • Fresh Breakout: First scan with band cross + RSI → +3.0          │ │
 │  │ • RVOL Surge: Volume > 2.5× average → +2.0                         │ │
 │  │ • Proximity: Price within 0.5% of band → +1.5                      │ │
 │  │ • RSI Acceleration: RSI ±5 points in direction → +1.0              │ │
+│  │ • Squeeze: Gradient (3.5-bandwidth)/2.5 → +0 to +1.0               │ │
+│  │ • Gamma Wall: 3-strike OI leader with 2×+ OI → +0.5 (at selection) │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                              ↓                                           │
 │  Step 6: OPTION VALIDATION & SECTOR DIVERSITY                            │
@@ -858,12 +872,24 @@ PORT=3000
    - Base score floor (5.0) filters garbage stocks before tactical bonuses
    - Fresh Breakout (+3.0) prioritizes "just exploding" stocks
    - RVOL Surge (+2.0) rewards explosive volume
-   - Stock can score up to 20.0 (Base 12.5 + Tactical 7.5)
+   - Stock can score up to 21.5 (Base 12.5 + Tactical 9.0)
 
 8. **Staleness Guard (Added Feb 2026)**
    - Blocks entries on moves 3+ candles old (already extended)
    - Prevents chasing stocks that gave signal 15+ minutes ago
    - Manager ejects stale strategies to free slots for fresh candidates
+
+9. **Squeeze Gradient Bonus (Added Feb 2026)**
+   - Rewards stocks with tight Bollinger Bands (volatility compression)
+   - Linear gradient: +1.0 at ≤1.0% bandwidth, 0.0 at 3.5%
+   - Unconditional application enables preemptive slot positioning
+   - Tighter bands = more stored energy = explosive breakout potential
+
+10. **3-Strike OI-Leader Selection (Added Feb 2026)**
+    - Selects option strike with highest OI among ATM, ATM+1, ATM-1
+    - 1% safety buffer prevents selecting strikes too far from spot
+    - Gamma Wall Bonus (+0.5) when selected strike has ≥2× OI of next
+    - Captures "Writer's Panic" zones for amplified moves
 
 ---
 
@@ -873,7 +899,9 @@ PORT=3000
 | ------- | ----------- | ------------------------------------------------------------------- |
 | 1.0     | Feb 2, 2026 | Initial comprehensive documentation                                 |
 | 2.0     | Feb 6, 2026 | 5-minute tactical scanning, Base+Tactical scoring, staleness guards |
+| 2.1     | Feb 7, 2026 | Squeeze Gradient bonus (+1.0 max) for volatility compression        |
+| 2.2     | Feb 7, 2026 | 3-Strike OI-Leader selection, Gamma Wall bonus (+0.5)               |
 
 ---
 
-_Document generated for Trading Bot v3.0 - Tactical Scanner Edition_
+_Document generated for Trading Bot v3.2 - Tactical Scanner with Gamma Wall Detection_
