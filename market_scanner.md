@@ -2208,8 +2208,8 @@ Derive 15-min candles from 5-min (aggregate every 3)
         - Calculate RVOL (current 15m vol / avg 15m vol)
 
 Step 5: Score & Rank
-        - Apply TMV scoring algorithm (max 10 points)
-        - Filter: Score >= 7
+        - Apply TMV + Tactical scoring (max 21.5 = Base 12.5 + Tactical 9.0)
+        - Filter: Base Score >= 5.0 for tactical bonus eligibility
         - Sort by score descending
         - Apply safety checks:
           ✓ RSI exhaustion (>85) → DISCARD

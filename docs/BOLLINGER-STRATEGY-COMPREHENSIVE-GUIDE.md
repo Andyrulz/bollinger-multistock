@@ -22,9 +22,9 @@ The system trades **individual stock options** (like RELIANCE, HDFCBANK, TCS, IN
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     MARKET SCANNER                              │
-│  • Runs daily at 09:30 AM                                       │
-│  • Scores 100+ F&O stocks on TMV (0-10 scale)                  │
-│  • Selects top 3 with score ≥7                                 │
+│  • Runs every 5 mins (09:23 - 14:58)                           │
+│  • Scores 100+ F&O stocks on TMV + Tactical (max 21.5)         │
+│  • Selects top 3 with Base Score ≥5.0                          │
 │  • Determines LONG or SHORT bias for each                      │
 └─────────────────────┬───────────────────────────────────────────┘
                       │
@@ -240,6 +240,21 @@ Each strategy instance independently:
 | Stock bias matches sector direction strongly (>0.5%) | 2.0    |
 | Stock bias matches sector direction (>0.25%)         | 1.0    |
 | Mismatch                                             | 0.0    |
+
+### Tactical Bonus Components (Max 9.0)
+
+Stocks with Base Score ≥5.0 receive additional tactical bonuses:
+
+| Component             | Max   | Condition                                            |
+| --------------------- | ----- | ---------------------------------------------------- |
+| Fresh Breakout (FB)   | +3.0  | Breakout in last 30 mins with RSI/ADX confirmation   |
+| Range Volatility (RV) | +2.0  | Large intraday range (>2%) with clean directional %  |
+| Proximity (PX)        | +1.5  | Within 0.5% of upper/lower band                      |
+| Rate of Approach (RA) | +1.0  | Fast band approach (>0.3% in 5 mins)                 |
+| Squeeze (SQ)          | +1.0  | Gradient: (3.5 - bandwidth) / 2.5                    |
+| Gamma Wall (GW)       | +0.5  | 3-strike OI leader has ≥2× OI of next highest        |
+
+> **Note:** For complete scoring details, see [SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md).
 
 ### Example Scoring
 
