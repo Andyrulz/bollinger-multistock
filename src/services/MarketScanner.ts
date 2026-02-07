@@ -26,9 +26,22 @@ const MAX_BANDWIDTH_PERCENT = 3.5; // Maximum Bollinger Band width (over-extensi
  * Selects top 3 with score ≥7
  */
 
+/**
+ * Tactical Bonus - Urgency scoring for 5-minute tactical signals
+ * Applied only when base score >= 5.0
+ */
+export interface TacticalBonus {
+  freshBreakout: number;  // 0 or 3.0 - First candle outside band
+  rvolSurge: number;      // 0, 1.0, 1.5, or 2.0 - Volume spike
+  proximity: number;      // 0 or 1.5 - Close to band and approaching
+  rsiAccel: number;       // 0 or 1.0 - RSI acceleration in bias direction
+  total: number;          // Sum of above
+}
+
 export interface ScoredStock {
   symbol: string;
   score: number;
+  baseScore: number;      // Sum of breakdown components (strategic)
   bias: "LONG" | "SHORT";
   sector: string;
   sectorToken: number;
@@ -39,6 +52,7 @@ export interface ScoredStock {
     sector: number; // Max 2.0
     smartMoney: number; // Max 2.0 (Coiled Spring bonus)
   };
+  tacticalBonus: TacticalBonus; // Urgency scoring (tactical)
   smartMoneySignal?: 'ACCUMULATION' | 'DISTRIBUTION' | 'SHORT_COVERING' | 'LONG_UNWINDING' | 'NONE' | 'CONFLICT' | 'EXPIRY_WEEK';
   spotPrice: number;
   upperCircuitLimit: number; // Circuit limit from quote
@@ -486,10 +500,12 @@ export class MarketScanner {
           results.push({
             symbol: stock.symbol,
             score: 0,
+            baseScore: 0,
             bias: "LONG", // Placeholder, doesn't matter for rejected
             sector: stock.sector,
             sectorToken: stock.sectorToken,
             breakdown: { trend: 0, momentum: 0, volume: 0, sector: 0, smartMoney: 0 },
+            tacticalBonus: { freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, total: 0 },
             spotPrice,
             upperCircuitLimit: 0,
             lowerCircuitLimit: 0,
@@ -510,10 +526,12 @@ export class MarketScanner {
           results.push({
             symbol: stock.symbol,
             score: 0,
+            baseScore: 0,
             bias: "LONG", // Placeholder
             sector: stock.sector,
             sectorToken: stock.sectorToken,
             breakdown: { trend: 0, momentum: 0, volume: 0, sector: 0, smartMoney: 0 },
+            tacticalBonus: { freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, total: 0 },
             spotPrice,
             upperCircuitLimit: 0,
             lowerCircuitLimit: 0,
@@ -671,22 +689,70 @@ export class MarketScanner {
         
         breakdown.smartMoney = smartMoneyBonus;
 
-        // Total score (now includes Smart Money)
-        const score =
+        // ═══════════════════════════════════════════════════════════════════════════
+        // TACTICAL SCORING SYSTEM - Base + Tactical Urgency Bonuses
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        // Step 1: Calculate BASE score (strategic quality)
+        const baseScore =
           breakdown.trend +
           breakdown.momentum +
           breakdown.volume +
           breakdown.sector +
           breakdown.smartMoney;
 
+        // Step 2: Override bias based on tactical signals (breakout/proximity)
+        // This runs BEFORE tactical calculation so we pass the correct bias
+        const currCandle = candles[candles.length - 1];
+        const prevCandle = candles[candles.length - 2];
+        const currClose = currCandle?.close || spotPrice;
+        const prevClose = prevCandle?.close || currClose;
+        
+        // Check for fresh breakout - this overrides sector bias
+        if (prevClose <= bollingerBands.upper && currClose > bollingerBands.upper) {
+          bias = 'LONG';  // Upper band breakout → LONG
+        } else if (prevClose >= bollingerBands.lower && currClose < bollingerBands.lower) {
+          bias = 'SHORT'; // Lower band breakout → SHORT
+        } else {
+          // Check proximity for bias override (if close to band and approaching)
+          const upperDist = Math.abs(bollingerBands.upper - currClose) / currClose;
+          const lowerDist = Math.abs(currClose - bollingerBands.lower) / currClose;
+          
+          if (upperDist < 0.002 && currClose > prevClose) {
+            bias = 'LONG';  // Approaching upper → LONG
+          } else if (lowerDist < 0.002 && currClose < prevClose) {
+            bias = 'SHORT'; // Approaching lower → SHORT
+          }
+          // If neither, keep original sector-based bias
+        }
+
+        // Step 3: Calculate TACTICAL bonuses (only if base quality is high enough)
+        const BASE_SCORE_FLOOR = 5.0;
+        let tacticalBonus: TacticalBonus = {
+          freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, total: 0
+        };
+
+        if (baseScore >= BASE_SCORE_FLOOR) {
+          tacticalBonus = this.calculateTacticalBonus(candles, spotPrice, bias, bollingerBands);
+          
+          if (tacticalBonus.total > 0) {
+            this.logger.debug(`📈 ${stock.symbol}: Tactical Bonus +${tacticalBonus.total.toFixed(1)} (FB:${tacticalBonus.freshBreakout} RV:${tacticalBonus.rvolSurge} PX:${tacticalBonus.proximity} RA:${tacticalBonus.rsiAccel})`);
+          }
+        }
+
+        // Step 4: Final score = base + tactical
+        const score = baseScore + tacticalBonus.total;
+
         // Create scored stock object
         results.push({
           symbol: stock.symbol,
           score,
+          baseScore,
           bias,
           sector: stock.sector,
           sectorToken: stock.sectorToken,
           breakdown,
+          tacticalBonus,
           smartMoneySignal,
           spotPrice,
           upperCircuitLimit,
@@ -814,11 +880,14 @@ export class MarketScanner {
     // Sort by score descending
     const sorted = stocks.sort((a, b) => b.score - a.score);
 
-    // Log top 10 scored stocks for debugging
-    this.logger.info(`📊 Top 10 Scored Stocks:`);
+    // Log top 10 scored stocks for debugging (new format with Base + Tactical breakdown)
+    this.logger.info(`📊 Top 10 Scored Stocks (Base + Tactical):`);
     sorted.slice(0, 10).forEach((stock, i) => {
       const smDisplay = stock.breakdown.smartMoney > 0 ? ` SM:${stock.breakdown.smartMoney.toFixed(1)}` : '';
-      this.logger.info(`  ${i + 1}. ${stock.symbol}: Score=${stock.score.toFixed(2)} (${stock.bias}) | T:${stock.breakdown.trend.toFixed(1)} M:${stock.breakdown.momentum.toFixed(1)} V:${stock.breakdown.volume.toFixed(1)} S:${stock.breakdown.sector.toFixed(1)}${smDisplay} | Spot=₹${stock.spotPrice.toFixed(2)}`);
+      const tacDisplay = stock.tacticalBonus.total > 0 
+        ? ` | Tac: FB:${stock.tacticalBonus.freshBreakout} RV:${stock.tacticalBonus.rvolSurge} PX:${stock.tacticalBonus.proximity} RA:${stock.tacticalBonus.rsiAccel}`
+        : '';
+      this.logger.info(`  ${i + 1}. ${stock.symbol}: Score=${stock.score.toFixed(2)} (Base:${stock.baseScore.toFixed(1)} + Tac:${stock.tacticalBonus.total.toFixed(1)}) [${stock.bias}] | T:${stock.breakdown.trend.toFixed(1)} M:${stock.breakdown.momentum.toFixed(1)} V:${stock.breakdown.volume.toFixed(1)} S:${stock.breakdown.sector.toFixed(1)}${smDisplay}${tacDisplay}`);
     });
 
     // Filter to only stocks meeting minimum score
@@ -1196,6 +1265,123 @@ export class MarketScanner {
 
     const rs = avgGain / avgLoss;
     return 100 - 100 / (1 + rs);
+  }
+
+  /**
+   * Calculate Tactical Urgency Bonuses
+   * Only called if baseScore >= 5.0 (quality floor)
+   * 
+   * Bonuses:
+   * - Fresh Breakout (+3.0): First candle closing outside band
+   * - RVOL Surge (+2.0 max): Volume spike tiered scoring
+   * - Proximity (+1.5): Close to band AND approaching (not after fresh breakout)
+   * - RSI Acceleration (+1.0): RSI moved 5+ points in bias direction
+   */
+  private calculateTacticalBonus(
+    candles: Candle[],
+    currentPrice: number,
+    bias: 'LONG' | 'SHORT',
+    bb: { upper: number; middle: number; lower: number }
+  ): TacticalBonus {
+    const tactical: TacticalBonus = {
+      freshBreakout: 0,
+      rvolSurge: 0,
+      proximity: 0,
+      rsiAccel: 0,
+      total: 0
+    };
+    
+    // Need at least 5 candles for meaningful analysis
+    if (candles.length < 5) {
+      return tactical;
+    }
+    
+    const currCandle = candles[candles.length - 1];
+    const prevCandle = candles[candles.length - 2];
+    if (!currCandle || !prevCandle) return tactical;
+    
+    const currClose = currCandle.close;
+    const prevClose = prevCandle.close;
+    
+    // === A. FRESH BREAKOUT (+3.0) ===
+    // LONG: Previous candle inside/at upper band, Current candle broke outside
+    // SHORT: Previous candle inside/at lower band, Current candle broke outside
+    let isFreshBreakout = false;
+    
+    if (bias === 'LONG') {
+      if (prevClose <= bb.upper && currClose > bb.upper) {
+        tactical.freshBreakout = 3.0;
+        isFreshBreakout = true;
+        this.logger.debug(`  🔥 Fresh LONG Breakout: ${prevClose.toFixed(2)} → ${currClose.toFixed(2)} (BB Upper: ${bb.upper.toFixed(2)})`);
+      }
+    } else {
+      if (prevClose >= bb.lower && currClose < bb.lower) {
+        tactical.freshBreakout = 3.0;
+        isFreshBreakout = true;
+        this.logger.debug(`  🔥 Fresh SHORT Breakout: ${prevClose.toFixed(2)} → ${currClose.toFixed(2)} (BB Lower: ${bb.lower.toFixed(2)})`);
+      }
+    }
+    
+    // === B. RVOL SURGE (Max +2.0) ===
+    // Current candle volume vs average of previous candles (up to 20)
+    const currVolume = currCandle.volume;
+    const prevCandlesForVol = candles.slice(-21, -1); // Up to 20 previous candles
+    const prevVolumes = prevCandlesForVol.map(c => c.volume);
+    const avgVolume = prevVolumes.length > 0 
+      ? prevVolumes.reduce((a, b) => a + b, 0) / prevVolumes.length 
+      : currVolume;
+    const tacticalRvol = avgVolume > 0 ? currVolume / avgVolume : 1.0;
+    
+    if (tacticalRvol > 3.0) {
+      tactical.rvolSurge = 2.0;
+    } else if (tacticalRvol > 2.0) {
+      tactical.rvolSurge = 1.5;
+    } else if (tacticalRvol > 1.5) {
+      tactical.rvolSurge = 1.0;
+    }
+    
+    // === C. PROXIMITY VECTOR (+1.5) ===
+    // Only if NOT a fresh breakout (no double-dipping)
+    // Stock must be approaching the band, not retreating
+    if (!isFreshBreakout) {
+      if (bias === 'LONG') {
+        const distance = (bb.upper - currentPrice) / currentPrice;
+        // Distance < 0.2% AND price rising (approaching upper band)
+        if (distance > 0 && distance < 0.002 && currClose > prevClose) {
+          tactical.proximity = 1.5;
+          this.logger.debug(`  📍 Proximity LONG: ${(distance * 100).toFixed(3)}% from upper band, approaching`);
+        }
+      } else {
+        const distance = (currentPrice - bb.lower) / currentPrice;
+        // Distance < 0.2% AND price falling (approaching lower band)
+        if (distance > 0 && distance < 0.002 && currClose < prevClose) {
+          tactical.proximity = 1.5;
+          this.logger.debug(`  📍 Proximity SHORT: ${(distance * 100).toFixed(3)}% from lower band, approaching`);
+        }
+      }
+    }
+    
+    // === D. RSI ACCELERATION (+1.0) ===
+    // RSI moved 5+ points in direction of bias over last 3 candles
+    if (candles.length >= 4) {
+      const closes = candles.map(c => c.close);
+      const rsiCurrent = this.calculateRSI(closes, 14);
+      const rsi3Ago = this.calculateRSI(closes.slice(0, -3), 14);
+      
+      if (bias === 'LONG' && (rsiCurrent - rsi3Ago) > 5) {
+        tactical.rsiAccel = 1.0;
+        this.logger.debug(`  🚀 RSI Accel LONG: ${rsi3Ago.toFixed(1)} → ${rsiCurrent.toFixed(1)} (+${(rsiCurrent - rsi3Ago).toFixed(1)})`);
+      } else if (bias === 'SHORT' && (rsi3Ago - rsiCurrent) > 5) {
+        tactical.rsiAccel = 1.0;
+        this.logger.debug(`  🚀 RSI Accel SHORT: ${rsi3Ago.toFixed(1)} → ${rsiCurrent.toFixed(1)} (${(rsiCurrent - rsi3Ago).toFixed(1)})`);
+      }
+    }
+    
+    // Calculate total
+    tactical.total = tactical.freshBreakout + tactical.rvolSurge + 
+                     tactical.proximity + tactical.rsiAccel;
+    
+    return tactical;
   }
 
   /**

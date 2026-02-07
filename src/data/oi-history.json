@@ -1,546 +1,546 @@
 {
-  "savedAt": "2026-02-02T10:10:00.733Z",
+  "savedAt": "2026-02-06T10:10:00.895Z",
   "expiryDate": "2026-02-24",
   "data": {
     "HDFCBANK": {
-      "futuresOI": 237233700,
+      "futuresOI": 227619700,
       "futuresSymbol": "HDFCBANK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "ICICIBANK": {
-      "futuresOI": 119221200,
+      "futuresOI": 114597000,
       "futuresSymbol": "ICICIBANK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "SBIN": {
-      "futuresOI": 70246500,
+      "futuresOI": 62028750,
       "futuresSymbol": "SBIN26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "AXISBANK": {
-      "futuresOI": 71816250,
+      "futuresOI": 69346250,
       "futuresSymbol": "AXISBANK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "KOTAKBANK": {
-      "futuresOI": 196576000,
+      "futuresOI": 200826000,
       "futuresSymbol": "KOTAKBANK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "INDUSINDBK": {
-      "futuresOI": 34878200,
+      "futuresOI": 32807600,
       "futuresSymbol": "INDUSINDBK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "BANKBARODA": {
-      "futuresOI": 96764850,
+      "futuresOI": 83102175,
       "futuresSymbol": "BANKBARODA26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "PNB": {
-      "futuresOI": 228840000,
+      "futuresOI": 225592000,
       "futuresSymbol": "PNB26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "CANBK": {
-      "futuresOI": 192408750,
+      "futuresOI": 164835000,
       "futuresSymbol": "CANBK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "AUBANK": {
-      "futuresOI": 21602000,
+      "futuresOI": 19329000,
       "futuresSymbol": "AUBANK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "FEDERALBNK": {
-      "futuresOI": 58250000,
+      "futuresOI": 50125000,
       "futuresSymbol": "FEDERALBNK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "IDFCFIRSTB": {
-      "futuresOI": 301697200,
+      "futuresOI": 262120775,
       "futuresSymbol": "IDFCFIRSTB26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "BANDHANBNK": {
-      "futuresOI": 101707200,
+      "futuresOI": 102769200,
       "futuresSymbol": "BANDHANBNK26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "BAJFINANCE": {
-      "futuresOI": 89164500,
+      "futuresOI": 85237500,
       "futuresSymbol": "BAJFINANCE26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "BAJAJFINSV": {
-      "futuresOI": 13796000,
+      "futuresOI": 13127250,
       "futuresSymbol": "BAJAJFINSV26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "CHOLAFIN": {
-      "futuresOI": 15933125,
+      "futuresOI": 13843750,
       "futuresSymbol": "CHOLAFIN26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "SHRIRAMFIN": {
-      "futuresOI": 42540300,
+      "futuresOI": 41870400,
       "futuresSymbol": "SHRIRAMFIN26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "RECLTD": {
-      "futuresOI": 80525200,
+      "futuresOI": 84432600,
       "futuresSymbol": "RECLTD26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "PFC": {
-      "futuresOI": 58679400,
+      "futuresOI": 56990700,
       "futuresSymbol": "PFC26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "SBILIFE": {
-      "futuresOI": 10325250,
+      "futuresOI": 10076250,
       "futuresSymbol": "SBILIFE26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "HDFCLIFE": {
-      "futuresOI": 30850600,
+      "futuresOI": 35840200,
       "futuresSymbol": "HDFCLIFE26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "MUTHOOTFIN": {
-      "futuresOI": 3792525,
+      "futuresOI": 4273500,
       "futuresSymbol": "MUTHOOTFIN26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "TCS": {
-      "futuresOI": 19562725,
+      "futuresOI": 23642675,
       "futuresSymbol": "TCS26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "INFY": {
-      "futuresOI": 64522800,
+      "futuresOI": 69286400,
       "futuresSymbol": "INFY26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "HCLTECH": {
-      "futuresOI": 15915200,
+      "futuresOI": 18527950,
       "futuresSymbol": "HCLTECH26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "TECHM": {
-      "futuresOI": 17552400,
+      "futuresOI": 17601600,
       "futuresSymbol": "TECHM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "WIPRO": {
-      "futuresOI": 113859000,
+      "futuresOI": 130152000,
       "futuresSymbol": "WIPRO26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "LTIM": {
-      "futuresOI": 2325600,
+      "futuresOI": 2074950,
       "futuresSymbol": "LTIM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "COFORGE": {
-      "futuresOI": 11535000,
+      "futuresOI": 12245250,
       "futuresSymbol": "COFORGE26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "PERSISTENT": {
-      "futuresOI": 2050800,
+      "futuresOI": 2173100,
       "futuresSymbol": "PERSISTENT26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "MPHASIS": {
-      "futuresOI": 4752550,
+      "futuresOI": 5047625,
       "futuresSymbol": "MPHASIS26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "TMPV": {
-      "futuresOI": 78910400,
+      "futuresOI": 80541600,
       "futuresSymbol": "TMPV26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "MARUTI": {
-      "futuresOI": 3269550,
+      "futuresOI": 3090750,
       "futuresSymbol": "MARUTI26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "M&M": {
-      "futuresOI": 18914800,
+      "futuresOI": 18913400,
       "futuresSymbol": "M&M26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "BAJAJ-AUTO": {
-      "futuresOI": 3287625,
+      "futuresOI": 3075825,
       "futuresSymbol": "BAJAJ-AUTO26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "EICHERMOT": {
-      "futuresOI": 2876500,
+      "futuresOI": 2941700,
       "futuresSymbol": "EICHERMOT26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "TVSMOTOR": {
-      "futuresOI": 8342075,
+      "futuresOI": 8312675,
       "futuresSymbol": "TVSMOTOR26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "HEROMOTOCO": {
-      "futuresOI": 3390450,
+      "futuresOI": 3760950,
       "futuresSymbol": "HEROMOTOCO26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "ASHOKLEY": {
-      "futuresOI": 153515000,
+      "futuresOI": 154940000,
       "futuresSymbol": "ASHOKLEY26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "BHARATFORG": {
-      "futuresOI": 6377000,
+      "futuresOI": 6899500,
       "futuresSymbol": "BHARATFORG26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "TATASTEEL": {
-      "futuresOI": 233354000,
+      "futuresOI": 223410000,
       "futuresSymbol": "TATASTEEL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "JSWSTEEL": {
-      "futuresOI": 52283475,
+      "futuresOI": 53349975,
       "futuresSymbol": "JSWSTEEL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "HINDALCO": {
-      "futuresOI": 45736600,
+      "futuresOI": 42732200,
       "futuresSymbol": "HINDALCO26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "VEDL": {
-      "futuresOI": 83987950,
+      "futuresOI": 80210200,
       "futuresSymbol": "VEDL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "JINDALSTEL": {
-      "futuresOI": 10943125,
+      "futuresOI": 11557500,
       "futuresSymbol": "JINDALSTEL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "SAIL": {
-      "futuresOI": 195919500,
+      "futuresOI": 197644400,
       "futuresSymbol": "SAIL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "NMDC": {
-      "futuresOI": 331229250,
+      "futuresOI": 340355250,
       "futuresSymbol": "NMDC26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "NATIONALUM": {
-      "futuresOI": 51506250,
+      "futuresOI": 56531250,
       "futuresSymbol": "NATIONALUM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "ADANIENT": {
-      "futuresOI": 18972600,
+      "futuresOI": 17943630,
       "futuresSymbol": "ADANIENT26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "RELIANCE": {
-      "futuresOI": 105398500,
+      "futuresOI": 96081000,
       "futuresSymbol": "RELIANCE26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.161Z"
+      "savedAt": "2026-02-06T10:10:00.303Z"
     },
     "ONGC": {
-      "futuresOI": 92097000,
+      "futuresOI": 95935500,
       "futuresSymbol": "ONGC26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "NTPC": {
-      "futuresOI": 79705500,
+      "futuresOI": 81958500,
       "futuresSymbol": "NTPC26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "POWERGRID": {
-      "futuresOI": 105719800,
+      "futuresOI": 90877000,
       "futuresSymbol": "POWERGRID26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "COALINDIA": {
-      "futuresOI": 40637700,
+      "futuresOI": 45731250,
       "futuresSymbol": "COALINDIA26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "BPCL": {
-      "futuresOI": 34937750,
+      "futuresOI": 35241900,
       "futuresSymbol": "BPCL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "IOC": {
-      "futuresOI": 89631750,
+      "futuresOI": 106913625,
       "futuresSymbol": "IOC26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "TATAPOWER": {
-      "futuresOI": 54070500,
+      "futuresOI": 54741850,
       "futuresSymbol": "TATAPOWER26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "ADANIGREEN": {
-      "futuresOI": 21589200,
+      "futuresOI": 21835800,
       "futuresSymbol": "ADANIGREEN26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "GAIL": {
-      "futuresOI": 109358550,
+      "futuresOI": 112536900,
       "futuresSymbol": "GAIL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "SUNPHARMA": {
-      "futuresOI": 22428000,
+      "futuresOI": 22752450,
       "futuresSymbol": "SUNPHARMA26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "DRREDDY": {
-      "futuresOI": 15063125,
+      "futuresOI": 15612500,
       "futuresSymbol": "DRREDDY26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "CIPLA": {
-      "futuresOI": 13898250,
+      "futuresOI": 13779750,
       "futuresSymbol": "CIPLA26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "DIVISLAB": {
-      "futuresOI": 3331400,
+      "futuresOI": 3539600,
       "futuresSymbol": "DIVISLAB26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "APOLLOHOSP": {
-      "futuresOI": 3579875,
+      "futuresOI": 3601625,
       "futuresSymbol": "APOLLOHOSP26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "AUROPHARMA": {
-      "futuresOI": 20823000,
+      "futuresOI": 20448450,
       "futuresSymbol": "AUROPHARMA26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "LUPIN": {
-      "futuresOI": 6362675,
+      "futuresOI": 6749425,
       "futuresSymbol": "LUPIN26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "ALKEM": {
-      "futuresOI": 1221125,
+      "futuresOI": 1247500,
       "futuresSymbol": "ALKEM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "TORNTPHARM": {
-      "futuresOI": 2545250,
+      "futuresOI": 2622750,
       "futuresSymbol": "TORNTPHARM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "BIOCON": {
-      "futuresOI": 41235000,
+      "futuresOI": 41237500,
       "futuresSymbol": "BIOCON26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "ZYDUSLIFE": {
-      "futuresOI": 8643600,
+      "futuresOI": 9187200,
       "futuresSymbol": "ZYDUSLIFE26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "ITC": {
-      "futuresOI": 193779200,
+      "futuresOI": 199915200,
       "futuresSymbol": "ITC26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "HINDUNILVR": {
-      "futuresOI": 13838700,
+      "futuresOI": 14535300,
       "futuresSymbol": "HINDUNILVR26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "BRITANNIA": {
-      "futuresOI": 3465000,
+      "futuresOI": 3504875,
       "futuresSymbol": "BRITANNIA26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "TATACONSUM": {
-      "futuresOI": 11559350,
+      "futuresOI": 12936550,
       "futuresSymbol": "TATACONSUM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "DABUR": {
-      "futuresOI": 25631250,
+      "futuresOI": 26068750,
       "futuresSymbol": "DABUR26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "MARICO": {
-      "futuresOI": 30840000,
+      "futuresOI": 29664000,
       "futuresSymbol": "MARICO26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "GODREJCP": {
-      "futuresOI": 7914000,
+      "futuresOI": 9166500,
       "futuresSymbol": "GODREJCP26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "COLPAL": {
-      "futuresOI": 5728725,
+      "futuresOI": 5836050,
       "futuresSymbol": "COLPAL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "LT": {
-      "futuresOI": 14351225,
+      "futuresOI": 14014175,
       "futuresSymbol": "LT26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "BHARTIARTL": {
-      "futuresOI": 53574775,
+      "futuresOI": 49459375,
       "futuresSymbol": "BHARTIARTL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "ULTRACEMCO": {
-      "futuresOI": 2431100,
+      "futuresOI": 2289550,
       "futuresSymbol": "ULTRACEMCO26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "SIEMENS": {
-      "futuresOI": 2377550,
+      "futuresOI": 2783375,
       "futuresSymbol": "SIEMENS26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "ABB": {
-      "futuresOI": 2186375,
+      "futuresOI": 2138875,
       "futuresSymbol": "ABB26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "HAL": {
-      "futuresOI": 8766300,
+      "futuresOI": 9693600,
       "futuresSymbol": "HAL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "BEL": {
-      "futuresOI": 118095450,
+      "futuresOI": 106334925,
       "futuresSymbol": "BEL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "INDIGO": {
-      "futuresOI": 8884500,
+      "futuresOI": 9262200,
       "futuresSymbol": "INDIGO26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "CUMMINSIND": {
-      "futuresOI": 3471000,
+      "futuresOI": 3413200,
       "futuresSymbol": "CUMMINSIND26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "BOSCHLTD": {
-      "futuresOI": 182325,
+      "futuresOI": 198700,
       "futuresSymbol": "BOSCHLTD26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "AMBUJACEM": {
-      "futuresOI": 48347250,
+      "futuresOI": 47588100,
       "futuresSymbol": "AMBUJACEM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "SHREECEM": {
-      "futuresOI": 306925,
+      "futuresOI": 309700,
       "futuresSymbol": "SHREECEM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "ADANIPORTS": {
-      "futuresOI": 22184875,
+      "futuresOI": 20674850,
       "futuresSymbol": "ADANIPORTS26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "CONCOR": {
-      "futuresOI": 31597500,
+      "futuresOI": 32281250,
       "futuresSymbol": "CONCOR26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "DLF": {
-      "futuresOI": 52387500,
+      "futuresOI": 50649225,
       "futuresSymbol": "DLF26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "GODREJPROP": {
-      "futuresOI": 12295800,
+      "futuresOI": 11484000,
       "futuresSymbol": "GODREJPROP26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "OBEROIRLTY": {
-      "futuresOI": 5585300,
+      "futuresOI": 5661250,
       "futuresSymbol": "OBEROIRLTY26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "INDHOTEL": {
-      "futuresOI": 26897000,
+      "futuresOI": 26106000,
       "futuresSymbol": "INDHOTEL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "TITAN": {
-      "futuresOI": 8729350,
+      "futuresOI": 9196600,
       "futuresSymbol": "TITAN26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "ASIANPAINT": {
-      "futuresOI": 13388250,
+      "futuresOI": 13131000,
       "futuresSymbol": "ASIANPAINT26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "TRENT": {
-      "futuresOI": 7228100,
+      "futuresOI": 7520600,
       "futuresSymbol": "TRENT26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "HAVELLS": {
-      "futuresOI": 9414500,
+      "futuresOI": 9928000,
       "futuresSymbol": "HAVELLS26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.456Z"
+      "savedAt": "2026-02-06T10:10:00.607Z"
     },
     "VOLTAS": {
-      "futuresOI": 11869500,
+      "futuresOI": 11514375,
       "futuresSymbol": "VOLTAS26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.733Z"
+      "savedAt": "2026-02-06T10:10:00.895Z"
     },
     "PIDILITIND": {
-      "futuresOI": 8652500,
+      "futuresOI": 8740500,
       "futuresSymbol": "PIDILITIND26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.733Z"
+      "savedAt": "2026-02-06T10:10:00.895Z"
     },
     "CROMPTON": {
-      "futuresOI": 51548400,
+      "futuresOI": 57078000,
       "futuresSymbol": "CROMPTON26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.733Z"
+      "savedAt": "2026-02-06T10:10:00.895Z"
     },
     "UPL": {
-      "futuresOI": 33456305,
+      "futuresOI": 29437375,
       "futuresSymbol": "UPL26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.733Z"
+      "savedAt": "2026-02-06T10:10:00.895Z"
     },
     "PIIND": {
-      "futuresOI": 2967825,
+      "futuresOI": 3048850,
       "futuresSymbol": "PIIND26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.733Z"
+      "savedAt": "2026-02-06T10:10:00.895Z"
     },
     "SRF": {
-      "futuresOI": 3437200,
+      "futuresOI": 3464800,
       "futuresSymbol": "SRF26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.733Z"
+      "savedAt": "2026-02-06T10:10:00.895Z"
     },
     "GRASIM": {
-      "futuresOI": 16524750,
+      "futuresOI": 17242750,
       "futuresSymbol": "GRASIM26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.733Z"
+      "savedAt": "2026-02-06T10:10:00.895Z"
     },
     "DMART": {
-      "futuresOI": 5053500,
+      "futuresOI": 5153250,
       "futuresSymbol": "DMART26FEBFUT",
-      "savedAt": "2026-02-02T10:10:00.733Z"
+      "savedAt": "2026-02-06T10:10:00.895Z"
     }
   }
 }
