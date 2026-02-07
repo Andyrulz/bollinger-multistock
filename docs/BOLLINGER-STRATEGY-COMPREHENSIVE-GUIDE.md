@@ -173,36 +173,37 @@ Each strategy instance independently:
 4. Checks exit conditions if position active
 5. Executes trades via market orders
 
-**Every 1 Second (When Position Active):**
+**Exit Checks (At 5-Minute Candle Closes):**
 
-- REST API polling for option premium
-- Trailing stop loss calculation
-- Real-time P&L tracking
+- Exit logic runs ONLY when a 5-minute candle completes
+- No real-time polling for trailing SL (eliminated wick noise)
+- Supertrend-based exits checked at X:X5:05 (with slot stagger)
+- Dashboard price updates at each 5-min boundary
 
-**Staggered Polling:**
+**Staggered Candle Fetching:**
 
-- Strategy 0: Polls at X:XX:04 seconds
-- Strategy 1: Polls at X:XX:05 seconds
-- Strategy 2: Polls at X:XX:06 seconds
+- Strategy 0: Fetches at X:X5:05 seconds
+- Strategy 1: Fetches at X:X5:06 seconds
+- Strategy 2: Fetches at X:X5:07 seconds
 - Prevents API rate limit issues
 
-### Phase 6: End of Day (3:28 PM - 3:35 PM)
+### Phase 6: End of Day (3:19 PM - 3:35 PM)
 
 | Time        | Event                | Description                                                  |
 | ----------- | -------------------- | ------------------------------------------------------------ |
-| **3:28 PM** | **EOD Safety Exit**  | All open positions force-closed                              |
-|             |                      | Staggered: Strategy 0 at 3:28:00, 1 at 3:28:05, 2 at 3:28:10 |
+| **3:19 PM** | **EOD Safety Exit**  | All open positions force-closed                              |
+|             |                      | Staggered: Strategy 0 at 3:19:00, 1 at 3:19:05, 2 at 3:19:10 |
 | **3:30 PM** | **Market Close**     | NSE session ends                                             |
 | **3:35 PM** | **Cache Cleanup**    | Scanner clears historical data                               |
 |             | **Strategy Cleanup** | All instances stopped                                        |
 |             | **Memory Cleanup**   | Garbage collection triggered                                 |
 
-**Why 3:28 PM, not 3:25 PM?**
+**Why 3:19 PM, not 3:25 PM?**
 
-- NSE auto-squareoff happens between 3:15-3:25 PM
-- Bot exits at 3:28 PM to avoid broker's forced exit fees
+- Zerodha broker auto-squareoff happens at 3:25 PM
+- Bot exits 6 minutes earlier at 3:19 PM to avoid broker's forced exit
 - With staggered exits (0/5/10 sec offset), prevents API burst
-- 3:28 PM gives 2-minute buffer before market close
+- 3:19 PM gives comfortable buffer before broker squareoff
 
 ---
 
@@ -313,7 +314,7 @@ ALL conditions must be TRUE at 5-minute candle close:
 | Condition                | Logic                             |
 | ------------------------ | --------------------------------- |
 | **Trend Filter**         | Stock price < Supertrend(10,2)    |
-| **Momentum Filter**      | 10 ≤ RSI(10) ≤ 30                 |
+| **Momentum Filter**      | 15 ≤ RSI(10) ≤ 40                 |
 | **BB Breakout**          | Close ≤ Lower Bollinger Band      |
 | **Level Confirmation**   | Close ≤ PP (daily pivot point)    |
 | **Candle Direction**     | Close < Open (bearish candle)     |
@@ -329,86 +330,51 @@ ALL conditions must be TRUE at 5-minute candle close:
 
 ### Exit Conditions
 
-#### LONG Exit - Simple 12% Trailing Stop
+The system uses a **4-layer exit hierarchy** that provides comprehensive protection:
+
+| Priority | Exit Layer          | Trigger Condition                       | Purpose                 |
+| -------- | ------------------- | --------------------------------------- | ----------------------- |
+| 1        | EOD Safety          | Time = 3:19 PM                          | Force exit before close |
+| 2        | Emergency Hard Stop | Stock moves ±5% from entry              | Flash crash protection  |
+| 3        | Gamma Climax        | Option RSI(14) ≥ 85 (15-min chart)      | Blow-off top capture    |
+| 4        | Supertrend Break    | 5-min candle close vs Supertrend/BB Mid | Primary trend exit      |
+
+---
+
+#### Layer 1: EOD Safety Exit (3:19 PM)
 
 ```
-When position type = LONG:
-  Trailing SL = Highest Premium × 0.88 (constant 12%)
-
-  As premium rises → Update SL = New High × 0.88
-  Exit when: Current Premium ≤ Trailing SL
+Non-negotiable force exit at 3:19 PM IST
+Staggered: Slot 0 at 3:19:00, Slot 1 at 3:19:05, Slot 2 at 3:19:10
+Exit Reason: EOD_SAFETY_EXIT
 ```
 
-#### SHORT Exit - Complex Time-Decay Trailing Stop
+---
 
-**Time-Based Trailing Schedule:**
-
-```
-Minutes Since Entry │ Trailing %  │ Effective SL
-────────────────────┼─────────────┼─────────────────────────
-0-20 minutes        │    12%      │ Highest × 0.88
-20-30 minutes       │     9%      │ Highest × 0.91
-30-35 minutes       │     7%      │ Highest × 0.93
-35-40 minutes       │     6%      │ Highest × 0.94
-40+ minutes         │     5%      │ Highest × 0.95
-```
-
-**Stagnation Rule:**
+#### Layer 2: Emergency Hard Stop (±5% Stock Move)
 
 ```
-If no new high for 10+ minutes:
-  Cap trailing at 9% (Math.min(current%, 9%))
-  Prevents using looser stops when momentum dies
+Polling: Every 30 seconds (lightweight)
+Threshold: Stock price moves 5% against position from entry stock price
+
+LONG position:  Exit if current stock < entry × 0.95 (5% drop)
+SHORT position: Exit if current stock > entry × 1.05 (5% rise)
+
+Exit Reason: EMERGENCY_HARD_STOP
 ```
 
-**Performance Checkpoints:**
+**Purpose:** Circuit breaker for flash crashes and gap events. Does NOT interfere with normal exits.
+
+---
+
+#### Layer 3: Gamma Climax Exit (Option RSI ≥ 85)
 
 ```
-15-minute checkpoint:
-  • If premium hasn't risen ₹5 from entry → EXIT
-  • Catches trades that "stall out" early
+Scheduler: Runs at 15-minute boundaries (9:15, 9:30, 9:45...)
+Data: RSI(14) calculated on 15-minute OPTION candles
+Threshold: RSI ≥ 85 triggers immediate exit
+Micro-Grace: 60 seconds after entry (prevents double-fire)
 
-20-minute checkpoint:
-  • If premium hasn't risen ₹10 from entry → EXIT
-  • Forces exit on weak momentum trades
-```
-
-**SHORT Exit Summary:**
-
-```
-Exit triggers (in order of priority):
-1. EOD Safety Exit (3:28 PM) - Non-negotiable
-2. Emergency Hard Stop (-25% portfolio) - Flash crash protection
-3. Gamma Climax (Option RSI >= 85) - Blow-off top capture
-4. Performance checkpoint failure (15-min or 20-min)
-5. Time-decay trailing SL hit (5-12% depending on time)
-6. Underlying-based exit (stock price > entry candle high)
-```
-
-#### Underlying-Based Exit (5-minute Candle Close)
-
-**For LONG:**
-
-```
-Exit Threshold = MAX(Entry Candle Low, BB Middle Line)
-Exit when: 5-min candle close < Exit Threshold
-```
-
-**For SHORT:**
-
-```
-Exit Threshold = Entry Candle High
-Exit when: 5-min candle close > Exit Threshold
-```
-
-#### Gamma Climax Exit (Option RSI)
-
-**Purpose:** Capture "blow-off tops" when option premium spikes unsustainably
-
-```
-Trigger: RSI(14) on 15-minute OPTION chart >= 85
-Scheduler: Aligned to 15-min boundaries (9:15, 9:30, 9:45...)
-Micro-Grace: 60 seconds (prevents edge-case double-fire)
 Exit Reason: GAMMA_CLIMAX_RSI{value} (e.g., GAMMA_CLIMAX_RSI87)
 ```
 
@@ -418,7 +384,45 @@ Exit Reason: GAMMA_CLIMAX_RSI{value} (e.g., GAMMA_CLIMAX_RSI87)
 - Underlying RSI at 65 might map to Option RSI at 90
 - Captures Eiffel Tower formations before the inevitable reversal
 
-**Position Agnostic:** Works for both LONG and SHORT positions
+**Position Agnostic:** Works for both LONG and SHORT positions.
+
+---
+
+#### Layer 4: Supertrend Break (Primary Exit)
+
+Exit checks run **ONLY at 5-minute candle closes** (not real-time). This eliminates wick noise and false exits.
+
+**LONG Exit Logic:**
+
+```
+Trigger: 5-minute candle CLOSE < Supertrend value
+Supertrend: Dynamic, recalculated each candle (trails price up in uptrends)
+
+Example:
+  Candle Close: ₹2,885
+  Supertrend:   ₹2,890
+  → 2,885 < 2,890 → EXIT triggered
+
+Exit Reason: LONG_SUPERTREND_BREAK
+```
+
+**SHORT Exit Logic:**
+
+```
+Threshold: MIN(Supertrend, BB Middle) - uses the TIGHTER stop
+Trigger: 5-minute candle CLOSE > Threshold
+
+Example:
+  Candle Close: ₹2,850
+  Supertrend:   ₹2,845
+  BB Middle:    ₹2,840
+  Threshold:    MIN(2845, 2840) = ₹2,840
+  → 2,850 > 2,840 → EXIT triggered
+
+Exit Reason: SHORT_SUPERTREND_BB_BREAK
+```
+
+**Why MIN() for SHORT?** Uses the more conservative (lower) value to lock in profits faster when momentum reverses.
 
 ### Position Sizing
 
@@ -486,14 +490,16 @@ Example (High Premium):
 
 ### Trading Phase (Per Strategy Instance)
 
-| State         | Calls/Minute             |
-| ------------- | ------------------------ |
-| No Position   | ~0.2 (5-min candle only) |
-| With Position | ~60 (1-second polling)   |
+| State            | Calls/Minute                             |
+| ---------------- | ---------------------------------------- |
+| No Position      | ~0.2 (5-min candle only)                 |
+| With Position    | ~2.2 (candle + Emergency Stop every 30s) |
+| Option RSI Check | ~0.07 (every 15-min boundary)            |
 
 ### Worst Case (3 Strategies, All With Positions)
 
-- 3 × 60 = 180 calls/minute
+- 3 × 2.2 = ~7 calls/minute (extremely efficient)
+- Real-time polling is DISABLED - exit checks at 5-min candle closes only
 - Well within Zerodha's 1000 calls/minute limit
 
 ---
@@ -561,9 +567,9 @@ If trading NIFTY/BANKNIFTY instead of stocks:
    • Supertrend: BULLISH ✓
    • Buying RELIANCE26JAN2900CE @ ₹125 × 1 lot (250 qty)
 
-🛑 [bollinger-reliance] Exit: TRAILING_SL_BREACH
-   • Entry: ₹125, Exit: ₹138
-   • P&L: +₹3,250 (13 × 250)
+🛑 [bollinger-reliance] Exit: LONG_SUPERTREND_BREAK
+   • Entry: ₹125, Exit: ₹152
+   • P&L: +₹6,750 (27 × 250)
 ```
 
 ---
@@ -629,22 +635,20 @@ If trading NIFTY/BANKNIFTY instead of stocks:
 
 ## ⏰ Critical Timing Reference
 
-| Timing Parameter         | Value                   | Code Location                      |
-| ------------------------ | ----------------------- | ---------------------------------- |
-| Pre-market data fetch    | 09:00:00                | StrategyManager.ts                 |
-| Scanner execution        | 09:30:05                | StrategyManager.ts                 |
-| SHORT entry cutoff       | 14:55 (2:55 PM)         | BollingerBandStrategy.ts:2472      |
-| SHORT cutoff exception   | Fridays (no cutoff)     | BollingerBandStrategy.ts:2473-2475 |
-| SHORT time-decay: 12%→9% | 20 min since entry      | BollingerBandStrategy.ts:2945      |
-| SHORT time-decay: 9%→7%  | 30 min since entry      | BollingerBandStrategy.ts:2944      |
-| SHORT time-decay: 7%→6%  | 35 min since entry      | BollingerBandStrategy.ts:2943      |
-| SHORT time-decay: 6%→5%  | 40 min since entry      | BollingerBandStrategy.ts:2942      |
-| SHORT stagnation cap     | 9% after 10 min no high | BollingerBandStrategy.ts:2951      |
-| SHORT checkpoint 1       | 15 min, ₹5 required     | BollingerBandStrategy.ts:2989      |
-| SHORT checkpoint 2       | 20 min, ₹10 required    | BollingerBandStrategy.ts:3011      |
-| EOD safety exit          | 15:28 (3:28 PM)         | BollingerBandStrategy.ts:3345      |
-| EOD stagger offset       | 5 sec per strategy      | BollingerBandStrategy.ts:3348      |
-| Position reconciliation  | Every 5 minutes         | BollingerBandStrategy.ts:3391      |
+| Timing Parameter        | Value                  | Description                                  |
+| ----------------------- | ---------------------- | -------------------------------------------- |
+| Pre-market data fetch   | 09:00:00               | Historical candle data for 100+ stocks       |
+| Scanner execution       | 09:30:05               | TMV scoring and top 3 selection              |
+| SHORT entry cutoff      | 14:55 (2:55 PM)        | No new SHORT entries after this (Mon-Thu)    |
+| SHORT cutoff exception  | Fridays                | No time restriction on Fridays               |
+| 5-min candle fetch      | X:X5:05 + slot stagger | Entry and exit checks at candle boundaries   |
+| Emergency Stop polling  | Every 30 seconds       | ±5% stock move detection                     |
+| Option RSI check        | 15-min boundaries      | Gamma Climax detection (RSI ≥ 85)            |
+| LONG exit logic         | Candle close check     | Exit when close < Supertrend                 |
+| SHORT exit logic        | Candle close check     | Exit when close > MIN(Supertrend, BB Middle) |
+| EOD safety exit         | 15:19 (3:19 PM)        | Force close all positions                    |
+| EOD stagger offset      | 5 sec per strategy     | Prevents API burst                           |
+| Position reconciliation | Every 5 minutes        | Broker position sync                         |
 
 ---
 
@@ -664,6 +668,6 @@ If trading NIFTY/BANKNIFTY instead of stocks:
 
 ---
 
-_Last Updated: February 7, 2026_
-_Document Version: 3.1 (Eiffel Hunter Edition)_
-_System Version: Multi-Stock Scanner + Bollinger Band Strategy with Holy Trinity Scoring_
+_Last Updated: February 8, 2026_
+_Document Version: 3.2 (Supertrend Exit Edition)_
+_System Version: Multi-Stock Scanner + Bollinger Band Strategy with Supertrend-Based Exits_
