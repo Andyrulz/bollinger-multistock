@@ -61,6 +61,7 @@ interface Position {
   entryCandleLow?: number;     // NEW: Store entry candle's low for LONG SL logic
   entryCandleHigh?: number;    // NEW: Store entry candle's high (for future use)
   entryStockPrice?: number;    // Stock price at entry (for Emergency Hard Stop)
+  entryCandle15MinTimestamp?: Date;  // For RSI exit tracking (which 15-min candle we entered on)
   trailingSL?: number;
   highestPremium?: number;
   entryOrderId: string;        // Store real order ID from KiteConnect
@@ -164,6 +165,13 @@ export class BollingerBandStrategy extends StrategyBase {
   
   // Position reconciliation timer
   private positionReconciliationInterval?: NodeJS.Timeout;
+
+  // Option RSI Climax Exit tracking (Gamma Climax detection)
+  private optionRsiInterval: NodeJS.Timeout | null = null;
+  private optionRsiInitialTimeout: NodeJS.Timeout | null = null;
+  private readonly OPTION_RSI_CHECK_INTERVAL = 15 * 60 * 1000;  // 15 minutes
+  private readonly OPTION_RSI_CLIMAX_THRESHOLD = 85;  // RSI >= 85 = Gamma Climax
+  private readonly OPTION_RSI_MICRO_GRACE_SECONDS = 60;  // 60-second micro-grace to prevent double-fire
 
   // Error monitoring and health tracking
   private errorCounts: Map<string, number> = new Map();
@@ -382,6 +390,9 @@ export class BollingerBandStrategy extends StrategyBase {
           this.logger.warn('⚠️ Cannot start Emergency Hard Stop - no entry stock price in recovered position');
         }
         
+        // P0: Start Option RSI Climax monitoring for recovered positions
+        this.startOptionRsiMonitoring();
+        
         // Validate that monitoring actually started for SHORT positions
         if (this.currentPosition?.type === 'SHORT') {
           // Give monitoring 1 second to initialize
@@ -507,6 +518,9 @@ export class BollingerBandStrategy extends StrategyBase {
     
     // Stop Emergency Hard Stop monitoring
     this.stopEmergencyStopMonitoring();
+    
+    // P0: Stop Option RSI Climax monitoring
+    this.stopOptionRsiMonitoring();
     
     // Stop all monitoring
     this.stopRealTimeMonitoring();
@@ -1131,6 +1145,117 @@ export class BollingerBandStrategy extends StrategyBase {
     
     const rs = avgGain / avgLoss;
     return 100 - (100 / (1 + rs));
+  }
+
+  /**
+   * Calculate RSI(14) on Option Premium 15-minute candles
+   * Used for "Gamma Climax" exit detection
+   * 
+   * @param candles - Array of 15-minute option candles
+   * @returns RSI value (0-100) or -1 if insufficient data
+   */
+  private calculateOptionRSI(candles: Candle[]): number {
+    const period = 14;
+    
+    // Need at least period + 1 candles for valid RSI
+    if (candles.length < period + 1) {
+      this.logger.debug(`Option RSI: Insufficient data (${candles.length}/${period + 1} candles)`);
+      return -1;
+    }
+    
+    // Use only the most recent candles for calculation (stabilize)
+    const recentCandles = candles.slice(-30);
+    
+    const changes: number[] = [];
+    for (let i = 1; i < recentCandles.length; i++) {
+      const curr = recentCandles[i];
+      const prev = recentCandles[i - 1];
+      if (curr && prev) {
+        changes.push(curr.close - prev.close);
+      }
+    }
+    
+    if (changes.length < period) return -1;
+    
+    // Initial average calculation
+    let avgGain = 0;
+    let avgLoss = 0;
+    
+    for (let i = 0; i < period; i++) {
+      const change = changes[i] || 0;
+      if (change > 0) avgGain += change;
+      else avgLoss += Math.abs(change);
+    }
+    
+    avgGain /= period;
+    avgLoss /= period;
+    
+    // Smooth with Wilder's RMA
+    for (let i = period; i < changes.length; i++) {
+      const change = changes[i] || 0;
+      if (change > 0) {
+        avgGain = (avgGain * (period - 1) + change) / period;
+        avgLoss = (avgLoss * (period - 1)) / period;
+      } else {
+        avgGain = (avgGain * (period - 1)) / period;
+        avgLoss = (avgLoss * (period - 1) + Math.abs(change)) / period;
+      }
+    }
+    
+    if (avgLoss === 0) return 100;
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+  }
+
+  /**
+   * Fetch 15-minute historical data for the active option instrument
+   * Returns candle closes for RSI calculation
+   * 
+   * @returns Array of 15-min candles (30+ for RSI stability)
+   */
+  private async fetchOption15MinCandles(): Promise<Candle[]> {
+    if (!this.currentPosition) return [];
+    
+    const optionToken = this.currentPosition.instrument.instrument_token;
+    const optionSymbol = this.currentPosition.instrument.tradingsymbol;
+    
+    try {
+      const toDate = new Date();
+      const fromDate = new Date(toDate);
+      fromDate.setDate(fromDate.getDate() - 5);  // 5 days lookback for 30+ 15-min candles
+      
+      this.logger.debug(`Fetching 15-min option data: ${optionSymbol} from ${fromDate.toISOString().split('T')[0]}`);
+      
+      const historicalData = await this.kiteConnect.getHistoricalData(
+        optionToken,
+        '15minute',  // 15-minute timeframe
+        fromDate,
+        toDate
+      );
+      
+      if (!historicalData || historicalData.length < 20) {
+        this.logger.warn(`Insufficient 15-min option data: ${historicalData?.length || 0} candles`);
+        return [];
+      }
+      
+      // Convert to Candle interface
+      const candles: Candle[] = historicalData.map((kiteCandle: any) => ({
+        timestamp: new Date(kiteCandle.date),
+        open: kiteCandle.open,
+        high: kiteCandle.high,
+        low: kiteCandle.low,
+        close: kiteCandle.close,
+        volume: kiteCandle.volume || 0,
+        isComplete: true
+      }));
+      
+      this.logger.debug(`Fetched ${candles.length} 15-min option candles for RSI calculation`);
+      return candles;
+      
+    } catch (error) {
+      this.logger.error(`Failed to fetch 15-min option data for ${optionSymbol}:`, error);
+      return [];
+    }
   }
 
   /**
@@ -2893,6 +3018,7 @@ export class BollingerBandStrategy extends StrategyBase {
           entryPrice: orderResult.price,
           quantity: lots,
           entryTime: new Date(),
+          entryCandle15MinTimestamp: new Date(), // P0: Gamma Climax RSI check baseline
           ...(entryCandleTimestamp !== undefined && { entryCandleTimestamp: entryCandleTimestamp }),
           ...(entryCandleLow !== undefined && { entryCandleLow: entryCandleLow }),
           ...(entryCandleHigh !== undefined && { entryCandleHigh: entryCandleHigh }),
@@ -2920,6 +3046,9 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Start Emergency Hard Stop monitoring (30-second flash crash protection)
         this.startEmergencyStopMonitoring();
+        
+        // P0: Start Option RSI Climax monitoring (15-min boundary checks, RSI >= 85 = Gamma Climax exit)
+        this.startOptionRsiMonitoring();
         
         this.metrics.totalTrades++;
         // Update metrics to reflect successful trade execution
@@ -3014,6 +3143,7 @@ export class BollingerBandStrategy extends StrategyBase {
           entryPrice: orderResult.price,
           quantity: lots,
           entryTime: new Date(),
+          entryCandle15MinTimestamp: new Date(), // P0: Gamma Climax RSI check baseline
           ...(entryCandleTimestamp !== undefined && { entryCandleTimestamp: entryCandleTimestamp }),
           entryCandleHigh: candleHigh, // Extracted at signal detection
           entryStockPrice: stockPrice, // Store stock price for Emergency Hard Stop
@@ -3034,6 +3164,9 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Start Emergency Hard Stop monitoring (30-second flash crash protection)
         this.startEmergencyStopMonitoring();
+        
+        // P0: Start Option RSI Climax monitoring (15-min boundary checks, RSI >= 85 = Gamma Climax exit)
+        this.startOptionRsiMonitoring();
         
         this.metrics.totalTrades++;
         // Update metrics to reflect successful trade execution
@@ -3205,6 +3338,156 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   // ============================================================================
+  // OPTION RSI CLIMAX EXIT - "Gamma Climax" Profit Taking
+  // Runs on 15-minute boundaries to detect blow-off tops in Eiffel Tower setups
+  // ============================================================================
+
+  /**
+   * GAMMA CLIMAX EXIT - Option RSI-based profit taking
+   * 
+   * Runs at every 15-minute boundary when position is active.
+   * Scheduler alignment guarantees we're at a boundary - no complex grace math needed.
+   * 
+   * Safety: Only skip if entry was within last 60 seconds (edge case prevention)
+   */
+  private async checkOptionRsiExit(): Promise<void> {
+    if (!this.currentPosition) return;
+    
+    const now = new Date();
+    const entryTime = this.currentPosition.entryTime;
+    
+    // Micro-grace: Skip only if we JUST entered (prevents double-fire on 10:14:59 entry)
+    const secondsSinceEntry = (now.getTime() - entryTime.getTime()) / 1000;
+    if (secondsSinceEntry < this.OPTION_RSI_MICRO_GRACE_SECONDS) {
+      this.logger.debug(`[RSI EXIT] Skipping: Entry was ${secondsSinceEntry.toFixed(0)}s ago (micro-grace)`);
+      return;
+    }
+    
+    // Fetch 15-min option historical data
+    const optionCandles = await this.fetchOption15MinCandles();
+    
+    if (optionCandles.length < 15) {
+      this.logger.warn(`[RSI EXIT] Insufficient option candles: ${optionCandles.length} (need 15+)`);
+      return;  // Risk-off: Don't exit without valid data
+    }
+    
+    // Verify latest candle is closed (its timestamp should be before now)
+    const latestCandle = optionCandles[optionCandles.length - 1];
+    if (!latestCandle) {
+      this.logger.warn(`[RSI EXIT] No latest candle available`);
+      return;
+    }
+    
+    // Sanity check: Latest candle timestamp should be in the past (closed candle)
+    // KiteConnect returns open timestamp, so a 10:00 candle closes at 10:15
+    const candleCloseTime = new Date(latestCandle.timestamp.getTime() + 15 * 60 * 1000);
+    if (candleCloseTime > now) {
+      this.logger.debug(`[RSI EXIT] Latest candle not yet closed: ${latestCandle.timestamp.toLocaleTimeString()}`);
+      return;
+    }
+    
+    // Calculate RSI(14) on option closes
+    const optionRsi = this.calculateOptionRSI(optionCandles);
+    
+    if (optionRsi < 0) {
+      this.logger.warn(`[RSI EXIT] Invalid RSI calculation`);
+      return;
+    }
+    
+    const optionSymbol = this.currentPosition.instrument.tradingsymbol;
+    const positionType = this.currentPosition.type;
+    
+    this.logger.info(`[RSI EXIT] ${optionSymbol} | RSI(14): ${optionRsi.toFixed(1)} | Threshold: ${this.OPTION_RSI_CLIMAX_THRESHOLD}`);
+    
+    // GAMMA CLIMAX: Exit if RSI >= 85
+    if (optionRsi >= this.OPTION_RSI_CLIMAX_THRESHOLD) {
+      this.logger.info(`🔥 GAMMA CLIMAX DETECTED: ${optionSymbol} | RSI: ${optionRsi.toFixed(1)} >= ${this.OPTION_RSI_CLIMAX_THRESHOLD}`);
+      this.logger.info(`   Position: ${positionType} | Entry: ₹${this.currentPosition.entryPrice.toFixed(2)} | Time in trade: ${(secondsSinceEntry / 60).toFixed(1)} mins`);
+      this.logger.info(`   Action: FULL EXIT (Capturing blow-off top)`);
+      
+      await this.executeExit(`GAMMA_CLIMAX_RSI${optionRsi.toFixed(0)}`);
+    } else {
+      this.logger.debug(`[RSI EXIT] RSI ${optionRsi.toFixed(1)} < ${this.OPTION_RSI_CLIMAX_THRESHOLD} - No action`);
+    }
+  }
+
+  /**
+   * Start 15-minute RSI exit monitoring
+   * Aligned to 15-minute boundaries (9:15, 9:30, 9:45, etc.)
+   */
+  private startOptionRsiMonitoring(): void {
+    if (this.optionRsiInterval || this.optionRsiInitialTimeout) {
+      this.logger.debug('[RSI MONITOR] Already running');
+      return;
+    }
+    
+    const now = new Date();
+    const currentMinute = now.getMinutes();
+    const currentSecond = now.getSeconds();
+    
+    // Calculate next 15-minute boundary
+    const nextBoundaryMinute = Math.ceil((currentMinute + 1) / 15) * 15;
+    const minutesUntil = nextBoundaryMinute - currentMinute;
+    const msUntilBoundary = (minutesUntil * 60 - currentSecond) * 1000;
+    
+    // Calculate exact next check time for logging
+    const nextCheckTime = new Date(now.getTime() + msUntilBoundary);
+    
+    this.logger.info(`[RSI MONITOR] Starting. Next RSI check at ${nextCheckTime.toLocaleTimeString()} (in ${Math.round(msUntilBoundary / 1000)}s)`);
+    
+    // Initial delayed check at next 15-min boundary
+    this.optionRsiInitialTimeout = setTimeout(() => {
+      this.optionRsiInitialTimeout = null;
+      
+      // If position was closed while waiting, abort
+      if (!this.currentPosition) {
+        this.logger.debug('[RSI MONITOR] Position closed before first check, aborting');
+        return;
+      }
+      
+      // Run first check
+      const firstCheckTime = new Date();
+      this.logger.debug(`[RSI MONITOR] First check triggered at ${firstCheckTime.toLocaleTimeString()}`);
+      this.checkOptionRsiExit().catch(err => 
+        this.logger.error('[RSI MONITOR] Error in initial check:', err)
+      );
+      
+      // Then set up 15-minute interval
+      this.optionRsiInterval = setInterval(async () => {
+        if (!this.currentPosition) {
+          this.stopOptionRsiMonitoring();
+          return;
+        }
+        
+        const checkTime = new Date();
+        this.logger.debug(`[RSI MONITOR] 15-min check triggered at ${checkTime.toLocaleTimeString()}`);
+        
+        try {
+          await this.checkOptionRsiExit();
+        } catch (error) {
+          this.logger.error('[RSI MONITOR] Error in periodic check:', error);
+        }
+      }, this.OPTION_RSI_CHECK_INTERVAL);
+      
+    }, msUntilBoundary);
+  }
+
+  /**
+   * Stop 15-minute RSI exit monitoring
+   */
+  private stopOptionRsiMonitoring(): void {
+    if (this.optionRsiInitialTimeout) {
+      clearTimeout(this.optionRsiInitialTimeout);
+      this.optionRsiInitialTimeout = null;
+    }
+    if (this.optionRsiInterval) {
+      clearInterval(this.optionRsiInterval);
+      this.optionRsiInterval = null;
+      this.logger.info('[RSI MONITOR] Stopped');
+    }
+  }
+
+  // ============================================================================
   // DEPRECATED METHODS - Kept for reference, no longer called
   // Real-time polling has been replaced with 5-minute candle close exit logic
   // ============================================================================
@@ -3299,6 +3582,9 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Stop Emergency Hard Stop monitoring
         this.stopEmergencyStopMonitoring();
+        
+        // P0: Stop Option RSI Climax monitoring
+        this.stopOptionRsiMonitoring();
         
         // P0: Save cleared position to disk (CRITICAL for all exit paths)
         // Retry once if save fails to prevent ghost positions

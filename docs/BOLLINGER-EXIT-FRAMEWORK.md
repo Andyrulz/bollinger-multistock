@@ -12,10 +12,11 @@ Stop-loss tightness adapts based on:
 2. **Momentum State** - Accelerate when stagnant
 3. **Performance Filters** - Cut losers at checkpoints
 4. **Trend Validation** - Exit on thesis invalidation
+5. **Gamma Climax** - Capture blow-off tops via Option RSI
 
 ---
 
-## The 4 Exit Layers
+## The 5 Exit Layers
 
 ### 1. Time-Decay Trailing Stop (Primary)
 
@@ -74,6 +75,27 @@ Stop-loss tightness adapts based on:
 **LONG**: Exit if 5-min candle close < MAX(entryCandleLow, BB_Midline)
 
 - First threshold hit triggers exit
+
+---
+
+### 5. Gamma Climax Exit (Blow-Off Top Capture)
+
+**Mechanism**: RSI(14) on 15-minute OPTION chart ≥ 85 = full exit
+
+**Why Option RSI (not underlying)?**
+
+- Options are leveraged instruments; when they spike, RSI >= 85 signals "crowd euphoria"
+- Underlying RSI at 65 might map to Option RSI at 90 due to gamma acceleration
+- Captures Eiffel Tower tops before the reversal
+
+**Scheduler**:
+
+- Aligned to 15-minute market boundaries (9:15, 9:30, 9:45...)
+- 60-second micro-grace prevents edge-case double-fire on boundary entries
+
+**Exit Reason**: `GAMMA_CLIMAX_RSI{value}` (e.g., `GAMMA_CLIMAX_RSI87`)
+
+**Position Agnostic**: Works for both LONG and SHORT positions
 
 ---
 
@@ -359,7 +381,7 @@ if (minutesSinceEntry >= 15 && minutesSinceEntry < 15.1) {
         movementFromEntry: movementFromEntry.toFixed(2),
         required: 5,
         shortfall: (5 - movementFromEntry).toFixed(2),
-      }
+      },
     );
 
     await this.executeExit("SHORT_INSUFFICIENT_MOVEMENT_15MIN");
@@ -379,7 +401,7 @@ if (minutesSinceEntry >= 20 && minutesSinceEntry < 20.1) {
         movementFromEntry: movementFromEntry.toFixed(2),
         required: 10,
         shortfall: (10 - movementFromEntry).toFixed(2),
-      }
+      },
     );
 
     await this.executeExit("SHORT_INSUFFICIENT_MOVEMENT_20MIN");
@@ -917,7 +939,7 @@ test("Trailing SL tightens at 20 minutes", () => {
 test("Stagnation overrides loose time-based SL", () => {
   position.entryTime = new Date(Date.now() - 15 * 60 * 1000); // T+15
   position.timeDecayTrailing.lastHighTime = new Date(
-    Date.now() - 12 * 60 * 1000
+    Date.now() - 12 * 60 * 1000,
   ); // 12 min stale
   position.highestPremium = 290;
 

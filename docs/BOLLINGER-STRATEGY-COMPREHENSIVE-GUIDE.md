@@ -377,10 +377,12 @@ If no new high for 10+ minutes:
 
 ```
 Exit triggers (in order of priority):
-1. Performance checkpoint failure (15-min or 20-min)
-2. Time-decay trailing SL hit (5-12% depending on time)
-3. Underlying-based exit (stock price > entry candle high)
-4. EOD Safety Exit (3:28 PM)
+1. EOD Safety Exit (3:28 PM) - Non-negotiable
+2. Emergency Hard Stop (-25% portfolio) - Flash crash protection
+3. Gamma Climax (Option RSI >= 85) - Blow-off top capture
+4. Performance checkpoint failure (15-min or 20-min)
+5. Time-decay trailing SL hit (5-12% depending on time)
+6. Underlying-based exit (stock price > entry candle high)
 ```
 
 #### Underlying-Based Exit (5-minute Candle Close)
@@ -398,6 +400,25 @@ Exit when: 5-min candle close < Exit Threshold
 Exit Threshold = Entry Candle High
 Exit when: 5-min candle close > Exit Threshold
 ```
+
+#### Gamma Climax Exit (Option RSI)
+
+**Purpose:** Capture "blow-off tops" when option premium spikes unsustainably
+
+```
+Trigger: RSI(14) on 15-minute OPTION chart >= 85
+Scheduler: Aligned to 15-min boundaries (9:15, 9:30, 9:45...)
+Micro-Grace: 60 seconds (prevents edge-case double-fire)
+Exit Reason: GAMMA_CLIMAX_RSI{value} (e.g., GAMMA_CLIMAX_RSI87)
+```
+
+**Why Option RSI (not underlying)?**
+
+- Options are leveraged instruments with gamma acceleration
+- Underlying RSI at 65 might map to Option RSI at 90
+- Captures Eiffel Tower formations before the inevitable reversal
+
+**Position Agnostic:** Works for both LONG and SHORT positions
 
 ### Position Sizing
 
