@@ -28,10 +28,18 @@ class TradingBot {
     }
 
     this.kiteConnect = new KiteConnect({
-      api_key: process.env.ZERODHA_API_KEY
+      api_key: process.env.ZERODHA_API_KEY,
+      timeout: 15000 // 15s — generous for Indian network conditions during market hours
     });
 
     this.authService = new AuthService(this.kiteConnect, this.logger);
+
+    // Use KiteConnect's built-in session expiry hook for clean cleanup on TokenException
+    this.kiteConnect.setSessionExpiryHook(() => {
+      this.authService.clearSessionOnExpiry().catch(err => {
+        this.logger.error('Failed to clear session on expiry hook:', err);
+      });
+    });
     
     // Initialize QuoteManager singleton
     this.quoteManager = new QuoteManager(this.kiteConnect, this.logger);
@@ -182,7 +190,9 @@ class TradingBot {
 
     this.app.get('/', async (req: Request, res: Response) => {
       const isAuthenticated = this.authService.isAuthenticated();
-      const isValidAuthentication = await this.authService.isAuthenticatedAndValid();
+      // Use cached validation to avoid hammering Zerodha API on every page load
+      // isAuthenticatedAndValid() now has a 5-min cache and transient-error safety
+      const isValidAuthentication = isAuthenticated ? await this.authService.isAuthenticatedAndValid() : false;
       const sessionData = this.authService.getSessionData();
       
       // Get active strategies from StrategyRegistry
@@ -2371,6 +2381,8 @@ class TradingBot {
         const slotMetrics = (status as any).slotMetrics || { totalTrades: 0, wins: 0, losses: 0, winRate: 0, totalPnL: 0, avgWin: 0, avgLoss: 0, profitFactor: 0, roi: 0, initialCapital: 65000, currentCapital: 65000 };
         const indicators = (status as any).indicators || { rsi: 0, supertrend: { trend: 'N/A', value: 0 }, bollingerBands: { upper: 0, middle: 0, lower: 0 } };
         const pivots = (status as any).pivots || { pp: 0, r1: 0, r2: 0, s1: 0, s2: 0 };
+        const previousDayHigh = (status as any).previousDayHigh || 0;
+        const previousDayLow = (status as any).previousDayLow || 0;
         const currentPrice = (status as any).currentStockPrice || (status as any).currentNiftyPrice || 0;
         const signalSymbol = (status as any).signalSymbol || 'N/A';
         const positionInfo = (status as any).positionInfo || null;
@@ -2740,6 +2752,19 @@ class TradingBot {
           <div class="card-status">${currentPrice > (pivots.s2 || 0) ? '🟢 Above' : '🔴 Below'}</div>
         </div>
       </div>
+      <!-- Previous Day High/Low -->
+      <div class="grid-2" style="margin-top: 12px;">
+        <div class="card card-green">
+          <div class="card-value">₹${previousDayHigh ? previousDayHigh.toFixed(2) : 'N/A'}</div>
+          <div class="card-label">PDH (Prev Day High)</div>
+          <div class="card-status">${currentPrice > previousDayHigh ? '🟢 Above' : '🔴 Below'}</div>
+        </div>
+        <div class="card card-red">
+          <div class="card-value">₹${previousDayLow ? previousDayLow.toFixed(2) : 'N/A'}</div>
+          <div class="card-label">PDL (Prev Day Low)</div>
+          <div class="card-status">${currentPrice > previousDayLow ? '🟢 Above' : '🔴 Below'}</div>
+        </div>
+      </div>
     </div>
     
     <!-- Strategy Rules -->
@@ -2752,7 +2777,7 @@ class TradingBot {
             <li>${signalSymbol} Price > Bollinger Upper Band</li>
             <li>RSI between 68-85 (overbought momentum)</li>
             <li>Supertrend = UP</li>
-            <li>${signalSymbol} Price above R1 or R2</li>
+            <li>${signalSymbol} Price above R1 or Previous Day High</li>
           </ul>
           <div class="exit-rule">Exit: 5-min Candle Close < Supertrend (10,2)</div>
         </div>
@@ -2762,7 +2787,7 @@ class TradingBot {
             <li>${signalSymbol} Price < Bollinger Lower Band</li>
             <li>RSI between 15-40 (oversold momentum)</li>
             <li>Supertrend = DOWN</li>
-            <li>${signalSymbol} Price below PP (Pivot Point)</li>
+            <li>${signalSymbol} Price below S1 or Previous Day Low</li>
           </ul>
           <div class="exit-rule short">Exit: 5-min Candle Close > MIN(Supertrend, BB Middle)</div>
         </div>

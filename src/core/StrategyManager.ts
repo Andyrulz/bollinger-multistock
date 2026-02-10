@@ -254,10 +254,12 @@ export class StrategyManager {
         if (slotData.activePosition && slotData.activePosition !== null) {
           const position = slotData.activePosition;
           
-          // Extract underlying symbol from tradingsymbol (e.g., "BEL26FEB430CE" → "BEL")
+          // Extract underlying symbol - prefer instrument.name for symbols with special chars (M&M, BAJAJ-AUTO)
           const tradingsymbol = position.instrument?.tradingsymbol || '';
-          const extractedSymbol = tradingsymbol.match(/^([A-Z]+)/)?.[1];
-          const symbol = extractedSymbol || position.underlying || 'UNKNOWN';
+          const instrumentName = position.instrument?.name || '';
+          // Regex handles &, - in symbols (e.g., "M&M26FEB3650CE" → "M&M", "BAJAJ-AUTO26FEB9500PE" → "BAJAJ-AUTO")
+          const extractedSymbol = tradingsymbol.match(/^([A-Z][A-Z&-]*)/)?.[1];
+          const symbol = instrumentName || extractedSymbol || position.underlying || 'UNKNOWN';
           
           // Determine direction from position type
           const direction = position.type === 'LONG' ? 'LONG' : 'SHORT';
@@ -266,10 +268,12 @@ export class StrategyManager {
           this.logger.info(`      Position: ${direction} | Entry: ₹${position.entryPrice} | Option: ${tradingsymbol}`);
           
           // Pre-populate slot state with SLOT-BASED strategy ID to prevent conflicts
+          // Sanitize symbol for ID: replace & with _and_ for URL safety (M&M → m_and_m)
+          const sanitizedSymbol = symbol.toLowerCase().replace(/&/g, '_and_');
           this.slotStates[slotIndex] = {
             slotNumber: slotIndex,
             symbol: symbol,
-            strategyId: `bollinger-slot${slotNumber}-${symbol.toLowerCase()}`,
+            strategyId: `bollinger-slot${slotNumber}-${sanitizedSymbol}`,
             deployedAt: position.entryTime ? new Date(position.entryTime) : new Date(),
             lastScanScore: null,
             lastScanBias: direction,
@@ -384,8 +388,10 @@ export class StrategyManager {
       this.logger.info(`   🔧 Restoring strategy for ${symbol} from slot data...`);
       
       // Create strategy config from slot data with SLOT-BASED ID
+      // Sanitize symbol for ID: replace & with _and_ for URL safety
+      const sanitizedSymbol = symbol.toLowerCase().replace(/&/g, '_and_');
       const config: StrategyConfig = {
-        id: slotState.strategyId || `bollinger-slot${slotNumber}-${symbol.toLowerCase()}`,
+        id: slotState.strategyId || `bollinger-slot${slotNumber}-${sanitizedSymbol}`,
         name: `Bollinger Band - ${symbol} (RESTORED)`,
         enabled: true,
         description: `Restored from active position on restart`,
@@ -404,7 +410,7 @@ export class StrategyManager {
         },
       };
       
-      // Create the strategy instance
+      // Create the strategy instance (will be initialized after auth if not authenticated yet)
       const strategy = await StrategyRegistry.createInstance(
         'bollinger-band',
         this.kiteConnect,
@@ -414,10 +420,14 @@ export class StrategyManager {
         config,
       );
       
-      // Start the strategy (it will restore its position from the data file)
-      await strategy.start();
-      
-      this.logger.info(`   ✅ Strategy ${config.id} restored and started`);
+      // Only start if already initialized (authenticated path)
+      // If not initialized, initializePendingStrategies() will handle init + start after auth
+      if (strategy.isInitialized) {
+        await strategy.start();
+        this.logger.info(`   ✅ Strategy ${config.id} restored and started`);
+      } else {
+        this.logger.info(`   ⏸️ Strategy ${config.id} registered - will initialize and start after authentication`);
+      }
       return true;
       
     } catch (error) {
@@ -799,6 +809,19 @@ export class StrategyManager {
   }
 
   /**
+   * STATIC: Check if symbol is in cooldown (callable from strategies)
+   * Used by BollingerBandStrategy to block re-entry after manual/broker exits
+   * @param symbol - Stock symbol to check (e.g., "ASIANPAINT")
+   * @returns true if symbol is in cooldown, false if available
+   */
+  public static isSymbolInCooldownStatic(symbol: string): boolean {
+    if (StrategyManager.instance) {
+      return StrategyManager.instance.isSymbolInCooldown(symbol);
+    }
+    return false; // No instance = no cooldown tracking
+  }
+
+  /**
    * Clear all symbol cooldowns (used for daily reset)
    */
   private clearSymbolCooldowns(): void {
@@ -1171,6 +1194,12 @@ export class StrategyManager {
       }
       this.isDataCached = true;
       
+      // Fix D: 3s cooldown after heavy historical data fetch (54 batches × 1s = ~60s)
+      // before starting universe scan (which fires getQuote calls).
+      // Allows Zerodha's connection pool to fully recover.
+      this.logger.info('⏳ Cooling down 3s before universe scan...');
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
       // Step 2: Run full scan
       this.logger.info('📊 Step 2: Running universe scan...');
       const scannerResult = await this.marketScanner.scanUniverse();
@@ -1434,7 +1463,9 @@ export class StrategyManager {
     try {
       // Use SLOT-BASED strategy ID to prevent conflicts when same stock is in multiple slots
       const slotNumber = slotIndex + 1;
-      const strategyId = `bollinger-slot${slotNumber}-${stock.symbol.toLowerCase()}`;
+      // Sanitize symbol for ID: replace & with _and_ for URL safety (M&M → m_and_m)
+      const sanitizedSymbol = stock.symbol.toLowerCase().replace(/&/g, '_and_');
+      const strategyId = `bollinger-slot${slotNumber}-${sanitizedSymbol}`;
       
       const config: StrategyConfig = {
         id: strategyId,

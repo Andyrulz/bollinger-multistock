@@ -211,12 +211,12 @@ export class MarketScanner {
 
       this.logger.info(`📊 Starting historical data fetch for ${this.universe.length} stocks`);
       this.logger.info("📊 Zerodha Rate Limit: 3 historical data requests per second");
-      this.logger.info(`📊 Strategy: Batch size of 3, with 1-second delay between batches`);
-      this.logger.info(`📊 Expected Duration: ~${Math.ceil(this.universe.length / 3)} seconds`);
+      this.logger.info(`📊 Strategy: Batch size of 2, with 1-second delay between batches`);
+      this.logger.info(`📊 Expected Duration: ~${Math.ceil(this.universe.length / 2)} seconds`);
 
       // Zerodha Rate Limit: 3 requests/second for historical data
-      // Process in batches of 3 with 1-second delays
-      const batchSize = 3;
+      // Process in batches of 2 to stay well below burst cap (~25 req window)
+      const batchSize = 2;
       const delayBetweenBatches = 1000; // 1 second
       
       const allResults: any[] = [];
@@ -264,7 +264,7 @@ export class MarketScanner {
       );
       
       const batchDuration = Date.now() - batchStartTime;
-      const batchSuccesses = results.filter(r => r.status === 'fulfilled').length;
+      const batchSuccesses = results.filter(r => r.status === 'fulfilled' && (r.value as any)?.success).length;
       this.logger.info(`📊 Batch ${currentBatch} complete: ${batchSuccesses}/${batch.length} successful in ${batchDuration}ms`);
       
       allResults.push(...results);
@@ -277,14 +277,93 @@ export class MarketScanner {
     }
 
     this.logger.info(`📊 Step 2 Complete: All batches processed`);
-    
-    const successful = allResults.filter((r) => r.status === "fulfilled").length;
-    const failed = allResults.filter((r) => r.status === "rejected");
 
-    this.logger.info(`📊 Summary: ${successful} successful, ${failed.length} failed out of ${allResults.length} total`);
+    // Fix E: Identify failed stocks and retry after cooldown
+    // A stock is "failed" if: rejected, or fulfilled with success:false, or missing from cache
+    const failedStocks: string[] = [];
+    for (const result of allResults) {
+      if (result.status === 'rejected') {
+        failedStocks.push(result.reason?.symbol || 'unknown');
+      } else if (result.status === 'fulfilled' && result.value && !result.value.success) {
+        failedStocks.push(result.value.symbol);
+      }
+    }
+    // Belt-and-suspenders: check for any universe stock missing from cache
+    for (const stock of this.universe) {
+      if (!this.cachedHistoricalData.has(stock.symbol) && !failedStocks.includes(stock.symbol)) {
+        failedStocks.push(stock.symbol);
+      }
+    }
 
-    // Failure threshold check (20%)
-    const failureRate = failed.length / allResults.length;
+    if (failedStocks.length > 0) {
+      this.logger.warn(`⚠️ ${failedStocks.length} stocks failed initial fetch: ${failedStocks.join(', ')}`);
+      this.logger.info(`⏳ Waiting 5s cooldown before retry...`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+
+      const retryBatchSize = 2;
+      const retryStocks = this.universe.filter(s => failedStocks.includes(s.symbol));
+      const retryTotalBatches = Math.ceil(retryStocks.length / retryBatchSize);
+      this.logger.info(`🔄 Retrying ${retryStocks.length} failed stocks in ${retryTotalBatches} batches...`);
+
+      let retrySuccessCount = 0;
+      let retryFailCount = 0;
+
+      for (let i = 0; i < retryStocks.length; i += retryBatchSize) {
+        const batch = retryStocks.slice(i, i + retryBatchSize);
+        const currentBatch = Math.floor(i / retryBatchSize) + 1;
+
+        this.logger.info(`🔄 Retry batch ${currentBatch}/${retryTotalBatches}: ${batch.map(s => s.symbol).join(', ')}`);
+
+        const retryResults = await Promise.allSettled(
+          batch.map(async (stock) => {
+            try {
+              const instrumentToken = stock.instrumentToken;
+              if (!instrumentToken) {
+                this.logger.error(`  ✗ ${stock.symbol}: No instrument token`);
+                return { symbol: stock.symbol, success: false };
+              }
+              const toDate = new Date();
+              const fromDate = new Date();
+              fromDate.setDate(fromDate.getDate() - 10);
+              const candleStartTime = Date.now();
+              const candles = await this.kiteConnect.getHistoricalData(
+                instrumentToken, "5minute", fromDate, toDate,
+              );
+              const candleDuration = Date.now() - candleStartTime;
+              this.cachedHistoricalData.set(stock.symbol, candles);
+              this.logger.info(`  ✓ RETRY ${stock.symbol}: ${candles.length} candles in ${candleDuration}ms`);
+              return { symbol: stock.symbol, success: true };
+            } catch (error: any) {
+              this.logger.error(`  🔴 FATAL: ${stock.symbol} failed retry — excluded from scan: ${error.message}`);
+              return { symbol: stock.symbol, success: false };
+            }
+          }),
+        );
+
+        for (const r of retryResults) {
+          if (r.status === 'fulfilled' && r.value?.success) {
+            retrySuccessCount++;
+          } else {
+            retryFailCount++;
+          }
+        }
+
+        // Rate limit between retry batches
+        if (i + retryBatchSize < retryStocks.length) {
+          await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
+        }
+      }
+
+      this.logger.info(`🔄 Retry complete: ${retrySuccessCount} recovered, ${retryFailCount} permanently failed`);
+    }
+
+    const successful = this.cachedHistoricalData.size;
+    const failed = this.universe.filter(s => !this.cachedHistoricalData.has(s.symbol));
+
+    this.logger.info(`📊 Summary: ${successful} successful, ${failed.length} failed out of ${this.universe.length} total`);
+
+    // Failure threshold check (20%) — use universe.length as denominator (post-retry)
+    const failureRate = failed.length / this.universe.length;
     if (failureRate > 0.2) {
       this.logger.error(
         `❌ ABORT: Data cache failure rate: ${(failureRate * 100).toFixed(1)}% exceeds 20% threshold`,
@@ -437,6 +516,40 @@ export class MarketScanner {
   ): Promise<ScoredStock[]> {
     this.logger.info(`📈 Scoring ${stocks.length} stocks...`);
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRE-FETCH QUOTES IN BATCHES — Avoids per-stock getQuote() calls that
+    // saturate the connection pool and cause ECONNABORTED cascades.
+    // We batch all universe symbols into groups of 40 (well within Zerodha's limit).
+    // ═══════════════════════════════════════════════════════════════════════════
+    const quoteCache = new Map<string, { upper_circuit_limit: number; lower_circuit_limit: number; ohlcClose: number }>();
+    const QUOTE_BATCH_SIZE = 40;
+    const allQuoteKeys = stocks.map(s => `NSE:${s.symbol}`);
+    
+    for (let i = 0; i < allQuoteKeys.length; i += QUOTE_BATCH_SIZE) {
+      const batch = allQuoteKeys.slice(i, i + QUOTE_BATCH_SIZE);
+      try {
+        const quotes = await this.kiteConnect.getQuote(batch);
+        for (const key of batch) {
+          const q = quotes[key];
+          if (q) {
+            quoteCache.set(key, {
+              upper_circuit_limit: q.upper_circuit_limit || 0,
+              lower_circuit_limit: q.lower_circuit_limit || 0,
+              ohlcClose: q.ohlc?.close || 0,
+            });
+          }
+        }
+        this.logger.info(`📡 Fetched quotes batch ${Math.floor(i / QUOTE_BATCH_SIZE) + 1}/${Math.ceil(allQuoteKeys.length / QUOTE_BATCH_SIZE)} (${batch.length} symbols)`);
+        // Small delay between batches to avoid rate limits
+        if (i + QUOTE_BATCH_SIZE < allQuoteKeys.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (batchError) {
+        this.logger.warn(`⚠️ Quote batch ${Math.floor(i / QUOTE_BATCH_SIZE) + 1} failed, stocks in this batch will have no circuit/change data: ${batchError}`);
+      }
+    }
+    this.logger.info(`📡 Quote cache populated: ${quoteCache.size}/${stocks.length} stocks`);
+
     const results: ScoredStock[] = [];
 
     for (const stock of stocks) {
@@ -565,26 +678,19 @@ export class MarketScanner {
 
         if (!bias) continue; // Flat sector, skip
 
-        // Fetch live quote for circuit limits and today's change
+        // Look up pre-fetched quote from batch cache (no per-stock API call)
         let upperCircuitLimit = 0;
         let lowerCircuitLimit = 0;
         let todayChangePercent = 0;
         
-        try {
-          const quoteKey = `NSE:${stock.symbol}`;
-          const quote = await this.kiteConnect.getQuote([quoteKey]);
-          const stockQuote = quote[quoteKey];
-          
-          if (stockQuote) {
-            upperCircuitLimit = stockQuote.upper_circuit_limit || 0;
-            lowerCircuitLimit = stockQuote.lower_circuit_limit || 0;
-            // Use net_change from quote (today's change from previous close)
-            todayChangePercent = stockQuote.ohlc?.close 
-              ? ((spotPrice - stockQuote.ohlc.close) / stockQuote.ohlc.close) * 100
-              : 0;
-          }
-        } catch (quoteError) {
-          this.logger.warn(`${stock.symbol}: Failed to fetch quote for circuit limits`);
+        const quoteKey = `NSE:${stock.symbol}`;
+        const cachedQuote = quoteCache.get(quoteKey);
+        if (cachedQuote) {
+          upperCircuitLimit = cachedQuote.upper_circuit_limit;
+          lowerCircuitLimit = cachedQuote.lower_circuit_limit;
+          todayChangePercent = cachedQuote.ohlcClose
+            ? ((spotPrice - cachedQuote.ohlcClose) / cachedQuote.ohlcClose) * 100
+            : 0;
         }
 
         // === SCORING LOGIC ===
@@ -925,12 +1031,38 @@ export class MarketScanner {
       }
 
       checkedCount++;
+
+      // Fix A: 1s cooldown between option-finding iterations to prevent
+      // connection pool saturation from rapid sequential getQuote() calls.
+      // Placed BEFORE try block so continue statements can't skip it.
+      if (checkedCount > 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
       try {
-        const atmOption = await this.findATMOption(
-          stock.symbol,
-          stock.spotPrice,
-          stock.bias,
-        );
+        let atmOption: any;
+        try {
+          atmOption = await this.findATMOption(
+            stock.symbol,
+            stock.spotPrice,
+            stock.bias,
+          );
+        } catch (findError: any) {
+          // Fix C: Retry once on transient network errors (ECONNABORTED, ETIMEDOUT, etc.)
+          const code = findError?.code || findError?.error_type || '';
+          const isTransient = ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND', 'NetworkException'].includes(code);
+          if (isTransient) {
+            this.logger.warn(`⚠️ ${stock.symbol}: Transient error (${code}) finding option — retrying in 3s...`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            atmOption = await this.findATMOption(
+              stock.symbol,
+              stock.spotPrice,
+              stock.bias,
+            );
+          } else {
+            throw findError; // Non-transient, let outer catch handle
+          }
+        }
 
         // Premium floor check - minimum ₹10 to ensure liquidity
         if (atmOption.premium < this.config.minPremium) {

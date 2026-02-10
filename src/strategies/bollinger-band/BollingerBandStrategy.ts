@@ -107,6 +107,8 @@ export class BollingerBandStrategy extends StrategyBase {
   } | null = null;
   private dailyPivots: PivotLevels | null = null;
   private previousDayClose: number = 0; // For Extended Gap Trap filter
+  private previousDayHigh: number = 0;  // For LONG entry: price > PDH condition
+  private previousDayLow: number = 0;   // For SHORT entry: price < PDL condition
   
   // Signal instrument token (stock spot from config.instruments[0], e.g., BRITANNIA, TCS)
   private signalInstrumentToken: number = 0; // Will be fetched dynamically from stock symbol
@@ -326,9 +328,12 @@ export class BollingerBandStrategy extends StrategyBase {
       // Scenario: Slot 1 had INFY yesterday (crashed before EOD exit), Scanner assigns TCS today
       // The old INFY position MUST NOT be recovered into the TCS strategy instance
       const savedTradingsymbol = position.instrument?.tradingsymbol || '';
-      // Extract underlying (e.g. "INFY" from "INFY26JAN1800CE" or "TCS27JAN2500PE")
-      const savedBaseSymbol = savedTradingsymbol.match(/^([A-Z]+)/)?.[1];
-      const currentConfigSymbol = this.config.instruments?.[0]; // e.g., "INFY" or "TCS"
+      const savedInstrumentName = position.instrument?.name || '';
+      // Extract underlying - prefer instrument.name for symbols with special chars (M&M, BAJAJ-AUTO, L&TFH)
+      // Regex handles &, - in symbols (e.g., "M&M26FEB3650CE" → "M&M", "BAJAJ-AUTO26FEB9500PE" → "BAJAJ-AUTO")
+      const extractedBaseSymbol = savedTradingsymbol.match(/^([A-Z][A-Z&-]*)/)?.[1];
+      const savedBaseSymbol = savedInstrumentName || extractedBaseSymbol;
+      const currentConfigSymbol = this.config.instruments?.[0]; // e.g., "INFY" or "M&M"
       
       if (savedBaseSymbol && currentConfigSymbol && savedBaseSymbol !== currentConfigSymbol) {
         this.logger.warn(`⚠️ ZOMBIE POSITION DETECTED in Slot!`);
@@ -657,6 +662,14 @@ export class BollingerBandStrategy extends StrategyBase {
         totalTrades: this.tradeHistory.length
       });
       
+      // P0-FIX: Record symbol exit for cooldown tracking (prevents immediate re-entry)
+      // This applies even for manual/broker exits detected via reconciliation
+      if (positionSymbol) {
+        const baseSymbol = positionSymbol.replace(/\d{2}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2}(CE|PE)\d+$/, '');
+        StrategyManager.recordSymbolExitStatic(baseSymbol);
+        this.logger.info(`🔒 Cooldown applied for ${baseSymbol} (30 min block after manual/broker exit)`);
+      }
+      
       // Clear position from memory
       this.currentPosition = null;
       
@@ -757,6 +770,8 @@ export class BollingerBandStrategy extends StrategyBase {
       this.candleHistory = [];
       this.currentIndicators = null;
       this.dailyPivots = null;
+      this.previousDayHigh = 0;
+      this.previousDayLow = 0;
       this.currentCandle = null;
       this.currentStockLTP = 0;
       
@@ -814,7 +829,7 @@ export class BollingerBandStrategy extends StrategyBase {
     }
     
     const { rsi, supertrend, bollingerBands } = indicators;
-    const { r1, r2, pp } = pivots;
+    const { r1, r2, s1, pp } = pivots;
     
     // LONG conditions (4 main conditions - excluding candle direction which is checked at entry time)
     const longConditions = [
@@ -834,9 +849,9 @@ export class BollingerBandStrategy extends StrategyBase {
         detail: supertrend.trend
       },
       {
-        name: 'Above R1 or R2',
-        met: price > r1 || price > r2,
-        detail: `₹${price.toFixed(2)} ${price > r1 ? '> R1' : price > r2 ? '> R2' : '< R1 & R2'}`
+        name: 'Above R1 or PDH',
+        met: price > r1 || price > this.previousDayHigh,
+        detail: `₹${price.toFixed(2)} ${price > r1 ? '> R1(' + r1.toFixed(2) + ')' : price > this.previousDayHigh ? '> PDH(' + this.previousDayHigh.toFixed(2) + ')' : '< R1(' + r1.toFixed(2) + ') & PDH(' + this.previousDayHigh.toFixed(2) + ')'}`
       }
     ];
     
@@ -858,9 +873,9 @@ export class BollingerBandStrategy extends StrategyBase {
         detail: supertrend.trend
       },
       {
-        name: 'Below PP',
-        met: price <= pp,
-        detail: `₹${price.toFixed(2)} ${price <= pp ? '<=' : '>'} ₹${pp.toFixed(2)}`
+        name: 'Below S1 or PDL',
+        met: price < s1 || price < this.previousDayLow,
+        detail: `₹${price.toFixed(2)} ${price < s1 ? '< S1(' + s1.toFixed(2) + ')' : price < this.previousDayLow ? '< PDL(' + this.previousDayLow.toFixed(2) + ')' : '> S1(' + s1.toFixed(2) + ') & PDL(' + this.previousDayLow.toFixed(2) + ')'}`
       }
     ];
     
@@ -952,6 +967,8 @@ export class BollingerBandStrategy extends StrategyBase {
       totalTrades: this.tradeHistory.length, // Total completed trades
       indicators: this.currentIndicators,
       pivots: this.dailyPivots,
+      previousDayHigh: this.previousDayHigh, // For dashboard PDH display
+      previousDayLow: this.previousDayLow,   // For dashboard PDL display
       candleCount: this.candleHistory.length,
       currentStockPrice: this.getLastCompletedCandleClose(),
       signalSymbol: this.signalSymbol,
@@ -1793,6 +1810,8 @@ export class BollingerBandStrategy extends StrategyBase {
     };
     
     this.dailyPivots = this.calculateDailyPivots(approximateOHLC);
+    this.previousDayHigh = approximateOHLC.high;
+    this.previousDayLow = approximateOHLC.low;
     this.logger.info(`⚠️ Using placeholder pivot levels for ${this.signalSymbol} pre-market operation`, this.dailyPivots);
   }
 
@@ -1831,8 +1850,10 @@ export class BollingerBandStrategy extends StrategyBase {
       // Get the most recent completed trading day
       const previousDay = dailyData[dailyData.length - 1];
       
-      // Store previous day close for Extended Gap Trap filter
+      // Store previous day OHLC for filters
       this.previousDayClose = previousDay.close;
+      this.previousDayHigh = previousDay.high;   // For LONG entry condition
+      this.previousDayLow = previousDay.low;     // For SHORT entry condition
       
       this.dailyPivots = this.calculateDailyPivots({
         high: previousDay.high,
@@ -1856,7 +1877,9 @@ export class BollingerBandStrategy extends StrategyBase {
         forTradingDay: 'Using most recent completed trading day for pivot calculation',
         pp: this.dailyPivots.pp.toFixed(2),
         r1: this.dailyPivots.r1.toFixed(2),
-        s1: this.dailyPivots.s1.toFixed(2)
+        s1: this.dailyPivots.s1.toFixed(2),
+        previousDayHigh: this.previousDayHigh.toFixed(2),
+        previousDayLow: this.previousDayLow.toFixed(2)
       });
       
     } catch (error) {
@@ -1906,7 +1929,7 @@ export class BollingerBandStrategy extends StrategyBase {
       
       // If exact match fails, try case-insensitive match
       const stockInstrumentCaseInsensitive = nseInstruments.find((inst: any) => 
-        inst.tradingsymbol.toUpperCase() === stockSymbol.toUpperCase() && 
+        inst.tradingsymbol?.toUpperCase() === stockSymbol.toUpperCase() && 
         inst.instrument_type === 'EQ'
       );
       
@@ -2770,7 +2793,7 @@ export class BollingerBandStrategy extends StrategyBase {
     if (!latestCandle) return;
     
     const { rsi, supertrend, bollingerBands } = this.currentIndicators;
-    const { r1, r2, pp } = this.dailyPivots;
+    const { r1, r2, s1, pp } = this.dailyPivots;
     const close = latestCandle.close;
     const open = latestCandle.open;
     
@@ -2794,7 +2817,7 @@ export class BollingerBandStrategy extends StrategyBase {
       priceAboveUpperBB: close > bollingerBands.upper,
       rsiInRange: rsi >= 68 && rsi <= 85, // Overbought momentum confirmation
       supertrendBullish: supertrend.trend === 'UP',
-      aboveR1OrR2: close > r1 || close > r2,
+      aboveR1OrPDH: close > r1 || close > this.previousDayHigh,
       candleIsBullish: candleBullishCheck // FIRST CANDLE EXCEPTION: Bypass bullish check at 9:15-9:25
     };
     
@@ -2807,7 +2830,7 @@ export class BollingerBandStrategy extends StrategyBase {
         supertrend: supertrend.trend,
         upperBB: bollingerBands.upper.toFixed(2),
         r1: r1.toFixed(2),
-        r2: r2.toFixed(2)
+        previousDayHigh: this.previousDayHigh.toFixed(2)
       });
       
       // ═══════════════════════════════════════════════════════════════
@@ -2851,6 +2874,18 @@ export class BollingerBandStrategy extends StrategyBase {
         return;  // Skip LONG entry
       }
       
+      // ═══════════════════════════════════════════════════════════════
+      // SYMBOL COOLDOWN CHECK (LONG)
+      // Block entry if symbol was recently exited (manual/broker exit detection)
+      // ═══════════════════════════════════════════════════════════════
+      if (StrategyManager.isSymbolInCooldownStatic(this.signalSymbol)) {
+        this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Symbol in cooldown', {
+          symbol: this.signalSymbol,
+          reason: 'Recent exit detected (manual/broker exit), waiting 30 min cooldown'
+        });
+        return;  // Skip LONG entry
+      }
+      
       // Extract entry candle values BEFORE async operations
       const entryCandleHigh = latestCandle.high;
       const entryCandleLow = latestCandle.low;
@@ -2863,7 +2898,7 @@ export class BollingerBandStrategy extends StrategyBase {
         priceAboveUpperBB: `${longConditions.priceAboveUpperBB} (${close.toFixed(2)} > ${bollingerBands.upper.toFixed(2)})`,
         rsiInRange: `${longConditions.rsiInRange} (${rsi.toFixed(2)} in 68-85)`,
         supertrendBullish: `${longConditions.supertrendBullish} (${supertrend.trend})`,
-        aboveR1OrR2: `${longConditions.aboveR1OrR2} (${close.toFixed(2)} > R1:${r1.toFixed(2)} or R2:${r2.toFixed(2)})`,
+        aboveR1OrPDH: `${longConditions.aboveR1OrPDH} (${close.toFixed(2)} > R1:${r1.toFixed(2)} or PDH:${this.previousDayHigh.toFixed(2)})`,
         candleIsBullish: `${longConditions.candleIsBullish}`
       });
     }
@@ -2873,7 +2908,7 @@ export class BollingerBandStrategy extends StrategyBase {
       priceBelowLowerBB: close < bollingerBands.lower,
       rsiInRange: rsi >= 15 && rsi <= 40, // Widened from 10-30 to capture momentum before exhaustion
       supertrendBearish: supertrend.trend === 'DOWN',
-      belowPP: close <= pp, // High-confidence SHORT filter using central pivot point
+      belowS1OrPDL: close < s1 || close < this.previousDayLow, // Structural break: below S1 or Previous Day Low
       candleIsBearish: candleBearishCheck // FIRST CANDLE EXCEPTION: Bypass bearish check at 9:15-9:25
     };
     
@@ -2885,7 +2920,8 @@ export class BollingerBandStrategy extends StrategyBase {
         rsi: rsi.toFixed(2),
         supertrend: supertrend.trend,
         lowerBB: bollingerBands.lower.toFixed(2),
-        pp: pp.toFixed(2)
+        s1: s1.toFixed(2),
+        previousDayLow: this.previousDayLow.toFixed(2)
       });
       
       // Block SHORT entries after 2:55 PM (except Fridays)
@@ -2943,6 +2979,18 @@ export class BollingerBandStrategy extends StrategyBase {
         return;  // Skip SHORT entry
       }
       
+      // ═══════════════════════════════════════════════════════════════
+      // SYMBOL COOLDOWN CHECK (SHORT)
+      // Block entry if symbol was recently exited (manual/broker exit detection)
+      // ═══════════════════════════════════════════════════════════════
+      if (StrategyManager.isSymbolInCooldownStatic(this.signalSymbol)) {
+        this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Symbol in cooldown', {
+          symbol: this.signalSymbol,
+          reason: 'Recent exit detected (manual/broker exit), waiting 30 min cooldown'
+        });
+        return;  // Skip SHORT entry
+      }
+      
       // Extract entry candle values BEFORE async operations
       const entryCandleHigh = latestCandle.high;
       const entryCandleLow = latestCandle.low;
@@ -2955,7 +3003,7 @@ export class BollingerBandStrategy extends StrategyBase {
         priceBelowLowerBB: `${shortConditions.priceBelowLowerBB} (${close.toFixed(2)} < ${bollingerBands.lower.toFixed(2)})`,
         rsiInRange: `${shortConditions.rsiInRange} (${rsi.toFixed(2)} in 15-40)`,
         supertrendBearish: `${shortConditions.supertrendBearish} (${supertrend.trend})`,
-        belowPP: `${shortConditions.belowPP} (${close.toFixed(2)} <= ${pp.toFixed(2)})`,
+        belowS1OrPDL: `${shortConditions.belowS1OrPDL} (${close.toFixed(2)} < S1:${s1.toFixed(2)} or PDL:${this.previousDayLow.toFixed(2)})`,
         candleIsBearish: `${shortConditions.candleIsBearish}`
       });
     }
@@ -3407,7 +3455,7 @@ export class BollingerBandStrategy extends StrategyBase {
       
       await this.executeExit(`GAMMA_CLIMAX_RSI${optionRsi.toFixed(0)}`);
     } else {
-      this.logger.debug(`[RSI EXIT] RSI ${optionRsi.toFixed(1)} < ${this.OPTION_RSI_CLIMAX_THRESHOLD} - No action`);
+      this.logger.info(`[RSI EXIT] ✅ RSI ${optionRsi.toFixed(1)} < ${this.OPTION_RSI_CLIMAX_THRESHOLD} - Held (no gamma climax)`);
     }
   }
 
@@ -3447,7 +3495,7 @@ export class BollingerBandStrategy extends StrategyBase {
       
       // Run first check
       const firstCheckTime = new Date();
-      this.logger.debug(`[RSI MONITOR] First check triggered at ${firstCheckTime.toLocaleTimeString()}`);
+      this.logger.info(`[RSI MONITOR] First check triggered at ${firstCheckTime.toLocaleTimeString()}`);
       this.checkOptionRsiExit().catch(err => 
         this.logger.error('[RSI MONITOR] Error in initial check:', err)
       );
@@ -3460,7 +3508,7 @@ export class BollingerBandStrategy extends StrategyBase {
         }
         
         const checkTime = new Date();
-        this.logger.debug(`[RSI MONITOR] 15-min check triggered at ${checkTime.toLocaleTimeString()}`);
+        this.logger.info(`[RSI MONITOR] 15-min check triggered at ${checkTime.toLocaleTimeString()}`);
         
         try {
           await this.checkOptionRsiExit();

@@ -515,8 +515,7 @@ Example (High Premium):
 | **Monday before expiry**      | ⚠️ BLOCKED - Physical settlement margins | 1 day to expiry, high margin requirements |
 | **Last Tuesday (Expiry Day)** | ⚠️ BLOCKED - No stock options trading    | Monthly expiry day                        |
 
-**Code Status:** `isStockTradingBlocked()` is currently **COMMENTED OUT** for testing!
-In production, you should uncomment this in `MarketScanner.ts` line 106.
+**Code Status:** `isStockTradingBlocked()` is **ACTIVE** in `MarketScanner.ts` line 147.
 
 ### NIFTY Index Options (Weekly Expiry - Every Tuesday)
 

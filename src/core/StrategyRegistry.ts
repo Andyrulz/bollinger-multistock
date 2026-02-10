@@ -165,8 +165,13 @@ export class StrategyRegistry {
       try {
         await instance.initialize();
         this.logger.info(`✅ Initialized strategy: ${instance.getName()}`);
+        
+        // Also start the strategy after successful initialization
+        // This is critical for restored strategies that need monitoring (master cycle, EOD exit, reconciliation)
+        await instance.start();
+        this.logger.info(`🚀 Started strategy: ${instance.getName()}`);
       } catch (error) {
-        this.logger.error(`❌ Failed to initialize strategy ${id}:`, error);
+        this.logger.error(`❌ Failed to initialize/start strategy ${id}:`, error);
         // Continue with other strategies even if one fails
       }
     }

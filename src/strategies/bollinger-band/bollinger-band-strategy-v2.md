@@ -21,7 +21,7 @@ ALL conditions must be met simultaneously at 5-minute candle close:
 
 - ✅ **Trend Filter**: Close > Supertrend(10,2) line (bullish)
 - ✅ **Momentum Filter**: 68 ≤ RSI(10) ≤ 85
-- ✅ **Range Filter**: Close ≥ Upper Bollinger Band **AND** (Close > R1 **OR** Close > R2)
+- ✅ **Range Filter**: Close ≥ Upper Bollinger Band **AND** (Close > R1 **OR** Close > Previous Day High)
 - ✅ **Candle Direction**: Entry candle must be bullish (Close > Open)
 - ✅ **Position Check**: No active position
 
@@ -31,7 +31,7 @@ ALL conditions must be met simultaneously at 5-minute candle close:
 
 - ✅ **Trend Filter**: Close < Supertrend(10,2) line (bearish)
 - ✅ **Momentum Filter**: 10 ≤ RSI(10) ≤ 30
-- ✅ **Range Filter**: Close ≤ Lower Bollinger Band **AND** Close ≤ PP (Pivot Point)
+- ✅ **Range Filter**: Close ≤ Lower Bollinger Band **AND** (Close < S1 **OR** Close < Previous Day Low)
 - ✅ **Candle Direction**: Entry candle must be bearish (Close < Open)
 - ✅ **Time Restriction**: Before 2:55 PM on non-Friday days (Fridays allowed until 3:25 PM)
 - ✅ **Position Check**: No active position
@@ -176,19 +176,16 @@ _Trend determined by price position relative to Supertrend line_
 ### **Initialization (when strategy starts)**
 
 1. **Historical Data Loading**
-
    - Fetch 7-14 days of 5-minute NIFTY50 spot candles (300-400 candles)
    - Ensures sufficient data for all indicators (BB needs 20 periods minimum)
    - Handles weekends and market holidays automatically
 
 2. **Daily Pivot Calculation**
-
    - Fetch previous trading day's OHLC data
    - Calculate PP, R1/R2/R3, S1/S2/S3 levels
    - Store for entire session (constant values)
 
 3. **Initial Indicator Calculation**
-
    - Calculate RSI(10), Supertrend(10,2), Bollinger Bands(20,2)
    - Build baseline from historical candles
 
@@ -276,7 +273,7 @@ const nextTuesday = getNextTuesdayExpiry();
 
 // 4. Filter options by expiry and type
 const candidates = allOptions.filter(
-  (opt) => opt.expiry === nextTuesday && opt.instrument_type === optionType
+  (opt) => opt.expiry === nextTuesday && opt.instrument_type === optionType,
 );
 
 // 5. Select option with premium closest to target

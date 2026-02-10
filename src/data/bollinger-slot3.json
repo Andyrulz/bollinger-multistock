@@ -1,5 +1,5 @@
 {
-  "capital": 49888.75,
+  "capital": 54878.75,
   "tradeHistory": [
     {
       "tradeId": "BB_1769579405609",
@@ -450,8 +450,68 @@
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
       "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1770629407418",
+      "entryOrderId": "260209150750296",
+      "exitOrderId": "260209151431131",
+      "instrument": {
+        "instrument_token": "28926978",
+        "exchange_token": "112996",
+        "tradingsymbol": "INDHOTEL26FEB695CE",
+        "name": "INDHOTEL",
+        "last_price": 17,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 695,
+        "tick_size": 0.05,
+        "lot_size": 1000,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 1000,
+      "entryPrice": 17.25,
+      "exitPrice": 18.75,
+      "entryTime": "2026-02-09T05:30:07.558Z",
+      "exitTime": "2026-02-09T09:30:07.418Z",
+      "pnl": 1500,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1770705900867",
+      "entryOrderId": "260210150775850",
+      "exitOrderId": "260210151004435",
+      "instrument": {
+        "instrument_token": "34203394",
+        "exchange_token": "133607",
+        "tradingsymbol": "M&M26FEB3650CE",
+        "name": "M&M",
+        "last_price": 89.1,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 3650,
+        "tick_size": 0.05,
+        "lot_size": 200,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 200,
+      "entryPrice": 89.45,
+      "exitPrice": 106.9,
+      "entryTime": "2026-02-10T05:30:07.655Z",
+      "exitTime": "2026-02-10T06:45:00.867Z",
+      "pnl": 3490.0000000000005,
+      "exitReason": "GAMMA_CLIMAX_RSI88",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
     }
   ],
   "activePosition": null,
-  "lastUpdated": "2026-02-06T08:25:07.593Z"
+  "lastUpdated": "2026-02-10T06:45:00.869Z"
 }

@@ -1,5 +1,5 @@
 {
-  "capital": 60641.25,
+  "capital": 77461.25,
   "tradeHistory": [
     {
       "tradeId": "BB_1769586742338",
@@ -390,8 +390,98 @@
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
       "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_MANUAL_CLEAR_1770627219273",
+      "entryOrderId": "260209150444705",
+      "exitOrderId": "260209151313763",
+      "instrument": {
+        "instrument_token": "37934850",
+        "exchange_token": "148183",
+        "tradingsymbol": "ULTRACEMCO26FEB12800CE",
+        "name": "ULTRACEMCO",
+        "last_price": 209.2,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 12800,
+        "tick_size": 0.05,
+        "lot_size": 50,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 50,
+      "entryPrice": 210,
+      "exitPrice": 365,
+      "entryTime": "2026-02-09T04:25:05.756Z",
+      "exitTime": "2026-02-09T08:52:55.000Z",
+      "pnl": 7750,
+      "exitReason": "MANUAL_CLEAR_BROKER_AUTO_SQUAREOFF",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_MANUAL_CLEAR_1770627350535",
+      "entryOrderId": "260209151327005",
+      "exitOrderId": "260209151328320",
+      "instrument": {
+        "instrument_token": "42200578",
+        "exchange_token": "164846",
+        "tradingsymbol": "ULTRACEMCO26FEB13100CE",
+        "name": "ULTRACEMCO",
+        "last_price": 189.15,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 13100,
+        "tick_size": 0.05,
+        "lot_size": 50,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 50,
+      "entryPrice": 191.15,
+      "exitPrice": 188.3,
+      "entryTime": "2026-02-09T08:55:05.783Z",
+      "exitTime": "2026-02-09T08:55:33.000Z",
+      "pnl": -142.49999999999972,
+      "exitReason": "MANUAL_CLEAR_BROKER_AUTO_SQUAREOFF",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_MANUAL_CLEAR_1770708675805",
+      "entryOrderId": "260210150630991",
+      "exitOrderId": "260210151155368",
+      "instrument": {
+        "instrument_token": "30545410",
+        "exchange_token": "119318",
+        "tradingsymbol": "MUTHOOTFIN26FEB3800CE",
+        "name": "MUTHOOTFIN",
+        "last_price": 158.15,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 3800,
+        "tick_size": 0.05,
+        "lot_size": 275,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 275,
+      "entryPrice": 159.5,
+      "exitPrice": 193,
+      "entryTime": "2026-02-10T04:55:05.737Z",
+      "exitTime": "2026-02-10T07:30:44.000Z",
+      "pnl": 9212.5,
+      "exitReason": "MANUAL_CLEAR_BROKER_AUTO_SQUAREOFF",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
     }
   ],
   "activePosition": null,
-  "lastUpdated": "2026-02-06T07:30:05.413Z"
+  "lastUpdated": "2026-02-10T07:31:15.806Z"
 }
