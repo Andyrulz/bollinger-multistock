@@ -1185,6 +1185,20 @@ export class StrategyManager {
       const scanStartTime = Date.now();
       this.logger.info('🔍 Smart Retention: Starting hourly scan...');
       
+      // Early exit: Skip scan entirely if all 3 slots have active positions (nothing to rebalance)
+      const activePositionCount = this.slotStates.filter(s => {
+        if (!s.strategyId) return false;
+        const strategy = StrategyRegistry.getInstance(s.strategyId);
+        if (!strategy) return false;
+        const status = strategy.getStatus() as any;
+        return !!status?.positionInfo;
+      }).length;
+      
+      if (activePositionCount >= 3) {
+        this.logger.info('⏭️ All 3 slots have active positions - skipping scan (nothing to rebalance)');
+        return;
+      }
+      
       // Step 1: Re-fetch historical data (ALWAYS - fresh data is mandatory)
       this.logger.info('📊 Step 1: Re-fetching historical data for all stocks...');
       const cacheResult = await this.marketScanner.cacheHistoricalData();
@@ -1287,13 +1301,23 @@ export class StrategyManager {
             this.logger.error(`   ❌ CRITICAL: Failed to restore strategy - position may be orphaned!`);
           }
         } else {
-          this.logger.info(`   ✅ Strategy ${slotState.strategyId} already running - no action needed`);
+          // Re-validate: position may have exited since lock was set
+          const lockedStatus = strategy?.getStatus() as any;
+          if (!lockedStatus?.positionInfo) {
+            this.logger.info(`   🔓 Position exited since lock was set - unlocking Slot ${slotIndex + 1} (${slotState.symbol})`);
+            slotState.locked = false;
+            // Fall through to normal retention logic below (KEEP/SWAP/DEPLOY)
+          } else {
+            this.logger.info(`   ✅ Strategy ${slotState.strategyId} already running with active position - no action needed`);
+          }
         }
         
-        // Mark as deployed and continue (never swap a locked slot)
-        deployedSymbols.add(slotState.symbol!);
-        this.logRetentionDecision(slotIndex, slotState.symbol!, 'LOCK', 'active_position', 'Protected from restart');
-        continue;
+        // Only protect if still locked after re-validation
+        if (slotState.locked) {
+          deployedSymbols.add(slotState.symbol!);
+          this.logRetentionDecision(slotIndex, slotState.symbol!, 'LOCK', 'active_position', 'Protected from restart');
+          continue;
+        }
       }
       
       // Get the running strategy instance

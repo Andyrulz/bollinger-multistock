@@ -398,16 +398,12 @@ export class BollingerBandStrategy extends StrategyBase {
         // P0: Start Option RSI Climax monitoring for recovered positions
         this.startOptionRsiMonitoring();
         
-        // Validate that monitoring actually started for SHORT positions
-        if (this.currentPosition?.type === 'SHORT') {
-          // Give monitoring 1 second to initialize
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          if (!this.shortMonitoringInterval) {
-            throw new Error('SHORT position monitoring failed to start - no active interval');
-          }
-          this.logger.info('✅ SHORT position monitoring validated and active');
-        }
+        // NOTE: shortMonitoringInterval validation REMOVED - polling-based monitoring was replaced
+        // by 5-min candle close exits (master cycle). Exit protection is provided by:
+        // 1. Master cycle (startMasterCycle → fetchLatest5MinuteCandle → checkPositionExit)
+        // 2. Emergency Hard Stop (startEmergencyStopMonitoring - already started above)
+        // 3. Option RSI Climax (startOptionRsiMonitoring - already started above)
+        // 4. EOD Safety Exit (scheduleEODExit - starts in start())
         
         this.logger.info('✅ Position monitoring restarted successfully after recovery');
         

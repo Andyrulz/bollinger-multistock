@@ -1,5 +1,5 @@
 {
-  "capital": 56600,
+  "capital": 57236.25,
   "tradeHistory": [
     {
       "tradeId": "BB_1769592888631",
@@ -450,8 +450,68 @@
       "exitReason": "LONG_SUPERTREND_BREAK",
       "status": "CLOSED",
       "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1770799789486",
+      "entryOrderId": "260211151242547",
+      "exitOrderId": "260211151283350",
+      "instrument": {
+        "instrument_token": "27009282",
+        "exchange_token": "105505",
+        "tradingsymbol": "INFY26FEB1480PE",
+        "name": "INFY",
+        "last_price": 35.1,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 1480,
+        "tick_size": 0.05,
+        "lot_size": 400,
+        "instrument_type": "PE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "SHORT",
+      "quantity": 400,
+      "entryPrice": 35.15,
+      "exitPrice": 33.7,
+      "entryTime": "2026-02-11T08:35:06.511Z",
+      "exitTime": "2026-02-11T08:49:49.486Z",
+      "pnl": -579.9999999999983,
+      "exitReason": "MONITORING_RESTART_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1770803340317",
+      "entryOrderId": "260211151299821",
+      "exitOrderId": "260211151456619",
+      "instrument": {
+        "instrument_token": "36393730",
+        "exchange_token": "142163",
+        "tradingsymbol": "TCS26FEB2920PE",
+        "name": "TCS",
+        "last_price": 58.45,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 2920,
+        "tick_size": 0.05,
+        "lot_size": 175,
+        "instrument_type": "PE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "SHORT",
+      "quantity": 175,
+      "entryPrice": 58.55,
+      "exitPrice": 65.5,
+      "entryTime": "2026-02-11T08:55:06.540Z",
+      "exitTime": "2026-02-11T09:49:00.317Z",
+      "pnl": 1216.2500000000005,
+      "exitReason": "EOD_SAFETY_EXIT_3:19PM",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
     }
   ],
   "activePosition": null,
-  "lastUpdated": "2026-02-10T07:20:06.477Z"
+  "lastUpdated": "2026-02-11T09:49:00.320Z"
 }

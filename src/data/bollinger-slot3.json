@@ -1,5 +1,5 @@
 {
-  "capital": 54878.75,
+  "capital": 54050,
   "tradeHistory": [
     {
       "tradeId": "BB_1769579405609",
@@ -510,8 +510,68 @@
       "exitReason": "GAMMA_CLIMAX_RSI88",
       "status": "CLOSED",
       "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1770787807499",
+      "entryOrderId": "260211150313701",
+      "exitOrderId": "260211150706877",
+      "instrument": {
+        "instrument_token": "42041602",
+        "exchange_token": "164225",
+        "tradingsymbol": "TRENT26FEB4150PE",
+        "name": "TRENT",
+        "last_price": 85.2,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 4150,
+        "tick_size": 0.05,
+        "lot_size": 100,
+        "instrument_type": "PE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "SHORT",
+      "quantity": 100,
+      "entryPrice": 86.55,
+      "exitPrice": 82.2,
+      "entryTime": "2026-02-11T04:10:07.532Z",
+      "exitTime": "2026-02-11T05:30:07.499Z",
+      "pnl": -434.99999999999943,
+      "exitReason": "SHORT_SUPERTREND_BB_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1770799790951",
+      "entryOrderId": "260211151242590",
+      "exitOrderId": "260211151283431",
+      "instrument": {
+        "instrument_token": "36393730",
+        "exchange_token": "142163",
+        "tradingsymbol": "TCS26FEB2920PE",
+        "name": "TCS",
+        "last_price": 56,
+        "expiry": "2026-02-24T00:00:00.000Z",
+        "strike": 2920,
+        "tick_size": 0.05,
+        "lot_size": 175,
+        "instrument_type": "PE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "SHORT",
+      "quantity": 175,
+      "entryPrice": 56.4,
+      "exitPrice": 54.15,
+      "entryTime": "2026-02-11T08:35:07.529Z",
+      "exitTime": "2026-02-11T08:49:50.951Z",
+      "pnl": -393.75,
+      "exitReason": "MONITORING_RESTART_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
     }
   ],
   "activePosition": null,
-  "lastUpdated": "2026-02-10T06:45:00.869Z"
+  "lastUpdated": "2026-02-11T08:49:50.953Z"
 }
