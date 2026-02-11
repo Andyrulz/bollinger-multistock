@@ -1347,7 +1347,7 @@ export class StrategyManager {
       // Find current stock in new scan results
       const stockInScan = allScored.find(s => s.symbol === slotState.symbol);
       
-      // CASE 3: Stock not in scan results (sector turned flat, etc.)
+      // CASE 3: Stock not in scan results (breakout expired, DQ'd, etc.)
       if (!stockInScan) {
         this.logRetentionDecision(slotIndex, slotState.symbol, 'SWAP', 'not_in_scan', null);
         await this.swapStrategy(slotIndex, selectedCandidates, deployedSymbols);

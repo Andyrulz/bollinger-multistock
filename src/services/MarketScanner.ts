@@ -498,13 +498,9 @@ export class MarketScanner {
       return []; // No trading when market has no direction
     }
     
-    return this.universe.filter((stock) => {
-      // Skip flat sectors (avoid chop)
-      if (sectorStatus.flat.includes(stock.sector)) {
-        return false;
-      }
-      return true; // Keep green and red sectors
-    });
+    // Pass ALL stocks through — flat-sector stocks get breakout detection
+    // in scoreStocks() and are subject to higher threshold (base ≥ 6.5)
+    return [...this.universe];
   }
 
   /**
@@ -667,16 +663,57 @@ export class MarketScanner {
         const sectorData = sectorStatus.data.get(stock.sectorToken);
         const sectorChange = sectorData?.changePercent || 0;
 
-        // Determine bias based on sector
+        // Determine sector state and initial bias
+        type SectorState = 'GREEN' | 'RED' | 'FLAT';
+        let sectorState: SectorState = 'FLAT';
         let bias: "LONG" | "SHORT" | null = null;
+        let biasSource: 'SECTOR' | 'BREAKOUT' = 'SECTOR';
+
         if (sectorStatus.green.includes(stock.sector)) {
+          sectorState = 'GREEN';
           bias = "LONG";
         } else if (sectorStatus.red.includes(stock.sector)) {
+          sectorState = 'RED';
           bias = "SHORT";
         }
-        // Flat sectors are skipped - no bias assignment
+        // FLAT sectors: Don't skip yet — let breakout logic attempt bias override
 
-        if (!bias) continue; // Flat sector, skip
+        // Early breakout bias detection (before scoring)
+        // For FLAT sectors, this is the ONLY way to get a bias
+        if (!bias) {
+          const currCandleEarly = candles[candles.length - 1];
+          const prevCandleEarly = candles[candles.length - 2];
+          const currCloseEarly = currCandleEarly?.close || spotPrice;
+          const prevCloseEarly = prevCandleEarly?.close || currCloseEarly;
+
+          // Check for fresh breakout
+          if (prevCloseEarly <= bollingerBands.upper && currCloseEarly > bollingerBands.upper) {
+            bias = 'LONG';
+            biasSource = 'BREAKOUT';
+          } else if (prevCloseEarly >= bollingerBands.lower && currCloseEarly < bollingerBands.lower) {
+            bias = 'SHORT';
+            biasSource = 'BREAKOUT';
+          } else {
+            // Proximity check
+            const upperDistEarly = Math.abs(bollingerBands.upper - currCloseEarly) / currCloseEarly;
+            const lowerDistEarly = Math.abs(currCloseEarly - bollingerBands.lower) / currCloseEarly;
+            if (upperDistEarly < 0.002 && currCloseEarly > prevCloseEarly) {
+              bias = 'LONG';
+              biasSource = 'BREAKOUT';
+            } else if (lowerDistEarly < 0.002 && currCloseEarly < prevCloseEarly) {
+              bias = 'SHORT';
+              biasSource = 'BREAKOUT';
+            }
+          }
+        }
+
+        // If still no bias after breakout check, skip (truly nothing happening)
+        if (!bias) {
+          this.logger.debug(`⏭️ ${stock.symbol}: No sector bias and no BB breakout - skip`);
+          continue;
+        }
+
+        // Note: isCounterTrend computed after Step 2 bias finalization (see below)
 
         // Look up pre-fetched quote from batch cache (no per-stock API call)
         let upperCircuitLimit = 0;
@@ -747,7 +784,11 @@ export class MarketScanner {
         // rvol < 1.5 = 0 points (insufficient volume)
 
         // D. SECTOR CONFLUENCE (Max 2.0)
-        breakdown.sector += 1.0; // Base point for sector direction match
+        // Flat-sector stocks get 0 sector points — score depends purely on
+        // trend, momentum, volume, and smart money quality
+        if (sectorState !== 'FLAT') {
+          breakdown.sector += 1.0; // Base point for sector direction match (only if sector has conviction)
+        }
 
         // Relative strength check - Use today's change (not 10-day-old price)
         const stockChange = todayChangePercent;
@@ -812,29 +853,40 @@ export class MarketScanner {
           breakdown.smartMoney;
 
         // Step 2: Override bias based on tactical signals (breakout/proximity)
-        // This runs BEFORE tactical calculation so we pass the correct bias
+        // Only for sector-biased stocks — breakout-biased stocks already have correct bias from early detection
         const currCandle = candles[candles.length - 1];
         const prevCandle = candles[candles.length - 2];
         const currClose = currCandle?.close || spotPrice;
         const prevClose = prevCandle?.close || currClose;
-        
-        // Check for fresh breakout - this overrides sector bias
-        if (prevClose <= bollingerBands.upper && currClose > bollingerBands.upper) {
-          bias = 'LONG';  // Upper band breakout → LONG
-        } else if (prevClose >= bollingerBands.lower && currClose < bollingerBands.lower) {
-          bias = 'SHORT'; // Lower band breakout → SHORT
-        } else {
-          // Check proximity for bias override (if close to band and approaching)
-          const upperDist = Math.abs(bollingerBands.upper - currClose) / currClose;
-          const lowerDist = Math.abs(currClose - bollingerBands.lower) / currClose;
-          
-          if (upperDist < 0.002 && currClose > prevClose) {
-            bias = 'LONG';  // Approaching upper → LONG
-          } else if (lowerDist < 0.002 && currClose < prevClose) {
-            bias = 'SHORT'; // Approaching lower → SHORT
+
+        if (biasSource === 'SECTOR') {
+          // Check for fresh breakout - this overrides sector bias
+          if (prevClose <= bollingerBands.upper && currClose > bollingerBands.upper) {
+            bias = 'LONG';  // Upper band breakout → LONG
+            biasSource = 'BREAKOUT';
+          } else if (prevClose >= bollingerBands.lower && currClose < bollingerBands.lower) {
+            bias = 'SHORT'; // Lower band breakout → SHORT
+            biasSource = 'BREAKOUT';
+          } else {
+            // Check proximity for bias override (if close to band and approaching)
+            const upperDist = Math.abs(bollingerBands.upper - currClose) / currClose;
+            const lowerDist = Math.abs(currClose - bollingerBands.lower) / currClose;
+            
+            if (upperDist < 0.002 && currClose > prevClose) {
+              bias = 'LONG';  // Approaching upper → LONG
+              biasSource = 'BREAKOUT';
+            } else if (lowerDist < 0.002 && currClose < prevClose) {
+              bias = 'SHORT'; // Approaching lower → SHORT
+              biasSource = 'BREAKOUT';
+            }
+            // If neither, keep original sector-based bias
           }
-          // If neither, keep original sector-based bias
         }
+
+        // Track counter-trend state: Breakout direction opposes sector direction
+        // Computed here AFTER bias is finalized (both early detection and Step 2 override)
+        const isCounterTrend = (sectorState === 'RED' && bias === 'LONG') ||
+                               (sectorState === 'GREEN' && bias === 'SHORT');
 
         // Step 3: Calculate TACTICAL bonuses (only if base quality is high enough)
         const BASE_SCORE_FLOOR = 5.0;
@@ -852,6 +904,26 @@ export class MarketScanner {
 
         // Step 4: Final score = base + tactical
         const score = baseScore + tacticalBonus.total;
+
+        // Step 5: Threshold gate for non-sector-supported entries
+        // Flat sector breakouts need higher base quality to compensate for lack of sector support
+        // Counter-trend breakouts need very high quality (going against the tide)
+        const isBreakoutOnly = biasSource === 'BREAKOUT' && sectorState === 'FLAT';
+        const isCounterTrendEntry = biasSource === 'BREAKOUT' && isCounterTrend;
+
+        if (isCounterTrendEntry) {
+          if (baseScore < 8.0) {
+            this.logger.info(`🚫 ${stock.symbol}: Counter-trend ${bias} blocked (base ${baseScore.toFixed(1)} < 8.0, sector ${sectorState})`);
+            continue;
+          }
+          this.logger.info(`⚡ ${stock.symbol}: Counter-trend ${bias} ALLOWED (base ${baseScore.toFixed(1)} ≥ 8.0, strong conviction)`);
+        } else if (isBreakoutOnly) {
+          if (baseScore < 6.5) {
+            this.logger.info(`🚫 ${stock.symbol}: Flat-sector breakout blocked (base ${baseScore.toFixed(1)} < 6.5)`);
+            continue;
+          }
+          this.logger.info(`⚡ ${stock.symbol}: Flat-sector ${bias} via breakout (base ${baseScore.toFixed(1)} ≥ 6.5)`);
+        }
 
         // Create scored stock object
         results.push({
@@ -997,7 +1069,7 @@ export class MarketScanner {
       const tacDisplay = stock.tacticalBonus.total > 0 
         ? ` | Tac: FB:${stock.tacticalBonus.freshBreakout} RV:${stock.tacticalBonus.rvolSurge} PX:${stock.tacticalBonus.proximity} RA:${stock.tacticalBonus.rsiAccel} SQ:${stock.tacticalBonus.squeeze.toFixed(1)} GW:${stock.tacticalBonus.gammaWall}`
         : '';
-      this.logger.info(`  ${i + 1}. ${stock.symbol}: Score=${stock.score.toFixed(2)} (Base:${stock.baseScore.toFixed(1)} + Tac:${stock.tacticalBonus.total.toFixed(1)}) [${stock.bias}] | T:${stock.breakdown.trend.toFixed(1)} M:${stock.breakdown.momentum.toFixed(1)} V:${stock.breakdown.volume.toFixed(1)} S:${stock.breakdown.sector.toFixed(1)}${smDisplay}${tacDisplay}`);
+      this.logger.info(`  ${i + 1}. ${stock.symbol}: Score=${stock.score.toFixed(2)} (Base:${stock.baseScore.toFixed(1)} + Tac:${stock.tacticalBonus.total.toFixed(1)}) [${stock.bias}${stock.breakdown.sector === 0 ? '*' : ''}] | T:${stock.breakdown.trend.toFixed(1)} M:${stock.breakdown.momentum.toFixed(1)} V:${stock.breakdown.volume.toFixed(1)} S:${stock.breakdown.sector.toFixed(1)}${smDisplay}${tacDisplay}`);
     });
 
     // Filter to only stocks meeting minimum score
