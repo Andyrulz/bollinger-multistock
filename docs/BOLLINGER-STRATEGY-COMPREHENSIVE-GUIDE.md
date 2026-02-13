@@ -330,14 +330,15 @@ ALL conditions must be TRUE at 5-minute candle close:
 
 ### Exit Conditions
 
-The system uses a **4-layer exit hierarchy** that provides comprehensive protection:
+The system uses a **5-layer exit hierarchy** that provides comprehensive protection:
 
-| Priority | Exit Layer          | Trigger Condition                       | Purpose                 |
-| -------- | ------------------- | --------------------------------------- | ----------------------- |
-| 1        | EOD Safety          | Time = 3:19 PM                          | Force exit before close |
-| 2        | Emergency Hard Stop | Stock moves ±5% from entry              | Flash crash protection  |
-| 3        | Gamma Climax        | Option RSI(14) ≥ 85 (15-min chart)      | Blow-off top capture    |
-| 4        | Supertrend Break    | 5-min candle close vs Supertrend/BB Mid | Primary trend exit      |
+| Priority | Exit Layer             | Trigger Condition                              | Purpose                          |
+| -------- | ---------------------- | ---------------------------------------------- | -------------------------------- |
+| 1        | EOD Safety             | Time = 3:19 PM                                 | Force exit before close          |
+| 2        | Emergency Hard Stop    | Stock moves ±5% from entry                     | Flash crash protection           |
+| 3        | Gamma Climax           | Option RSI(14) ≥ 85 (15-min chart)             | Blow-off top capture             |
+| 4        | RSI Trail Premium Stop | Option RSI(14) ≥ 85 (5-min) → LTP ≤ candle LOW | Flash spike capture (SHORT only) |
+| 5        | Supertrend Break       | 5-min candle close vs Supertrend/BB Mid        | Primary trend exit               |
 
 ---
 
@@ -388,7 +389,30 @@ Exit Reason: GAMMA_CLIMAX_RSI{value} (e.g., GAMMA_CLIMAX_RSI87)
 
 ---
 
-#### Layer 4: Supertrend Break (Primary Exit)
+#### Layer 4: RSI-Activated Live Premium Trailing Stop (SHORT Only)
+
+Captures parabolic premium spikes that crash back before the 5-minute candle close exit can react.
+
+```
+Activation: 5-min option RSI(14) ≥ 85 on completed candle close
+Floor: Set to that candle's LOW (updated each subsequent 5-min candle)
+Polling: Every 5 seconds, fetch option LTP
+Exit: LTP ≤ floor price → immediate exit
+
+Secondary Exit: 5-min option RSI < 75 on candle close (post-activation)
+
+Exit Reasons:
+  RSI_TRAIL_CANDLE_LOW_BREAK       — Premium broke below candle-LOW floor
+  RSI_TRAIL_SECONDARY_EXIT_RSI{N}  — RSI collapsed below 75
+```
+
+**RSI Calculation:** Wilder's RMA with full candle history (no truncation) for TradingView parity.
+
+**Why SHORT Only?** PUT premium flash-spikes from panic selling, then IV-crush causes rapid reversal. LONG-side cascades more gradually.
+
+---
+
+#### Layer 5: Supertrend Break (Primary Exit)
 
 Exit checks run **ONLY at 5-minute candle closes** (not real-time). This eliminates wick noise and false exits.
 
@@ -490,11 +514,13 @@ Example (High Premium):
 
 ### Trading Phase (Per Strategy Instance)
 
-| State            | Calls/Minute                             |
-| ---------------- | ---------------------------------------- |
-| No Position      | ~0.2 (5-min candle only)                 |
-| With Position    | ~2.2 (candle + Emergency Stop every 30s) |
-| Option RSI Check | ~0.07 (every 15-min boundary)            |
+| State             | Calls/Minute                                  |
+| ----------------- | --------------------------------------------- |
+| No Position       | ~0.2 (5-min candle only)                      |
+| With Position     | ~2.2 (candle + Emergency Stop every 30s)      |
+| Option RSI Check  | ~0.07 (every 15-min boundary)                 |
+| RSI Trail Check   | ~0.2 (every 5-min boundary, SHORT only)       |
+| RSI Trail Polling | +12/min (5-sec interval, only when activated) |
 
 ### Worst Case (3 Strategies, All With Positions)
 
@@ -643,6 +669,8 @@ If trading NIFTY/BANKNIFTY instead of stocks:
 | 5-min candle fetch      | X:X5:05 + slot stagger | Entry and exit checks at candle boundaries   |
 | Emergency Stop polling  | Every 30 seconds       | ±5% stock move detection                     |
 | Option RSI check        | 15-min boundaries      | Gamma Climax detection (RSI ≥ 85)            |
+| RSI Trail check         | 5-min boundaries       | Flash spike detection (RSI ≥ 85, SHORT only) |
+| RSI Trail live polling  | Every 5 seconds        | Only active after RSI Trail activation       |
 | LONG exit logic         | Candle close check     | Exit when close < Supertrend                 |
 | SHORT exit logic        | Candle close check     | Exit when close > MIN(Supertrend, BB Middle) |
 | EOD safety exit         | 15:19 (3:19 PM)        | Force close all positions                    |
@@ -667,6 +695,6 @@ If trading NIFTY/BANKNIFTY instead of stocks:
 
 ---
 
-_Last Updated: February 8, 2026_
-_Document Version: 3.2 (Supertrend Exit Edition)_
-_System Version: Multi-Stock Scanner + Bollinger Band Strategy with Supertrend-Based Exits_
+_Last Updated: February 13, 2026_
+_Document Version: 3.3 (RSI Trail Edition)_
+_System Version: Multi-Stock Scanner + Bollinger Band Strategy with 5-Layer Exit Protection_

@@ -6,12 +6,13 @@
 
 ## Exit Hierarchy (Priority Order)
 
-| Priority | Exit Type               | Trigger                            | Check Frequency      |
-| -------- | ----------------------- | ---------------------------------- | -------------------- |
-| 1        | **EOD Safety**          | 3:19 PM                            | Once per day         |
-| 2        | **Emergency Hard Stop** | Stock moves ±5% from entry         | 30-second polling    |
-| 3        | **Gamma Climax**        | Option RSI(14) ≥ 85                | 15-minute boundaries |
-| 4        | **Supertrend Break**    | 5-min candle closes past threshold | Every 5-min candle   |
+| Priority | Exit Type                  | Trigger                                        | Check Frequency              | Applies To |
+| -------- | -------------------------- | ---------------------------------------------- | ---------------------------- | ---------- |
+| 1        | **EOD Safety**             | 3:19 PM                                        | Once per day                 | ALL        |
+| 2        | **Emergency Hard Stop**    | Stock moves ±5% from entry                     | 30-second polling            | ALL        |
+| 3        | **Gamma Climax**           | Option RSI(14) ≥ 85 (15-min)                   | 15-minute boundaries         | ALL        |
+| 4        | **RSI Trail Premium Stop** | Option RSI(14) ≥ 85 (5-min) → LTP ≤ candle LOW | 5-min checks + 5-sec polling | SHORT only |
+| 5        | **Supertrend Break**       | 5-min candle closes past threshold             | Every 5-min candle           | ALL        |
 
 ---
 
@@ -62,7 +63,48 @@
 
 ---
 
-## Layer 4: Supertrend-Based Exit (Primary)
+## Layer 4: RSI-Activated Live Premium Trailing Stop (SHORT Only)
+
+**Purpose**: Capture parabolic premium spikes (flash breakouts) that crash back within a single 5-minute window — too fast for the 5-min candle close exit to catch.
+
+**Mechanism** (two phases):
+
+### Phase 1: Activation (5-minute boundary checks)
+
+- RSI(14) calculated on **5-minute OPTION** candles
+- When RSI ≥ 85 on a completed 5-min candle close:
+  - Trail **activated**
+  - Floor price set to that candle's **LOW**
+  - Live premium polling starts (5-second interval)
+
+### Phase 2: Live Polling (every 5 seconds)
+
+- Fetches option LTP via `kiteConnect.getQuote(['NFO:{symbol}'])`
+- If LTP ≤ floor price → **EXIT immediately**
+- Floor is updated every 5-min candle close to the latest candle's LOW (rolling trail)
+
+### Secondary Safety Exit
+
+- If 5-min option RSI drops below **75** on a candle close after activation → EXIT
+- Catches momentum collapse even if premium hasn't broken the floor yet
+
+**Exit Reasons**:
+
+- `RSI_TRAIL_CANDLE_LOW_BREAK` — LTP broke below rolling candle-LOW floor
+- `RSI_TRAIL_SECONDARY_EXIT_RSI{N}` — RSI dropped below 75 after activation
+
+**Scheduler**:
+
+- 5-minute boundary alignment with slot stagger (+2s offset from 15-min RSI checks)
+- 60-second micro-grace after entry (same as Gamma Climax)
+
+**RSI Calculation**: Uses Wilder's RMA (same as TradingView) with **full candle history** — no truncation — for accurate convergence with broker charts.
+
+**Why SHORT Only?** Flash premium spikes are a SHORT-side phenomenon. PUT options surge when underlying drops fast, then IV-crush causes rapid reversal. LONG-side moves tend to cascade more gradually.
+
+---
+
+## Layer 5: Supertrend-Based Exit (Primary)
 
 The core exit mechanism. Checked on every 5-minute candle close.
 
@@ -122,7 +164,8 @@ Start Position Monitoring
 └─────────────────────────────────────────┘
     ↓
 Parallel: 30-sec Emergency Stop polling
-Parallel: 15-min RSI Climax checks
+Parallel: 15-min RSI Climax checks (Gamma)
+Parallel: 5-min RSI Trail checks (SHORT only, activates live polling on RSI ≥ 85)
 Parallel: EOD timer at 3:19 PM
 ```
 
@@ -147,15 +190,17 @@ Supertrend = FinalLowerBand if UP, FinalUpperBand if DOWN
 
 ## Exit Reason Tags
 
-| Tag                         | Meaning                                   |
-| --------------------------- | ----------------------------------------- |
-| `EOD_SAFETY_EXIT_3:19PM`    | End-of-day forced close                   |
-| `EMERGENCY_HARD_STOP`       | Stock moved ±5% (flash crash)             |
-| `GAMMA_CLIMAX_RSI{N}`       | Option RSI ≥ 85 (blow-off top)            |
-| `LONG_SUPERTREND_BREAK`     | LONG: Price closed below Supertrend       |
-| `SHORT_SUPERTREND_BB_BREAK` | SHORT: Price closed above MIN(ST, BB Mid) |
-| `MONITORING_RESTART_FAILED` | Position recovery failed                  |
-| `MANUAL_CLEAR_*`            | Manual intervention                       |
+| Tag                               | Meaning                                                  |
+| --------------------------------- | -------------------------------------------------------- |
+| `EOD_SAFETY_EXIT_3:19PM`          | End-of-day forced close                                  |
+| `EMERGENCY_HARD_STOP`             | Stock moved ±5% (flash crash)                            |
+| `GAMMA_CLIMAX_RSI{N}`             | Option RSI ≥ 85 on 15-min chart (blow-off top)           |
+| `RSI_TRAIL_CANDLE_LOW_BREAK`      | SHORT: Premium broke below 5-min candle LOW floor        |
+| `RSI_TRAIL_SECONDARY_EXIT_RSI{N}` | SHORT: 5-min option RSI dropped below 75 post-activation |
+| `LONG_SUPERTREND_BREAK`           | LONG: Price closed below Supertrend                      |
+| `SHORT_SUPERTREND_BB_BREAK`       | SHORT: Price closed above MIN(ST, BB Mid)                |
+| `MONITORING_RESTART_FAILED`       | Position recovery failed                                 |
+| `MANUAL_CLEAR_*`                  | Manual intervention                                      |
 
 ---
 
@@ -197,10 +242,15 @@ try {
 
 Multiple independent exit mechanisms run simultaneously:
 
-- Candle-based (5-min)
-- Emergency polling (30-sec)
-- RSI climax (15-min boundaries)
+- Candle-based Supertrend/BB exit (5-min)
+- Emergency Hard Stop polling (30-sec)
+- Gamma RSI Climax (15-min boundaries)
+- RSI Trail live premium polling (5-sec, SHORT only, activates on 5-min RSI ≥ 85)
 - EOD timer (once per day)
+
+### 5. Dashboard Visibility
+
+The **Exit Protection Layers** panel on each strategy dashboard shows real-time status of all exit mechanisms. For SHORT positions it displays RSI Trail state: watching (pre-activation), activated (with floor price and polling status), or N/A for LONG positions.
 
 ---
 
@@ -267,5 +317,6 @@ P&L: +₹35 per share (29.2% gain)
 ---
 
 **Framework Status**: Production-Ready  
-**Last Updated**: February 2026  
-**Applies To**: Bollinger Band stock option strategies
+**Last Updated**: February 13, 2026  
+**Applies To**: Bollinger Band stock option strategies  
+**Version Note**: Added Layer 4 (RSI-Activated Live Premium Trailing Stop) and RSI calculation convergence fix (full-history Wilder's RMA)

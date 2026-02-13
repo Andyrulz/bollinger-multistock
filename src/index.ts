@@ -2637,6 +2637,54 @@ class TradingBot {
           </div>
         </div>
       </div>
+      
+      <!-- Exit Protection Layers -->
+      <div style="margin-top: 16px; padding: 14px; background: #f8fafc; border-radius: 10px; border: 1px solid #e2e8f0;">
+        <div style="font-weight: 600; font-size: 0.9rem; color: #374151; margin-bottom: 10px;">🛡️ Exit Protection Layers</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85rem;">
+          <div class="position-detail-row">
+            <span class="position-detail-label">🔄 Supertrend/BB Exit</span>
+            <span class="position-detail-value" style="color: #10b981;">✅ Active (5-min close)</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">🚨 Emergency Hard Stop</span>
+            <span class="position-detail-value" style="color: #10b981;">✅ Active (30s poll)</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">📊 Gamma RSI Climax (15m)</span>
+            <span class="position-detail-value" style="color: #10b981;">✅ Active (15-min)</span>
+          </div>
+          ${positionInfo.type === 'SHORT' ? `
+          <div class="position-detail-row">
+            <span class="position-detail-label">🔥 RSI Trail (5m Option)</span>
+            <span class="position-detail-value" style="color: ${positionInfo.rsiTrail?.activated ? '#f59e0b' : '#3b82f6'};">
+              ${positionInfo.rsiTrail?.activated 
+                ? '⚡ ACTIVATED' 
+                : (positionInfo.rsiTrail?.is5MinMonitoring ? '👁️ Watching (RSI < 85)' : '⏳ Starting...')}
+            </span>
+          </div>
+          ${positionInfo.rsiTrail?.activated ? `
+          <div class="position-detail-row">
+            <span class="position-detail-label">📍 RSI Trail Floor</span>
+            <span class="position-detail-value" style="color: #f59e0b; font-weight: 600;">₹${positionInfo.rsiTrail.floorPrice?.toFixed(2) || '0.00'}</span>
+          </div>
+          <div class="position-detail-row">
+            <span class="position-detail-label">📈 Activation RSI</span>
+            <span class="position-detail-value">${positionInfo.rsiTrail.activationRsi?.toFixed(1) || 'N/A'} ${positionInfo.rsiTrail.isPolling ? '• 🟢 Polling' : '• ⏸️ No poll'}</span>
+          </div>
+          ` : ''}
+          ` : `
+          <div class="position-detail-row">
+            <span class="position-detail-label">🔥 RSI Trail (5m)</span>
+            <span class="position-detail-value" style="color: #9ca3af;">N/A (SHORT only)</span>
+          </div>
+          `}
+          <div class="position-detail-row">
+            <span class="position-detail-label">🕐 EOD Safety</span>
+            <span class="position-detail-value" style="color: #10b981;">✅ 3:19 PM</span>
+          </div>
+        </div>
+      </div>
     </div>
     ` : `
     <div class="section">
@@ -2943,6 +2991,20 @@ class TradingBot {
     this.logger.info('Stopping trading bot...');
     process.exit(0);
   }
+
+  /**
+   * Graceful shutdown: stop all strategies, save state, cancel pending orders
+   * Called by SIGTERM/SIGINT handlers before process.exit()
+   */
+  public async gracefulShutdown(): Promise<void> {
+    this.logger.info('🔄 Graceful shutdown initiated - stopping all strategies...');
+    try {
+      await this.strategyManager.shutdown();
+      this.logger.info('✅ All strategies stopped and state saved');
+    } catch (error) {
+      this.logger.error('❌ Error during strategy manager shutdown:', error);
+    }
+  }
 }
 
 // Handle process signals
@@ -2957,18 +3019,25 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-process.on('SIGTERM', async () => {
-  console.log('Received SIGTERM, shutting down gracefully');
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('Received SIGINT, shutting down gracefully');
-  process.exit(0);
-});
-
 // Start the bot
 const bot = new TradingBot();
+
+// Graceful shutdown: stop strategies and save state BEFORE process exits
+const gracefulShutdown = async (signal: string) => {
+  console.log(`Received ${signal}, shutting down gracefully...`);
+  try {
+    await bot.gracefulShutdown();
+    console.log(`✅ Graceful shutdown complete (${signal})`);
+  } catch (error) {
+    console.error(`❌ Error during graceful shutdown (${signal}):`, error);
+  } finally {
+    process.exit(0);
+  }
+};
+
+process.on('SIGTERM', () => { gracefulShutdown('SIGTERM'); });
+process.on('SIGINT', () => { gracefulShutdown('SIGINT'); });
+
 bot.start().catch((error) => {
   console.error('Failed to start trading bot:', error);
   process.exit(1);

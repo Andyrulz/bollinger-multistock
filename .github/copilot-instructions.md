@@ -25,10 +25,11 @@ Professional Node.js TypeScript trading bot using Zerodha's KiteConnect API. Fea
 - **Session Persistence**: Encrypted daily session storage with automatic restoration
 - **Modern Dashboard**: Clean multi-strategy interface with real-time status
 - **Comprehensive Logging**: Detailed strategy execution and error logging
-- **Position Management**: Automated entry, exit, and trailing stop-loss
+- **Position Management**: Automated entry, 5-layer exit protection (EOD, Emergency Stop, Gamma RSI Climax, RSI Trail Premium Stop, Supertrend Break), and state persistence
 
 ## Development Guidelines
 
+- **Implementation Plan**: Do not auto change any code. Always come up with an implementation plan once the user confirms that the approach is correct. Start implementation/make code changes only after the user approves the plan.
 - **Clean Architecture**: Strategy Manager pattern with StrategyBase inheritance
 - **Type Safety**: Full TypeScript with proper error handling
 - **Professional Standards**: Monitoring, logging, and health checks built-in

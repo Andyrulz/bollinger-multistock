@@ -230,7 +230,7 @@ The actual trading strategy with entry/exit logic.
 |-----------|------------|---------|
 | Bollinger Bands | Period: 20, StdDev: 2.0 | Entry zones, exit threshold |
 | Supertrend | Period: 10, Multiplier: 2.0 | Dynamic stop loss |
-| RSI | Period: 14 | Momentum confirmation |
+| RSI | Period: 14 | Momentum confirmation (full-history Wilder's RMA for TradingView parity) |
 | Daily Pivots | PP, R1-R3, S1-S3 | Support/resistance levels |
 
 **Staleness Guard:**
@@ -454,7 +454,7 @@ This eliminates "wick noise" where intra-candle price spikes would trigger false
 │                  EOD SAFETY EXIT                        │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  At 3:24 PM IST (6 minutes before market close):        │
+│  At 3:19 PM IST (6 minutes before market close):         │
 │                                                         │
 │  IF position exists:                                    │
 │     → FORCE EXIT: Sell at market price                  │
@@ -464,6 +464,17 @@ This eliminates "wick noise" where intra-candle price spikes would trigger false
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
+
+### Parallel Safety Systems
+
+In addition to the candle-close exits above, these run simultaneously:
+
+| System                 | Frequency                             | Trigger                                | Applies To |
+| ---------------------- | ------------------------------------- | -------------------------------------- | ---------- |
+| Emergency Hard Stop    | Every 30 seconds                      | Stock ±5% from entry                   | ALL        |
+| Gamma RSI Climax       | 15-min boundaries                     | Option RSI(14) ≥ 85                    | ALL        |
+| RSI Trail Premium Stop | 5-min boundaries + 5-sec live polling | Option RSI(14) ≥ 85 → LTP ≤ candle LOW | SHORT only |
+| EOD Safety             | Once per day                          | 3:19 PM                                | ALL        |
 
 ---
 
@@ -562,7 +573,9 @@ const smartRetentionConfig = {
 | Risk Distance Guard | 1.5% max         | Reject stocks with SL too far from entry |
 | Bandwidth Guard     | 3.5% max         | Reject over-extended Bollinger Bands     |
 | Exit Logic          | Supertrend-based | Dynamic SL that trails with price        |
-| EOD Exit            | 3:24 PM          | Force exit before market close           |
+| RSI Trail (SHORT)   | 5-min RSI ≥ 85   | Live premium trailing for flash spikes   |
+| Emergency Stop      | ±5% stock move   | Flash crash circuit breaker (30s poll)   |
+| EOD Exit            | 3:19 PM          | Force exit before market close           |
 
 ### Portfolio-Level Risk
 
@@ -657,6 +670,13 @@ const smartRetentionConfig = {
 │  │   [IF no position AND didn't just exit: checkEntrySignals()]   │  │
 │  │                                                                │  │
 │  └────────────────────────────────────────────────────────────────┘  │
+│                                                                       │
+│  Parallel safety systems (run independently):                         │
+│    • Emergency Hard Stop — 30-sec stock LTP polling (±5%)              │
+│    • Gamma RSI Climax — 15-min option RSI checks (RSI ≥ 85)           │
+│    • RSI Trail Premium Stop — 5-min option RSI + 5-sec LTP poll       │
+│      (SHORT only, activates when 5-min RSI ≥ 85)                      │
+│    • EOD Safety — 3:19 PM forced exit                                 │
 │                                                                       │
 │  Loop continues until strategy.stop() is called                       │
 │                                                                       │

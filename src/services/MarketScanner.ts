@@ -1888,9 +1888,19 @@ export class MarketScanner {
       trueRanges.push(tr);
     }
 
-    // Calculate ATR as SMA of True Ranges
-    const atrValues = trueRanges.slice(-period);
-    const atr = atrValues.reduce((sum, tr) => sum + tr, 0) / atrValues.length;
+    // Calculate ATR using RMA (Wilder's smoothing) - matches BollingerBandStrategy
+    // First ATR = SMA of first 'period' true ranges, then RMA for the rest
+    if (trueRanges.length < period) {
+      const lastClose = candles[candles.length - 1]?.close || 0;
+      return { value: lastClose, trend: 'UP' };
+    }
+    let atr = trueRanges.slice(0, period).reduce((sum, tr) => sum + tr, 0) / period;
+    for (let i = period; i < trueRanges.length; i++) {
+      const currentTR = trueRanges[i];
+      if (currentTR !== undefined) {
+        atr = (atr * (period - 1) + currentTR) / period;
+      }
+    }
 
     // Build Supertrend values
     const supertrendValues: Array<{

@@ -74,7 +74,7 @@ export interface SlotStateWithPosition extends SlotState {
  * Retention decision for logging
  */
 type RetentionDecision = 'LOCK' | 'KEEP' | 'SWAP' | 'DEPLOY';
-type SwapReason = 'empty_slot' | 'active_position' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout';
+type SwapReason = 'empty_slot' | 'active_position' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout' | 'in_cooldown';
 
 /**
  * Central manager for all trading strategies
@@ -1389,6 +1389,16 @@ export class StrategyManager {
         continue;
       }
       
+      // CASE 5.5: No active position AND symbol in cooldown → SWAP
+      // Stock can't re-enter during cooldown, slot is dead weight — free it for higher-scoring candidates
+      if (!hasActivePosition && this.isSymbolInCooldown(slotState.symbol!)) {
+        const remaining = this.getSymbolCooldownRemaining(slotState.symbol!);
+        this.logRetentionDecision(slotIndex, slotState.symbol!, 'SWAP', 'in_cooldown',
+          `No position, ${remaining}m cooldown remaining — freeing slot`);
+        await this.swapStrategy(slotIndex, selectedCandidates, deployedSymbols);
+        continue;
+      }
+      
       // CASE 6: Stock still meets threshold → KEEP
       this.logRetentionDecision(slotIndex, slotState.symbol, 'KEEP', 'still_top_tier',
         `Score ${stockInScan.score.toFixed(1)} ≥ ${this.smartRetentionConfig.keepThreshold}`);
@@ -1582,6 +1592,7 @@ export class StrategyManager {
       'bias_flip': 'Bias reversed',
       'not_in_scan': 'Dropped from scan (sector flat/filtered)',
       'stale_breakout': 'Breakout too old (3+ candles outside band)',
+      'in_cooldown': 'Symbol in cooldown (slot freed)',
     };
     
     // Store decision on slot state for dashboard display

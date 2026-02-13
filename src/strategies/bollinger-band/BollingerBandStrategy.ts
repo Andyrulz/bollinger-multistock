@@ -71,6 +71,17 @@ interface Position {
   timeDecayTrailing?: {
     lastHighTime: Date;        // When did we last see a new high premium?
   };
+  
+  // Breakout candle HIGH/LOW validation (first-breakout entries only)
+  breakoutValidation?: {
+    breakoutCandleHigh: number;       // HIGH of the breakout candle
+    breakoutCandleLow: number;        // LOW of the breakout candle
+    breakoutCandleTimestamp: Date;    // Timestamp of the breakout candle
+    candlesSinceBreakout: number;     // Counter: 0 at entry, incremented each candle
+    bestHighSinceBreakout: number;    // Running max HIGH of subsequent candles (LONG)
+    bestLowSinceBreakout: number;     // Running min LOW of subsequent candles (SHORT)
+    validated: boolean;               // true once HIGH/LOW taken out, or pre-validated for 2nd candle entry
+  };
 }
 
 export class BollingerBandStrategy extends StrategyBase {
@@ -106,9 +117,10 @@ export class BollingerBandStrategy extends StrategyBase {
     bollingerBands: BollingerBands;
   } | null = null;
   private dailyPivots: PivotLevels | null = null;
-  private previousDayClose: number = 0; // For Extended Gap Trap filter
-  private previousDayHigh: number = 0;  // For LONG entry: price > PDH condition
-  private previousDayLow: number = 0;   // For SHORT entry: price < PDL condition
+  private previousDayClose: number = 0;  // For Extended Gap Trap filter
+  private previousDayHigh: number = 0;   // For LONG entry: price > PDH condition  (0 = uninitialized)
+  private previousDayLow: number = 0;    // For SHORT entry: price < PDL condition (0 = uninitialized)
+  private pivotsLoaded: boolean = false;  // Guard: true only after PDH/PDL/PDC are loaded from market data
   
   // Signal instrument token (stock spot from config.instruments[0], e.g., BRITANNIA, TCS)
   private signalInstrumentToken: number = 0; // Will be fetched dynamically from stock symbol
@@ -168,12 +180,29 @@ export class BollingerBandStrategy extends StrategyBase {
   // Position reconciliation timer
   private positionReconciliationInterval?: NodeJS.Timeout;
 
+  // Health monitoring interval (must be cleared on stop to prevent leak on rebalance)
+  private healthMonitorInterval: NodeJS.Timeout | null = null;
+  // Daily cache refresh timeout (must be cleared on stop to prevent phantom fire)
+  private dailyCacheRefreshTimer: NodeJS.Timeout | null = null;
+
   // Option RSI Climax Exit tracking (Gamma Climax detection)
   private optionRsiInterval: NodeJS.Timeout | null = null;
   private optionRsiInitialTimeout: NodeJS.Timeout | null = null;
   private readonly OPTION_RSI_CHECK_INTERVAL = 15 * 60 * 1000;  // 15 minutes
   private readonly OPTION_RSI_CLIMAX_THRESHOLD = 85;  // RSI >= 85 = Gamma Climax
   private readonly OPTION_RSI_MICRO_GRACE_SECONDS = 60;  // 60-second micro-grace to prevent double-fire
+
+  // RSI-Activated Live Premium Trailing Stop (SHORT trades only)
+  // When 5-min option RSI crosses 85, activates live polling with candle-LOW trailing floor
+  private rsiTrailActivated: boolean = false;
+  private rsiTrailFloorPrice: number = 0;
+  private rsiTrailActivationRsi: number = 0;
+  private rsiTrailPollingInterval: NodeJS.Timeout | null = null;
+  private rsiTrail5MinCheckInterval: NodeJS.Timeout | null = null;
+  private rsiTrail5MinInitialTimeout: NodeJS.Timeout | null = null;
+  private readonly RSI_TRAIL_ACTIVATION_THRESHOLD = 85;   // 5-min option RSI >= 85 to activate
+  private readonly RSI_TRAIL_SECONDARY_EXIT_THRESHOLD = 75; // 5-min RSI < 75 on candle close = exit
+  private readonly RSI_TRAIL_POLL_INTERVAL_MS = 5000;      // 5 seconds between live premium polls
 
   // Error monitoring and health tracking
   private errorCounts: Map<string, number> = new Map();
@@ -287,6 +316,11 @@ export class BollingerBandStrategy extends StrategyBase {
         capital: this.currentCapital,
         tradeHistory: this.tradeHistory,
         activePosition: this.currentPosition, // P0: Persist active position
+        rsiTrailState: this.currentPosition ? {
+          activated: this.rsiTrailActivated,
+          floorPrice: this.rsiTrailFloorPrice,
+          activationRsi: this.rsiTrailActivationRsi
+        } : null,
         lastUpdated: new Date().toISOString()
       };
       
@@ -366,6 +400,21 @@ export class BollingerBandStrategy extends StrategyBase {
         if (this.currentPosition.timeDecayTrailing?.lastHighTime) {
           this.currentPosition.timeDecayTrailing.lastHighTime = new Date(this.currentPosition.timeDecayTrailing.lastHighTime);
         }
+        
+        // Convert breakoutValidation.breakoutCandleTimestamp if exists
+        if (this.currentPosition.breakoutValidation?.breakoutCandleTimestamp) {
+          this.currentPosition.breakoutValidation.breakoutCandleTimestamp = new Date(this.currentPosition.breakoutValidation.breakoutCandleTimestamp);
+        }
+      }
+      
+      // Restore RSI Trail state if it was persisted
+      if (data.rsiTrailState && this.currentPosition?.type === 'SHORT') {
+        this.rsiTrailActivated = data.rsiTrailState.activated || false;
+        this.rsiTrailFloorPrice = data.rsiTrailState.floorPrice || 0;
+        this.rsiTrailActivationRsi = data.rsiTrailState.activationRsi || 0;
+        if (this.rsiTrailActivated) {
+          this.logger.info(`🔄 RSI Trail state recovered: activated=true, floor=₹${this.rsiTrailFloorPrice.toFixed(2)}, activationRsi=${this.rsiTrailActivationRsi.toFixed(1)}`);
+        }
       }
       
       this.logger.info('✅ Active position recovered from disk', {
@@ -398,12 +447,22 @@ export class BollingerBandStrategy extends StrategyBase {
         // P0: Start Option RSI Climax monitoring for recovered positions
         this.startOptionRsiMonitoring();
         
+        // Start RSI-Activated Live Premium Trailing Stop for recovered SHORT positions
+        if (this.currentPosition?.type === 'SHORT') {
+          this.startRsiTrail5MinMonitoring();
+          // If trail was activated before restart, also resume live polling
+          if (this.rsiTrailActivated && this.rsiTrailFloorPrice > 0) {
+            this.startRsiTrailLivePolling();
+          }
+        }
+        
         // NOTE: shortMonitoringInterval validation REMOVED - polling-based monitoring was replaced
         // by 5-min candle close exits (master cycle). Exit protection is provided by:
         // 1. Master cycle (startMasterCycle → fetchLatest5MinuteCandle → checkPositionExit)
         // 2. Emergency Hard Stop (startEmergencyStopMonitoring - already started above)
         // 3. Option RSI Climax (startOptionRsiMonitoring - already started above)
-        // 4. EOD Safety Exit (scheduleEODExit - starts in start())
+        // 4. RSI Trail (startRsiTrail5MinMonitoring - already started above for SHORT)
+        // 5. EOD Safety Exit (scheduleEODExit - starts in start())
         
         this.logger.info('✅ Position monitoring restarted successfully after recovery');
         
@@ -523,6 +582,9 @@ export class BollingerBandStrategy extends StrategyBase {
     // P0: Stop Option RSI Climax monitoring
     this.stopOptionRsiMonitoring();
     
+    // Stop RSI Trail monitoring (5-min checks + live polling)
+    this.stopRsiTrailMonitoring();
+    
     // Stop all monitoring
     this.stopRealTimeMonitoring();
     
@@ -534,6 +596,18 @@ export class BollingerBandStrategy extends StrategyBase {
     
     // P0: Stop position reconciliation
     this.stopPositionReconciliation();
+    
+    // Stop health monitoring interval (prevents leak on rebalance SWAP)
+    if (this.healthMonitorInterval) {
+      clearInterval(this.healthMonitorInterval);
+      this.healthMonitorInterval = null;
+    }
+    
+    // Cancel daily cache refresh timeout (prevents phantom fire on stopped strategy)
+    if (this.dailyCacheRefreshTimer) {
+      clearTimeout(this.dailyCacheRefreshTimer);
+      this.dailyCacheRefreshTimer = null;
+    }
     
     // Predictive WebSocket removed - using real-time selection
     
@@ -768,6 +842,8 @@ export class BollingerBandStrategy extends StrategyBase {
       this.dailyPivots = null;
       this.previousDayHigh = 0;
       this.previousDayLow = 0;
+      this.previousDayClose = 0;
+      this.pivotsLoaded = false;
       this.currentCandle = null;
       this.currentStockLTP = 0;
       
@@ -1019,7 +1095,15 @@ export class BollingerBandStrategy extends StrategyBase {
               this.currentPosition.entryCandleLow || 0, 
               this.currentIndicators?.bollingerBands?.middle || 0
             )
-          : this.currentPosition.entryCandleHigh || 0
+          : this.currentPosition.entryCandleHigh || 0,
+        // RSI Trail state (SHORT only — no new API calls, just in-memory state)
+        rsiTrail: {
+          activated: this.rsiTrailActivated,
+          floorPrice: this.rsiTrailFloorPrice,
+          activationRsi: this.rsiTrailActivationRsi,
+          isPolling: this.rsiTrailPollingInterval !== null,
+          is5MinMonitoring: this.rsiTrail5MinCheckInterval !== null || this.rsiTrail5MinInitialTimeout !== null
+        }
       } : null
     } as StrategyStatus;
   }
@@ -1176,13 +1260,12 @@ export class BollingerBandStrategy extends StrategyBase {
       return -1;
     }
     
-    // Use only the most recent candles for calculation (stabilize)
-    const recentCandles = candles.slice(-30);
-    
+    // Use all available candles so Wilder's RMA has enough smoothing steps
+    // to converge to the same value as TradingView (which uses full chart history)
     const changes: number[] = [];
-    for (let i = 1; i < recentCandles.length; i++) {
-      const curr = recentCandles[i];
-      const prev = recentCandles[i - 1];
+    for (let i = 1; i < candles.length; i++) {
+      const curr = candles[i];
+      const prev = candles[i - 1];
       if (curr && prev) {
         changes.push(curr.close - prev.close);
       }
@@ -1272,6 +1355,57 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
+   * Fetch 5-minute historical data for the active option instrument
+   * Used for RSI-Activated Live Premium Trailing Stop (SHORT trades)
+   * 
+   * @returns Array of 5-min candles (30+ for RSI stability)
+   */
+  private async fetchOption5MinCandles(): Promise<Candle[]> {
+    if (!this.currentPosition) return [];
+    
+    const optionToken = this.currentPosition.instrument.instrument_token;
+    const optionSymbol = this.currentPosition.instrument.tradingsymbol;
+    
+    try {
+      const toDate = new Date();
+      const fromDate = new Date(toDate);
+      fromDate.setDate(fromDate.getDate() - 5);  // 5 days lookback for 30+ 5-min candles
+      
+      this.logger.debug(`Fetching 5-min option data: ${optionSymbol} from ${fromDate.toISOString().split('T')[0]}`);
+      
+      const historicalData = await this.kiteConnect.getHistoricalData(
+        optionToken,
+        '5minute',  // 5-minute timeframe
+        fromDate,
+        toDate
+      );
+      
+      if (!historicalData || historicalData.length < 20) {
+        this.logger.warn(`Insufficient 5-min option data: ${historicalData?.length || 0} candles`);
+        return [];
+      }
+      
+      // Convert to Candle interface
+      const candles: Candle[] = historicalData.map((kiteCandle: any) => ({
+        timestamp: new Date(kiteCandle.date),
+        open: kiteCandle.open,
+        high: kiteCandle.high,
+        low: kiteCandle.low,
+        close: kiteCandle.close,
+        volume: kiteCandle.volume || 0,
+        isComplete: true
+      }));
+      
+      this.logger.debug(`Fetched ${candles.length} 5-min option candles for RSI Trail calculation`);
+      return candles;
+      
+    } catch (error) {
+      this.logger.error(`Failed to fetch 5-min option data for ${optionSymbol}:`, error);
+      return [];
+    }
+  }
+
+  /**
    * Calculate Bollinger Bands
    * Middle Band = SMA(close, period)
    * Upper Band = Middle Band + (stdDev * multiplier)
@@ -1345,17 +1479,30 @@ export class BollingerBandStrategy extends StrategyBase {
     const idx2 = this.candleHistory.length - 2;
     const idx3 = this.candleHistory.length - 3;
     
+    // Helper: check if two candles are from the same intraday session (gap ≤ 6 minutes)
+    // Prevents counting across overnight/holiday gaps as "consecutive"
+    const MAX_CANDLE_GAP_MS = 6 * 60 * 1000; // 6 minutes (buffer over 5-min interval)
+    const isConsecutiveSession = (newerIdx: number, olderIdx: number): boolean => {
+      const newer = this.candleHistory[newerIdx];
+      const older = this.candleHistory[olderIdx];
+      if (!newer || !older) return false;
+      return (newer.timestamp.getTime() - older.timestamp.getTime()) <= MAX_CANDLE_GAP_MS;
+    };
+    
     const candle1Meets = checkCandleMeetsCondition(idx1);
     const candle2Meets = checkCandleMeetsCondition(idx2);
     const candle3Meets = checkCandleMeetsCondition(idx3);
     
-    // Count consecutive from most recent - must be unbroken chain
+    const gap1to2 = isConsecutiveSession(idx1, idx2);
+    const gap2to3 = isConsecutiveSession(idx2, idx3);
+    
+    // Count consecutive from most recent - must be unbroken chain within same session
     let consecutiveCount = 0;
     if (candle1Meets) {
       consecutiveCount = 1;
-      if (candle2Meets) {
+      if (candle2Meets && gap1to2) {
         consecutiveCount = 2;
-        if (candle3Meets) {
+        if (candle3Meets && gap2to3) {
           consecutiveCount = 3;
         }
       }
@@ -1364,7 +1511,7 @@ export class BollingerBandStrategy extends StrategyBase {
     // Stale if all 3 consecutive candles meet conditions (Count > 2)
     const isStale = consecutiveCount >= 3;
     
-    this.logger.debug(`[STALENESS CHECK] ${direction}: Candle1=${candle1Meets}, Candle2=${candle2Meets}, Candle3=${candle3Meets}, Consecutive=${consecutiveCount}, IsStale=${isStale}`);
+    this.logger.debug(`[STALENESS CHECK] ${direction}: Candle1=${candle1Meets}, Candle2=${candle2Meets}, Candle3=${candle3Meets}, Gap1-2=${gap1to2}, Gap2-3=${gap2to3}, Consecutive=${consecutiveCount}, IsStale=${isStale}`);
     
     return { isStale, consecutiveCount };
   }
@@ -1752,7 +1899,11 @@ export class BollingerBandStrategy extends StrategyBase {
     
     this.logger.info(`?? Scheduled daily cache refresh at: ${refreshTime.toLocaleString()}`);
     
-    setTimeout(async () => {
+    // Clear any existing timer to prevent duplicates on restart
+    if (this.dailyCacheRefreshTimer) {
+      clearTimeout(this.dailyCacheRefreshTimer);
+    }
+    this.dailyCacheRefreshTimer = setTimeout(async () => {
       try {
         this.logger.info('?? Daily cache refresh starting at 3:25 PM...');
         
@@ -1850,6 +2001,7 @@ export class BollingerBandStrategy extends StrategyBase {
       this.previousDayClose = previousDay.close;
       this.previousDayHigh = previousDay.high;   // For LONG entry condition
       this.previousDayLow = previousDay.low;     // For SHORT entry condition
+      this.pivotsLoaded = true;  // Mark pivots as successfully loaded
       
       this.dailyPivots = this.calculateDailyPivots({
         high: previousDay.high,
@@ -2187,8 +2339,12 @@ export class BollingerBandStrategy extends StrategyBase {
    * Start health monitoring with periodic status reports
    */
   private startHealthMonitoring(): void {
+    // Clear any existing interval to prevent duplication
+    if (this.healthMonitorInterval) {
+      clearInterval(this.healthMonitorInterval);
+    }
     // Report health status every 5 minutes
-    setInterval(() => {
+    this.healthMonitorInterval = setInterval(() => {
       this.healthStatus.lastHeartbeat = new Date();
       const healthReport = this.getHealthReport();
       
@@ -2321,15 +2477,13 @@ export class BollingerBandStrategy extends StrategyBase {
           // CRITICAL ORDER: Check exits BEFORE entries (exit existing position before considering new entry)
           const hadPositionBeforeExitCheck = this.currentPosition !== null;
           if (this.currentPosition) {
-            // Check exit within first 15 seconds of a 5-minute boundary (allows for API delays + slot stagger)
-            // E.g., 9:35:00-9:35:15, 9:40:00-9:40:15, etc.
-            const now = new Date();
-            const minutes = now.getMinutes();
-            const seconds = now.getSeconds();
-            if (minutes % 5 === 0 && seconds <= 15) {
-              await this.checkPositionExit(newCandle.close);
-            } else {
-              this.logger.debug(`[EXIT CHECK] Skipped - not within 5-min boundary window (${minutes}:${seconds.toString().padStart(2, '0')})`);
+            // Exit check runs on every fresh candle fetch (duplicate candle detection above prevents double-processing)
+            // Candle freshness is validated by timestamp, not wall clock — safe regardless of API latency
+            await this.checkPositionExit(newCandle.close);
+            
+            // Breakout validation check (only runs for first 3 candles after entry, first-breakout entries only)
+            if (this.currentPosition?.breakoutValidation && !this.currentPosition.breakoutValidation.validated) {
+              await this.checkBreakoutValidation(newCandle);
             }
           }
           
@@ -2606,137 +2760,109 @@ export class BollingerBandStrategy extends StrategyBase {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // LEGACY POLLING CODE REMOVED
+  // processLTPUpdate, buildFiveMinuteCandle, checkCandleCompletion,
+  // completeFiveMinuteCandle, processCandleCompletion — all removed.
+  // All candle processing now goes through the master cycle:
+  //   startRealTimeMonitoring → fetchLatest5MinuteCandle → updateTechnicalIndicators
+  // Exit checks: checkPositionExit (on every fresh candle fetch)
+  // Entry checks: checkEntrySignals (on non-duplicate candle, no prior position)
+  // ═══════════════════════════════════════════════════════════════
+
+  // ============================================================================
+  // BREAKOUT CANDLE HIGH/LOW VALIDATION
+  // Post-entry gate: checks if the breakout candle's HIGH (LONG) or LOW (SHORT)
+  // is exceeded within 3 candles (15 min). Only applies to first-breakout entries.
+  // ============================================================================
+
   /**
-   * Process LTP update and build 5-minute candles
+   * Breakout Candle HIGH/LOW Validation
+   * 
+   * After a first-breakout entry, this checks each subsequent candle (up to 3)
+   * to see if the breakout candle's extreme is exceeded.
+   * - LONG: Was the breakout candle's HIGH taken out by any new candle's HIGH?
+   * - SHORT: Was the breakout candle's LOW taken out by any new candle's LOW?
+   * 
+   * If not exceeded after 3 candles → exit (BREAKOUT_NO_FOLLOWTHROUGH)
+   * If exceeded → mark validated, let trade run under normal exit mechanisms
+   * 
+   * @param newCandle - The just-completed 5-minute candle
    */
-  private async processLTPUpdate(): Promise<void> {
-    try {
-      // Get current stock spot LTP
-      const quote = await this.kiteConnect.getQuote([this.signalInstrumentToken]);
-      const stockQuote = quote[this.signalInstrumentToken];
-      
-      if (!stockQuote) {
-        this.logger.warn(`No quote data received for ${this.signalSymbol}`);
+  private async checkBreakoutValidation(newCandle: Candle): Promise<void> {
+    if (!this.currentPosition?.breakoutValidation) return;
+    if (this.currentPosition.breakoutValidation.validated) return;
+
+    const validation = this.currentPosition.breakoutValidation;
+    validation.candlesSinceBreakout++;
+
+    const isLong = this.currentPosition.type === 'LONG';
+
+    if (isLong) {
+      // Track the highest HIGH seen since breakout
+      validation.bestHighSinceBreakout = Math.max(
+        validation.bestHighSinceBreakout,
+        newCandle.high
+      );
+
+      // Check: did any candle's HIGH exceed the breakout candle's HIGH?
+      if (validation.bestHighSinceBreakout > validation.breakoutCandleHigh) {
+        validation.validated = true;
+        this.logger.info('✅ BREAKOUT VALIDATED: New HIGH exceeded breakout candle HIGH', {
+          symbol: this.signalSymbol,
+          breakoutCandleHigh: validation.breakoutCandleHigh.toFixed(2),
+          newHigh: validation.bestHighSinceBreakout.toFixed(2),
+          candlesAfterEntry: validation.candlesSinceBreakout
+        });
+        this.saveCapitalData(); // Persist validated state
         return;
       }
-      
-      const currentLTP = stockQuote.last_price;
-      const timestamp = new Date();
-      
-      // Store current LTP for dashboard display
-      this.currentStockLTP = currentLTP;
-      
-      // Build 5-minute candle
-      this.buildFiveMinuteCandle(currentLTP, timestamp);
-      
-      // Exit conditions are now handled by dedicated systems:
-      // - LONG: checkLongExitOnCandleClose() via candle completion
-      // - SHORT: checkShortExitUnified() via startShortPositionMonitoring()
-      // No need to call checkExitConditions() anymore
-      
-    } catch (error) {
-      this.logger.error('Error processing LTP update:', error);
-    }
-  }
-
-  /**
-   * Build 5-minute candle from LTP data
-   */
-  private buildFiveMinuteCandle(ltp: number, timestamp: Date): void {
-    const candleStart = new Date(timestamp);
-    candleStart.setSeconds(0, 0);
-    candleStart.setMinutes(Math.floor(candleStart.getMinutes() / 5) * 5);
-    
-    if (!this.currentCandle || this.currentCandle.timestamp.getTime() !== candleStart.getTime()) {
-      // Complete previous candle if exists
-      if (this.currentCandle && !this.currentCandle.isComplete) {
-        this.completeFiveMinuteCandle();
-      }
-      
-      // Start new candle
-      this.currentCandle = {
-        timestamp: candleStart,
-        open: ltp,
-        high: ltp,
-        low: ltp,
-        close: ltp,
-        volume: 0, // Volume not available from spot quotes
-        isComplete: false
-      };
     } else {
-      // Update current candle
-      this.currentCandle.high = Math.max(this.currentCandle.high, ltp);
-      this.currentCandle.low = Math.min(this.currentCandle.low, ltp);
-      this.currentCandle.close = ltp;
-    }
-  }
+      // SHORT: Track the lowest LOW seen since breakout
+      validation.bestLowSinceBreakout = Math.min(
+        validation.bestLowSinceBreakout,
+        newCandle.low
+      );
 
-  /**
-   * Check if 5-minute candle should be completed
-   */
-  private checkCandleCompletion(): void {
-    if (!this.currentCandle || this.currentCandle.isComplete) return;
-    
-    const now = new Date();
-    const candleEnd = new Date(this.currentCandle.timestamp.getTime() + 5 * 60 * 1000);
-    
-    if (now >= candleEnd) {
-      this.completeFiveMinuteCandle();
+      // Check: did any candle's LOW go below the breakout candle's LOW?
+      if (validation.bestLowSinceBreakout < validation.breakoutCandleLow) {
+        validation.validated = true;
+        this.logger.info('✅ BREAKOUT VALIDATED (SHORT): New LOW exceeded breakout candle LOW', {
+          symbol: this.signalSymbol,
+          breakoutCandleLow: validation.breakoutCandleLow.toFixed(2),
+          newLow: validation.bestLowSinceBreakout.toFixed(2),
+          candlesAfterEntry: validation.candlesSinceBreakout
+        });
+        this.saveCapitalData(); // Persist validated state
+        return;
+      }
     }
-  }
 
-  /**
-   * Complete 5-minute candle and trigger strategy logic
-   */
-  private completeFiveMinuteCandle(): void {
-    if (!this.currentCandle) return;
-    
-    this.currentCandle.isComplete = true;
-    this.logger.info('5-minute candle completed', {
-      timestamp: this.currentCandle.timestamp,
-      ohlc: `O:${this.currentCandle.open} H:${this.currentCandle.high} L:${this.currentCandle.low} C:${this.currentCandle.close}`
+    // Have we exhausted the 3-candle (15 min) window?
+    if (validation.candlesSinceBreakout >= 3) {
+      const target = isLong ? validation.breakoutCandleHigh : validation.breakoutCandleLow;
+      const best = isLong ? validation.bestHighSinceBreakout : validation.bestLowSinceBreakout;
+      const label = isLong ? 'HIGH' : 'LOW';
+
+      this.logger.warn(`⚠️ BREAKOUT FAILED — No ${label} follow-through in 15 min`, {
+        symbol: this.signalSymbol,
+        direction: this.currentPosition.type,
+        [`breakoutCandle${label}`]: target.toFixed(2),
+        [`best${label}InWindow`]: best.toFixed(2),
+        candlesChecked: validation.candlesSinceBreakout
+      });
+
+      await this.executeExit('BREAKOUT_NO_FOLLOWTHROUGH');
+      return;
+    }
+
+    // Window still open — save updated counter and best values for restart safety
+    this.logger.info(`🔍 BREAKOUT VALIDATION: Candle ${validation.candlesSinceBreakout}/3 — ${isLong ? 'HIGH' : 'LOW'} not yet exceeded`, {
+      symbol: this.signalSymbol,
+      target: isLong ? validation.breakoutCandleHigh.toFixed(2) : validation.breakoutCandleLow.toFixed(2),
+      best: isLong ? validation.bestHighSinceBreakout.toFixed(2) : validation.bestLowSinceBreakout.toFixed(2)
     });
-    
-    // Process completed candle (main strategy logic)
-    this.processCandleCompletion();
-  }
-
-  /**
-   * Main strategy logic - processes completed 5-minute candle
-   * NOTE: Entry AND exit signal checking REMOVED - now handled by master cycle at 5-minute boundaries
-   * This method only handles legacy candle building for dashboard display
-   */
-  private async processCandleCompletion(): Promise<void> {
-    if (!this.currentCandle || !this.currentCandle.isComplete) return;
-    
-    // ⚠️ REMOVED: All entry/exit signal checking (now handled by fetchLatest5MinuteCandle at 5-min boundaries)
-    // LONG exits: checkLongExitOnCandleClose() - exit when close < Supertrend
-    // SHORT exits: checkShortExitOnCandleClose() - exit when close > MIN(Supertrend, BB Middle)
-    // Both use 5-minute candle close ONLY (no real-time polling)
-    
-    // Update technical indicators with completed candle
-    const newCandle: Candle = {
-      timestamp: this.currentCandle.timestamp,
-      open: this.currentCandle.open,
-      high: this.currentCandle.high,
-      low: this.currentCandle.low,
-      close: this.currentCandle.close,
-      volume: this.currentCandle.volume
-    };
-    
-    // Add to historical data
-    this.candleHistory.push(newCandle);
-    
-    // Keep only last 100 candles to manage memory
-    if (this.candleHistory.length > 100) {
-      this.candleHistory = this.candleHistory.slice(-100);
-    }
-    
-    // Recalculate indicators
-    this.updateTechnicalIndicators();
-    
-    // Clear current candle
-    this.currentCandle = null;
+    this.saveCapitalData();
   }
 
   // ===========================
@@ -2808,6 +2934,20 @@ export class BollingerBandStrategy extends StrategyBase {
     this.logger.info(`[BOLLINGER] 📊 Current Indicators: RSI=${rsi.toFixed(2)}, BB_Upper=${bollingerBands.upper.toFixed(2)}, BB_Lower=${bollingerBands.lower.toFixed(2)}, Supertrend=${supertrend.trend}, Price=${close}`);
     this.logger.info(`[BOLLINGER] 📊 Candle Direction: ${candleIsBullish ? 'Bullish (close>open)' : candleIsBearish ? 'Bearish (close<open)' : 'Neutral'} | Open=${open.toFixed(2)}, Close=${close.toFixed(2)}`);
     
+    // ═══════════════════════════════════════════════════════════════
+    // PIVOT DATA GUARD: Block ALL entries if pivots never loaded
+    // Prevents PDH=0/PDL=0 from making conditions trivially true/false
+    // ═══════════════════════════════════════════════════════════════
+    if (!this.pivotsLoaded) {
+      this.logger.error('[BOLLINGER] 🚫 ALL entries blocked - Pivot data not loaded! PDH/PDL/PDC are uninitialized.', {
+        previousDayHigh: this.previousDayHigh,
+        previousDayLow: this.previousDayLow,
+        previousDayClose: this.previousDayClose,
+        pivotsLoaded: this.pivotsLoaded
+      });
+      return;  // Block ALL entries until pivots are valid
+    }
+    
     // LONG Entry Signal - RSI range optimized for overbought momentum
     const longConditions = {
       priceAboveUpperBB: close > bollingerBands.upper,
@@ -2828,6 +2968,24 @@ export class BollingerBandStrategy extends StrategyBase {
         r1: r1.toFixed(2),
         previousDayHigh: this.previousDayHigh.toFixed(2)
       });
+      
+      // ═══════════════════════════════════════════════════════════════
+      // LATE-DAY LONG ENTRY CUTOFF
+      // Block LONG entries after 2:55 PM (except Fridays) - mirrors SHORT cutoff
+      // Prevents entering positions with <24 min to EOD exit at 3:19 PM
+      // ═══════════════════════════════════════════════════════════════
+      const longCutoffTime = 14 * 60 + 55;  // 2:55 PM in minutes
+      const isFridayLong = now.getDay() === 5;
+      
+      if (currentMinutes > longCutoffTime && !isFridayLong) {
+        this.logger.warn('[BOLLINGER] 🚫 LONG entry blocked - After 2:55 PM (non-Friday)', {
+          currentTime: now.toLocaleTimeString(),
+          dayOfWeek: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()],
+          cutoffTime: '2:55 PM',
+          reason: 'Late-day LONG restriction active - insufficient runway before EOD exit'
+        });
+        return;  // Skip LONG entry
+      }
       
       // ═══════════════════════════════════════════════════════════════
       // EXTENDED GAP TRAP FILTER (LONG)
@@ -2887,7 +3045,7 @@ export class BollingerBandStrategy extends StrategyBase {
       const entryCandleLow = latestCandle.low;
       const entryCandleTimestamp = latestCandle.timestamp; // FIXED: Capture timestamp
       
-      await this.executeLongEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp);
+      await this.executeLongEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp, longStaleness.consecutiveCount);
     } else {
       // Show why LONG was blocked
       this.logger.info('[BOLLINGER] ❌ LONG conditions not met:', {
@@ -2992,7 +3150,7 @@ export class BollingerBandStrategy extends StrategyBase {
       const entryCandleLow = latestCandle.low;
       const entryCandleTimestamp = latestCandle.timestamp; // FIXED: Capture timestamp
       
-      await this.executeShortEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp);
+      await this.executeShortEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp, shortStaleness.consecutiveCount);
     } else {
       // Show why SHORT was blocked
       this.logger.info('[BOLLINGER] ❌ SHORT conditions not met:', {
@@ -3008,7 +3166,7 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Execute LONG entry with CE option selection
    */
-  private async executeLongEntry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+  private async executeLongEntry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date, breakoutConsecutiveCount?: number): Promise<void> {
     // Position overlap protection - ensure no existing position
     if (this.currentPosition !== null) {
       this.logger.warn('Skipping LONG entry - position already exists', {
@@ -3074,6 +3232,38 @@ export class BollingerBandStrategy extends StrategyBase {
           timeDecayTrailing: { lastHighTime: new Date() } // Initialize for time-based tracking
         };
         
+        // ═══════════════════════════════════════════════════════════════
+        // BREAKOUT VALIDATION: Arm or pre-validate based on consecutive count
+        // consecutiveCount=1 → first breakout, needs validation
+        // consecutiveCount=2 → second candle entry, already confirmed
+        // ═══════════════════════════════════════════════════════════════
+        if (breakoutConsecutiveCount !== undefined && breakoutConsecutiveCount <= 1) {
+          this.currentPosition.breakoutValidation = {
+            breakoutCandleHigh: entryCandleHigh ?? stockPrice,
+            breakoutCandleLow: entryCandleLow ?? stockPrice,
+            breakoutCandleTimestamp: entryCandleTimestamp ?? new Date(),
+            candlesSinceBreakout: 0,
+            bestHighSinceBreakout: 0,
+            bestLowSinceBreakout: Infinity,
+            validated: false
+          };
+          this.logger.info('🔍 BREAKOUT VALIDATION ARMED (first breakout — LONG)', {
+            breakoutCandleHigh: this.currentPosition.breakoutValidation.breakoutCandleHigh.toFixed(2),
+            deadline: '3 candles (15 min)'
+          });
+        } else {
+          this.currentPosition.breakoutValidation = {
+            breakoutCandleHigh: entryCandleHigh ?? stockPrice,
+            breakoutCandleLow: entryCandleLow ?? stockPrice,
+            breakoutCandleTimestamp: entryCandleTimestamp ?? new Date(),
+            candlesSinceBreakout: 0,
+            bestHighSinceBreakout: 0,
+            bestLowSinceBreakout: Infinity,
+            validated: true
+          };
+          this.logger.info('✅ BREAKOUT PRE-VALIDATED (entering on candle #2, breakout has follow-through — LONG)');
+        }
+        
         // P0: Save position to disk immediately after entry
         this.saveCapitalData();
         
@@ -3130,7 +3320,7 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Execute SHORT entry with PE option selection
    */
-  private async executeShortEntry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+  private async executeShortEntry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date, breakoutConsecutiveCount?: number): Promise<void> {
     // Position overlap protection - ensure no existing position
     if (this.currentPosition !== null) {
       this.logger.warn('Skipping SHORT entry - position already exists', {
@@ -3198,6 +3388,38 @@ export class BollingerBandStrategy extends StrategyBase {
           timeDecayTrailing: { lastHighTime: new Date() } // Initialize at entry for precise stagnation tracking
         };
         
+        // ═══════════════════════════════════════════════════════════════
+        // BREAKOUT VALIDATION: Arm or pre-validate based on consecutive count
+        // consecutiveCount=1 → first breakout, needs validation
+        // consecutiveCount=2 → second candle entry, already confirmed
+        // ═══════════════════════════════════════════════════════════════
+        if (breakoutConsecutiveCount !== undefined && breakoutConsecutiveCount <= 1) {
+          this.currentPosition.breakoutValidation = {
+            breakoutCandleHigh: candleHigh,
+            breakoutCandleLow: entryCandleLow ?? stockPrice,
+            breakoutCandleTimestamp: entryCandleTimestamp ?? new Date(),
+            candlesSinceBreakout: 0,
+            bestHighSinceBreakout: 0,
+            bestLowSinceBreakout: Infinity,
+            validated: false
+          };
+          this.logger.info('🔍 BREAKOUT VALIDATION ARMED (first breakout — SHORT)', {
+            breakoutCandleLow: this.currentPosition.breakoutValidation.breakoutCandleLow.toFixed(2),
+            deadline: '3 candles (15 min)'
+          });
+        } else {
+          this.currentPosition.breakoutValidation = {
+            breakoutCandleHigh: candleHigh,
+            breakoutCandleLow: entryCandleLow ?? stockPrice,
+            breakoutCandleTimestamp: entryCandleTimestamp ?? new Date(),
+            candlesSinceBreakout: 0,
+            bestHighSinceBreakout: 0,
+            bestLowSinceBreakout: Infinity,
+            validated: true
+          };
+          this.logger.info('✅ BREAKOUT PRE-VALIDATED (entering on candle #2, breakout has follow-through — SHORT)');
+        }
+        
         // P0: Save position to disk immediately after entry
         this.saveCapitalData();
         
@@ -3211,6 +3433,9 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // P0: Start Option RSI Climax monitoring (15-min boundary checks, RSI >= 85 = Gamma Climax exit)
         this.startOptionRsiMonitoring();
+        
+        // Start RSI-Activated Live Premium Trailing Stop (5-min option RSI monitoring for SHORT)
+        this.startRsiTrail5MinMonitoring();
         
         this.metrics.totalTrades++;
         // Update metrics to reflect successful trade execution
@@ -3531,6 +3756,265 @@ export class BollingerBandStrategy extends StrategyBase {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RSI-ACTIVATED LIVE PREMIUM TRAILING STOP (SHORT trades only)
+  // When 5-min option RSI crosses 85, starts live polling with candle-LOW floor.
+  // Primary exit: option premium breaks below most recently completed 5-min candle LOW.
+  // Secondary exit: on 5-min candle close, RSI drops below 75.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Check if 5-min option RSI has crossed the activation threshold (85)
+   * Called every 5 minutes aligned to candle boundaries.
+   * If already activated, checks secondary exit (RSI < 75) and updates rolling floor.
+   */
+  private async check5MinOptionRsiForTrail(): Promise<void> {
+    if (!this.currentPosition) return;
+    
+    // SHORT-only feature
+    if (this.currentPosition.type !== 'SHORT') return;
+    
+    const now = new Date();
+    const secondsSinceEntry = (now.getTime() - this.currentPosition.entryTime.getTime()) / 1000;
+    
+    // Micro-grace: Skip if just entered (same as 15-min RSI check)
+    if (secondsSinceEntry < this.OPTION_RSI_MICRO_GRACE_SECONDS) {
+      this.logger.debug(`[RSI TRAIL] Skipping: Entry was ${secondsSinceEntry.toFixed(0)}s ago (micro-grace)`);
+      return;
+    }
+    
+    // Fetch 5-min option candles
+    const optionCandles = await this.fetchOption5MinCandles();
+    
+    if (optionCandles.length < 15) {
+      this.logger.warn(`[RSI TRAIL] Insufficient 5-min option candles: ${optionCandles.length} (need 15+)`);
+      return;
+    }
+    
+    // Verify latest candle is completed (timestamp + 5min < now)
+    const latestCandle = optionCandles[optionCandles.length - 1];
+    if (!latestCandle) {
+      this.logger.warn(`[RSI TRAIL] No latest candle available`);
+      return;
+    }
+    
+    const candleCloseTime = new Date(latestCandle.timestamp.getTime() + 5 * 60 * 1000);
+    if (candleCloseTime > now) {
+      this.logger.debug(`[RSI TRAIL] Latest 5-min candle not yet closed: ${latestCandle.timestamp.toLocaleTimeString()}`);
+      return;
+    }
+    
+    // Calculate RSI(14) on 5-min option closes
+    const optionRsi = this.calculateOptionRSI(optionCandles);
+    
+    if (optionRsi < 0) {
+      this.logger.warn(`[RSI TRAIL] Invalid RSI calculation`);
+      return;
+    }
+    
+    const optionSymbol = this.currentPosition.instrument.tradingsymbol;
+    
+    if (!this.rsiTrailActivated) {
+      // === PRE-ACTIVATION: Check if RSI crosses threshold ===
+      this.logger.info(`[RSI TRAIL] ${optionSymbol} | 5-min RSI(14): ${optionRsi.toFixed(1)} | Activation threshold: ${this.RSI_TRAIL_ACTIVATION_THRESHOLD}`);
+      
+      if (optionRsi >= this.RSI_TRAIL_ACTIVATION_THRESHOLD) {
+        // ACTIVATION: Set floor to latest completed candle's LOW
+        this.rsiTrailActivated = true;
+        this.rsiTrailActivationRsi = optionRsi;
+        this.rsiTrailFloorPrice = latestCandle.low;
+        
+        this.logger.info(`🔥 RSI TRAIL ACTIVATED: ${optionSymbol} | 5-min RSI: ${optionRsi.toFixed(1)} >= ${this.RSI_TRAIL_ACTIVATION_THRESHOLD}`);
+        this.logger.info(`   Floor price: ₹${this.rsiTrailFloorPrice.toFixed(2)} (LOW of ${latestCandle.timestamp.toLocaleTimeString()} candle)`);
+        this.logger.info(`   Starting live premium polling every ${this.RSI_TRAIL_POLL_INTERVAL_MS / 1000}s`);
+        
+        // Persist activation state
+        this.saveCapitalData();
+        
+        // Start live premium polling
+        this.startRsiTrailLivePolling();
+      }
+    } else {
+      // === POST-ACTIVATION: Update rolling floor + check secondary exit ===
+      
+      // Update floor to latest completed candle's LOW (rolling trailing floor)
+      const previousFloor = this.rsiTrailFloorPrice;
+      this.rsiTrailFloorPrice = latestCandle.low;
+      
+      this.logger.info(`[RSI TRAIL] ${optionSymbol} | 5-min RSI: ${optionRsi.toFixed(1)} | Floor updated: ₹${previousFloor.toFixed(2)} → ₹${this.rsiTrailFloorPrice.toFixed(2)}`);
+      
+      // Secondary exit: RSI drops below 75 on candle close
+      if (optionRsi < this.RSI_TRAIL_SECONDARY_EXIT_THRESHOLD) {
+        this.logger.info(`🔥 RSI TRAIL SECONDARY EXIT: ${optionSymbol} | 5-min RSI: ${optionRsi.toFixed(1)} < ${this.RSI_TRAIL_SECONDARY_EXIT_THRESHOLD}`);
+        this.logger.info(`   Activation RSI was: ${this.rsiTrailActivationRsi.toFixed(1)} | Entry: ₹${this.currentPosition.entryPrice.toFixed(2)}`);
+        
+        // Stop live polling BEFORE exit (prevent double-fire)
+        this.stopRsiTrailMonitoring();
+        
+        await this.executeExit(`RSI_TRAIL_SECONDARY_EXIT_RSI${optionRsi.toFixed(0)}`);
+      }
+    }
+  }
+
+  /**
+   * Start 5-minute RSI Trail monitoring
+   * Aligned to 5-minute boundaries (9:20, 9:25, 9:30, etc.)
+   * SHORT trades only — checks activation pre-trigger, and secondary exit + floor update post-trigger.
+   */
+  private startRsiTrail5MinMonitoring(): void {
+    // Only for SHORT positions
+    if (this.currentPosition?.type !== 'SHORT') {
+      this.logger.debug('[RSI TRAIL] Skipping: Not a SHORT position');
+      return;
+    }
+    
+    if (this.rsiTrail5MinCheckInterval || this.rsiTrail5MinInitialTimeout) {
+      this.logger.debug('[RSI TRAIL] 5-min monitoring already running');
+      return;
+    }
+    
+    const now = new Date();
+    const currentMinute = now.getMinutes();
+    const currentSecond = now.getSeconds();
+    
+    // Calculate next 5-minute boundary
+    const nextBoundaryMinute = Math.ceil((currentMinute + 1) / 5) * 5;
+    const minutesUntil = nextBoundaryMinute - currentMinute;
+    const msUntilBoundary = (minutesUntil * 60 - currentSecond) * 1000;
+    
+    // Add slot stagger to avoid API collision with 15-min RSI checks
+    const slotStaggerMs = this.slotIndex * 1000 + 2000; // +2s offset from 15-min checks
+    const totalDelay = msUntilBoundary + slotStaggerMs;
+    
+    const nextCheckTime = new Date(now.getTime() + totalDelay);
+    
+    this.logger.info(`[RSI TRAIL] Starting 5-min monitoring. Next check at ${nextCheckTime.toLocaleTimeString()} (in ${Math.round(totalDelay / 1000)}s)`);
+    if (this.rsiTrailActivated) {
+      this.logger.info(`[RSI TRAIL] Resuming with activation state: floor ₹${this.rsiTrailFloorPrice.toFixed(2)}`);
+    }
+    
+    // Initial delayed check at next 5-min boundary
+    this.rsiTrail5MinInitialTimeout = setTimeout(() => {
+      this.rsiTrail5MinInitialTimeout = null;
+      
+      if (!this.currentPosition) {
+        this.logger.debug('[RSI TRAIL] Position closed before first check, aborting');
+        return;
+      }
+      
+      // Run first check
+      this.logger.info(`[RSI TRAIL] First 5-min check triggered at ${new Date().toLocaleTimeString()}`);
+      this.check5MinOptionRsiForTrail().catch(err =>
+        this.logger.error('[RSI TRAIL] Error in initial check:', err)
+      );
+      
+      // Then set up 5-minute interval
+      this.rsiTrail5MinCheckInterval = setInterval(async () => {
+        if (!this.currentPosition) {
+          this.stopRsiTrailMonitoring();
+          return;
+        }
+        
+        this.logger.info(`[RSI TRAIL] 5-min check triggered at ${new Date().toLocaleTimeString()}`);
+        
+        try {
+          await this.check5MinOptionRsiForTrail();
+        } catch (error) {
+          this.logger.error('[RSI TRAIL] Error in periodic check:', error);
+        }
+      }, 5 * 60 * 1000); // 5-minute interval
+      
+    }, totalDelay);
+  }
+
+  /**
+   * Start live option premium polling (every 5 seconds)
+   * Only called after RSI Trail activation (RSI >= 85 on 5-min option chart)
+   * Exits when option premium breaks below the rolling candle-LOW floor.
+   */
+  private startRsiTrailLivePolling(): void {
+    // Clear any existing polling
+    if (this.rsiTrailPollingInterval) {
+      clearInterval(this.rsiTrailPollingInterval);
+      this.rsiTrailPollingInterval = null;
+    }
+    
+    if (!this.currentPosition || !this.rsiTrailActivated) {
+      this.logger.warn('[RSI TRAIL POLL] Cannot start: no position or trail not activated');
+      return;
+    }
+    
+    const optionSymbol = this.currentPosition.instrument.tradingsymbol;
+    
+    this.logger.info(`🎯 RSI TRAIL LIVE POLLING STARTED: ${optionSymbol}`, {
+      pollInterval: `${this.RSI_TRAIL_POLL_INTERVAL_MS / 1000}s`,
+      floorPrice: `₹${this.rsiTrailFloorPrice.toFixed(2)}`,
+      activationRsi: this.rsiTrailActivationRsi.toFixed(1)
+    });
+    
+    this.rsiTrailPollingInterval = setInterval(async () => {
+      // Guard: position may have been closed by another exit mechanism
+      if (!this.currentPosition) {
+        this.stopRsiTrailMonitoring();
+        return;
+      }
+      
+      try {
+        const optionTradingSymbol = this.currentPosition.instrument.tradingsymbol;
+        const quoteKey = `NFO:${optionTradingSymbol}`;
+        const quotes = await this.kiteConnect.getQuote([quoteKey]);
+        const optionLTP = quotes[quoteKey]?.last_price;
+        
+        if (!optionLTP || optionLTP <= 0) {
+          this.logger.warn('[RSI TRAIL POLL] Failed to fetch option LTP');
+          return;
+        }
+        
+        // Check if premium broke below floor
+        if (optionLTP <= this.rsiTrailFloorPrice) {
+          this.logger.info(`🔥 RSI TRAIL EXIT: ${optionTradingSymbol} | LTP ₹${optionLTP.toFixed(2)} <= Floor ₹${this.rsiTrailFloorPrice.toFixed(2)}`);
+          this.logger.info(`   Entry: ₹${this.currentPosition.entryPrice.toFixed(2)} | Activation RSI: ${this.rsiTrailActivationRsi.toFixed(1)}`);
+          
+          // Stop polling BEFORE exit to prevent double-fire (same pattern as Emergency Stop)
+          this.stopRsiTrailMonitoring();
+          
+          await this.executeExit('RSI_TRAIL_CANDLE_LOW_BREAK');
+          return;
+        }
+        
+        this.logger.debug(`[RSI TRAIL POLL] ${optionTradingSymbol} LTP: ₹${optionLTP.toFixed(2)} | Floor: ₹${this.rsiTrailFloorPrice.toFixed(2)} | Safe`);
+        
+      } catch (error) {
+        this.logger.error('[RSI TRAIL POLL] Error fetching option quote:', error);
+      }
+    }, this.RSI_TRAIL_POLL_INTERVAL_MS);
+  }
+
+  /**
+   * Stop all RSI Trail monitoring (5-min checks + live polling)
+   * Called on position close, strategy stop, or when trail exit fires.
+   */
+  private stopRsiTrailMonitoring(): void {
+    if (this.rsiTrailPollingInterval) {
+      clearInterval(this.rsiTrailPollingInterval);
+      this.rsiTrailPollingInterval = null;
+      this.logger.info('[RSI TRAIL] Live polling stopped');
+    }
+    if (this.rsiTrail5MinCheckInterval) {
+      clearInterval(this.rsiTrail5MinCheckInterval);
+      this.rsiTrail5MinCheckInterval = null;
+    }
+    if (this.rsiTrail5MinInitialTimeout) {
+      clearTimeout(this.rsiTrail5MinInitialTimeout);
+      this.rsiTrail5MinInitialTimeout = null;
+    }
+    // Reset activation state
+    this.rsiTrailActivated = false;
+    this.rsiTrailFloorPrice = 0;
+    this.rsiTrailActivationRsi = 0;
+    this.logger.info('[RSI TRAIL] Monitoring stopped and state reset');
+  }
+
   // ============================================================================
   // DEPRECATED METHODS - Kept for reference, no longer called
   // Real-time polling has been replaced with 5-minute candle close exit logic
@@ -3629,6 +4113,9 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // P0: Stop Option RSI Climax monitoring
         this.stopOptionRsiMonitoring();
+        
+        // Stop RSI Trail monitoring (5-min checks + live polling)
+        this.stopRsiTrailMonitoring();
         
         // P0: Save cleared position to disk (CRITICAL for all exit paths)
         // Retry once if save fails to prevent ghost positions
@@ -4167,35 +4654,47 @@ export class BollingerBandStrategy extends StrategyBase {
         return { success: false, price: 0 };
       }
       
-      // Step 1.5a: LIQUIDITY GUARD - Reject penny options (high slippage, low liquidity)
-      const MIN_OPTION_PREMIUM = 10; // Minimum ₹10 premium required
-      if (ltp < MIN_OPTION_PREMIUM) {
+      // Step 1.5a: LIQUIDITY GUARD - Reject penny options for ENTRY only (high slippage, low liquidity)
+      // EXIT orders must ALWAYS be allowed regardless of premium — blocking exits causes stuck positions
+      const MIN_OPTION_PREMIUM = 10; // Minimum ₹10 premium required for entry
+      if (ltp < MIN_OPTION_PREMIUM && transaction === 'BUY') {
         this.logger.error(`❌ LIQUIDITY GUARD: Option premium ₹${ltp.toFixed(2)} is below minimum ₹${MIN_OPTION_PREMIUM}`, {
           instrument: instrument.tradingsymbol,
           ltp,
           minRequired: MIN_OPTION_PREMIUM,
-          reason: 'Penny options have high slippage and low liquidity - trade rejected for safety'
+          reason: 'Penny options have high slippage and low liquidity - entry rejected for safety'
         });
         return { success: false, price: 0 };
       }
+      if (ltp < MIN_OPTION_PREMIUM && transaction === 'SELL') {
+        this.logger.warn(`⚠️ LIQUIDITY WARNING: Exiting at low premium ₹${ltp.toFixed(2)} (below ₹${MIN_OPTION_PREMIUM}) - proceeding with exit`, {
+          instrument: instrument.tradingsymbol,
+          ltp
+        });
+      }
       
-      // Step 1.5b: LIQUIDITY GUARD - Check OI and Volume before execution
-      // Critical thresholds - lower than scanner since this is last line of defense
+      // Step 1.5b: LIQUIDITY GUARD - Check OI and Volume before execution (ENTRY only)
+      // EXIT orders must ALWAYS proceed — a stuck position is worse than slippage
       const CRITICAL_OI = 10000;   // Minimum OI to execute
       const CRITICAL_VOL = 100;    // Minimum Volume to execute
       const oi = quoteData?.oi || 0;
       const volume = quoteData?.volume || 0;
       
-      if (oi < CRITICAL_OI && volume < CRITICAL_VOL) {
+      if (oi < CRITICAL_OI && volume < CRITICAL_VOL && transaction === 'BUY') {
         this.logger.error(`❌ EXECUTION ABORTED: Liquidity Evaporated! ${instrument.tradingsymbol} - OI:${oi} Vol:${volume} (Need OI≥${CRITICAL_OI} OR Vol≥${CRITICAL_VOL})`, {
           instrument: instrument.tradingsymbol,
           oi,
           volume,
           criticalOI: CRITICAL_OI,
           criticalVol: CRITICAL_VOL,
-          reason: 'Option liquidity dropped below critical threshold - execution aborted for safety'
+          reason: 'Option liquidity dropped below critical threshold - entry aborted for safety'
         });
         return { success: false, price: 0 };
+      }
+      if (oi < CRITICAL_OI && volume < CRITICAL_VOL && transaction === 'SELL') {
+        this.logger.warn(`⚠️ LIQUIDITY WARNING: Low liquidity exit - OI:${oi} Vol:${volume} - proceeding with exit anyway`, {
+          instrument: instrument.tradingsymbol
+        });
       }
       
       this.logger.info(`✅ Liquidity check passed: OI:${oi}, Vol:${volume}`, {
@@ -4560,10 +5059,10 @@ export class BollingerBandStrategy extends StrategyBase {
    * LONG entry execution with retry mechanism
    * Critical for trend following - every trade opportunity matters
    */
-  private async executeLongEntryWithRetry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+  private async executeLongEntryWithRetry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date, breakoutConsecutiveCount?: number): Promise<void> {
     try {
       await this.retryOperation(
-        () => this.executeLongEntry(stockPrice, entryCandleHigh, entryCandleLow, entryCandleTimestamp),
+        () => this.executeLongEntry(stockPrice, entryCandleHigh, entryCandleLow, entryCandleTimestamp, breakoutConsecutiveCount),
         'LONG Entry Execution',
         3, // Max 3 attempts for trade execution
         this.TRADE_RETRY_DELAYS
@@ -4578,10 +5077,10 @@ export class BollingerBandStrategy extends StrategyBase {
    * SHORT entry execution with retry mechanism  
    * Critical for trend following - every trade opportunity matters
    */
-  private async executeShortEntryWithRetry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date): Promise<void> {
+  private async executeShortEntryWithRetry(stockPrice: number, entryCandleHigh?: number, entryCandleLow?: number, entryCandleTimestamp?: Date, breakoutConsecutiveCount?: number): Promise<void> {
     try {
       await this.retryOperation(
-        () => this.executeShortEntry(stockPrice, entryCandleHigh, entryCandleLow, entryCandleTimestamp),
+        () => this.executeShortEntry(stockPrice, entryCandleHigh, entryCandleLow, entryCandleTimestamp, breakoutConsecutiveCount),
         'SHORT Entry Execution',
         3, // Max 3 attempts for trade execution
         this.TRADE_RETRY_DELAYS
