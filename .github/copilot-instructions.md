@@ -29,7 +29,8 @@ Professional Node.js TypeScript trading bot using Zerodha's KiteConnect API. Fea
 
 ## Development Guidelines
 
-- **Implementation Plan**: Do not auto change any code. Always come up with an implementation plan once the user confirms that the approach is correct. Start implementation/make code changes only after the user approves the plan.
+- **No Auto Code Changes**: NEVER change any code unless the user explicitly asks for it. For analysis/research requests, only provide findings and recommendations.
+- **Implementation Plan Required**: When code changes are requested, always produce a detailed implementation plan FIRST. Wait for the user to review and approve the plan before making ANY code changes.
 - **Clean Architecture**: Strategy Manager pattern with StrategyBase inheritance
 - **Type Safety**: Full TypeScript with proper error handling
 - **Professional Standards**: Monitoring, logging, and health checks built-in

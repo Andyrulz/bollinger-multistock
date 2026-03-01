@@ -236,6 +236,7 @@ export class BollingerBandStrategy extends StrategyBase {
 
   // Master cycle timing and state
   private masterCycleInterval: NodeJS.Timeout | null = null;
+  private alignmentTimer: NodeJS.Timeout | null = null; // 🔒 CRITICAL: Track alignment setTimeout to prevent zombie strategies
   private currentCyclePhase: 'waiting' | '4th-minute' | '5th-minute' | '6th-minute' = 'waiting';
   private lastSuccessfulFetchTime: number | null = null; // Track last candle fetch for system sleep detection
   private lastReconciliationTime: number | null = null; // Track last reconciliation for system sleep detection
@@ -617,9 +618,15 @@ export class BollingerBandStrategy extends StrategyBase {
     if (this.currentPosition) {
       this.logger.warn('⚠️ Strategy stopping with ACTIVE POSITION - position will be preserved for recovery');
       this.logger.warn(`   Position: ${this.currentPosition.instrument?.tradingsymbol} | Entry: ₹${this.currentPosition.entryPrice}`);
-      // Save position state to disk before stopping
-      this.saveCapitalData();
     }
+    
+    // 🔒 CRITICAL FIX: ALWAYS save on stop(), not just when position exists
+    // This ensures recently-closed trades (tradeHistory entries) are flushed to disk
+    // before the strategy instance is destroyed. Without this, a race condition between
+    // executeExit() pushing to tradeHistory and scanner's swapStrategy() calling stop()
+    // can cause completed trades to be lost forever.
+    this.saveCapitalData();
+    this.logger.info('💾 Strategy data saved to disk on stop()');
     
     this.metrics.isActive = false;
     this.metrics.healthStatus = 'stopped';
@@ -2175,7 +2182,10 @@ export class BollingerBandStrategy extends StrategyBase {
     this.logger.info(`⏰ Slot ${this.slotIndex + 1} aligning to: ${alignmentTime.toLocaleTimeString()}.${alignmentTime.getMilliseconds()} (${(millisecondsUntilAlignment / 1000).toFixed(1)}s, includes ${this.slotIndex}s stagger)`);
     
     // Start the master cycle after alignment timing
-    setTimeout(() => {
+    // 🔒 CRITICAL FIX: Store alignment timeout so it can be cancelled in stop()
+    // Without this, stop() during alignment creates zombie strategies that trade without slot tracking
+    this.alignmentTimer = setTimeout(() => {
+      this.alignmentTimer = null; // Clear reference after firing
       const triggerTime = new Date();
       this.logger.info(`✅ Slot ${this.slotIndex + 1} alignment triggered at ${triggerTime.toLocaleTimeString()}.${triggerTime.getMilliseconds()}`);
       this.startMasterCycle();
@@ -2203,6 +2213,15 @@ export class BollingerBandStrategy extends StrategyBase {
       this.candleCheckInterval = null;
     }
     
+    // 🔒 CRITICAL FIX: Cancel alignment timer to prevent zombie strategy creation
+    // If stop() is called during alignment delay, the setTimeout would fire later
+    // and call startMasterCycle() on a supposedly-dead strategy instance
+    if (this.alignmentTimer) {
+      clearTimeout(this.alignmentTimer);
+      this.alignmentTimer = null;
+      this.logger.info('🔒 Alignment timer cancelled - preventing zombie strategy');
+    }
+
     // Clear master cycle interval
     if (this.masterCycleInterval) {
       clearInterval(this.masterCycleInterval);
@@ -4093,6 +4112,29 @@ export class BollingerBandStrategy extends StrategyBase {
         
         this.currentPosition = null;
         
+        // 🔒 CRITICAL FIX: Save IMMEDIATELY after clearing position and pushing trade record
+        // This minimizes the race window where scanner's swapStrategy() could call stop()
+        // and destroy the in-memory tradeHistory before it's persisted to disk.
+        // Previously, saveCapitalData() was called AFTER all monitoring cleanup, creating a
+        // window where the trade record could be lost if stop() was called concurrently.
+        try {
+          this.saveCapitalData();
+          this.logger.info("💾 Position cleared from disk after exit");
+          
+          // Validate capital consistency after trade
+          this.validateCapitalConsistency();
+        } catch (saveError) {
+          this.logger.error("🚨 CRITICAL: Failed to save cleared position, retrying...", saveError);
+          // One retry attempt
+          try {
+            this.saveCapitalData();
+            this.logger.info("💾 Position cleared from disk after exit (retry successful)");
+          } catch (retryError) {
+            this.logger.error("🚨 CRITICAL: Failed to save cleared position after retry!", retryError);
+            throw new Error("Failed to persist position clear - manual intervention required");
+          }
+        }
+        
         // Reset cached position state for dashboard
         this.cachedCurrentPrice = 0;
         this.cachedUnrealizedPnL = 0;
@@ -4116,26 +4158,6 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Stop RSI Trail monitoring (5-min checks + live polling)
         this.stopRsiTrailMonitoring();
-        
-        // P0: Save cleared position to disk (CRITICAL for all exit paths)
-        // Retry once if save fails to prevent ghost positions
-        try {
-          this.saveCapitalData();
-          this.logger.info("💾 Position cleared from disk after exit");
-          
-          // Validate capital consistency after trade
-          this.validateCapitalConsistency();
-        } catch (saveError) {
-          this.logger.error("🚨 CRITICAL: Failed to save cleared position, retrying...", saveError);
-          // One retry attempt
-          try {
-            this.saveCapitalData();
-            this.logger.info("💾 Position cleared from disk after exit (retry successful)");
-          } catch (retryError) {
-            this.logger.error("🚨 CRITICAL: Failed to save cleared position after retry!", retryError);
-            throw new Error("Failed to persist position clear - manual intervention required");
-          }
-        }
       }
       
     } catch (error) {
