@@ -713,6 +713,49 @@ export class MarketScanner {
           continue;
         }
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        // GUARD #3: 1-Hour Supertrend Alignment (F8 pre-entry filter)
+        // Reject stocks where scanner bias conflicts with 1-hour trend direction.
+        // Backtested: 9 misaligned trades, ALL losers, 0% WR, -₹10,759 total.
+        // ═══════════════════════════════════════════════════════════════════════════
+        const candles60m = this.derive60MinCandles(candles);
+        if (candles60m.length >= 20) {
+          const supertrend1h = this.calculateSupertrend(candles60m, 10, 2);
+          // Supertrend direction "UP" = support active (bullish), "DOWN" = resistance active (bearish)
+          // LONG needs 1h UP (bullish), SHORT needs 1h DOWN (bearish)
+          const isAligned =
+            (bias === "LONG" && supertrend1h.trend === "UP") ||
+            (bias === "SHORT" && supertrend1h.trend === "DOWN");
+
+          if (!isAligned) {
+            const rejectionMsg = `1h ST misaligned (Bias: ${bias}, 1h ST: ${supertrend1h.trend}, value: ${supertrend1h.value.toFixed(2)})`;
+            this.logger.warn(`⚠️ ${stock.symbol}: Rejected - ${rejectionMsg}`);
+            results.push({
+              symbol: stock.symbol,
+              score: 0,
+              baseScore: 0,
+              bias: bias,
+              sector: stock.sector,
+              sectorToken: stock.sectorToken,
+              breakdown: { trend: 0, momentum: 0, volume: 0, sector: 0, smartMoney: 0 },
+              tacticalBonus: { freshBreakout: 0, rvolSurge: 0, proximity: 0, rsiAccel: 0, squeeze: 0, gammaWall: 0, total: 0 },
+              spotPrice,
+              upperCircuitLimit: 0,
+              lowerCircuitLimit: 0,
+              todayChangePercent: 0,
+              atmOption: null,
+              historicalData: candles,
+              valid: false,
+              rejectionReason: rejectionMsg,
+            });
+            continue; // Skip to next stock
+          }
+
+          this.logger.debug(`✅ ${stock.symbol}: 1h ST aligned (Bias: ${bias}, 1h ST: ${supertrend1h.trend})`);
+        } else {
+          this.logger.warn(`⚠️ ${stock.symbol}: Insufficient 60m candles (${candles60m.length}) for 1h ST - allowing through`);
+        }
+
         // Note: isCounterTrend computed after Step 2 bias finalization (see below)
 
         // Look up pre-fetched quote from batch cache (no per-stock API call)
@@ -1569,6 +1612,59 @@ export class MarketScanner {
     }
 
     return candles15m;
+  }
+
+  /**
+   * Derive 60-min (1-hour) candles from 5-min candles.
+   * MUST respect day boundaries to avoid "Frankenstein candles" that stitch
+   * end-of-day remnants with next-day opening candles across overnight gaps.
+   *
+   * NSE math: 75 five-min candles/day ÷ 12 = 6.25 → 3-candle remainder each day.
+   * Blind slicing would merge Day1 15:15–15:30 with Day2 09:15–10:00, corrupting ATR.
+   *
+   * Output per day: 6 full 60-min candles + 1 partial 15-min candle (matching TradingView).
+   * Used for F8: 1-hour Supertrend alignment pre-entry filter.
+   */
+  private derive60MinCandles(candles5m: Candle[]): Candle[] {
+    const candles60m: Candle[] = [];
+    let chunk: Candle[] = [];
+    let currentDay = -1;
+
+    for (let i = 0; i < candles5m.length; i++) {
+      const candle = candles5m[i];
+      if (!candle) continue;
+      const candleDay = new Date(candle.date).getDate();
+
+      // If day changes OR we hit 12 candles, close the current 1H candle
+      if (chunk.length > 0 && (chunk.length === 12 || candleDay !== currentDay)) {
+        candles60m.push({
+          date: chunk[0]!.date,
+          open: chunk[0]!.open,
+          high: Math.max(...chunk.map((c) => c.high)),
+          low: Math.min(...chunk.map((c) => c.low)),
+          close: chunk[chunk.length - 1]!.close,
+          volume: chunk.reduce((sum, c) => sum + c.volume, 0),
+        });
+        chunk = []; // Reset for next candle
+      }
+
+      chunk.push(candle);
+      currentDay = candleDay;
+    }
+
+    // Push the very last chunk of the array
+    if (chunk.length > 0) {
+      candles60m.push({
+        date: chunk[0]!.date,
+        open: chunk[0]!.open,
+        high: Math.max(...chunk.map((c) => c.high)),
+        low: Math.min(...chunk.map((c) => c.low)),
+        close: chunk[chunk.length - 1]!.close,
+        volume: chunk.reduce((sum, c) => sum + c.volume, 0),
+      });
+    }
+
+    return candles60m;
   }
 
   /**

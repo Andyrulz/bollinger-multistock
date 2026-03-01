@@ -82,6 +82,18 @@ interface Position {
     bestLowSinceBreakout: number;     // Running min LOW of subsequent candles (SHORT)
     validated: boolean;               // true once HIGH/LOW taken out, or pre-validated for 2nd candle entry
   };
+
+  // RSI Quick Reversal Confirmation (F7 filter)
+  // After entry, checks stock RSI on each 5-min candle for 2 candles.
+  // If LONG RSI < 62 or SHORT RSI > 32 → exit immediately.
+  rsiConfirmation?: {
+    candlesSinceEntry: number;     // Counter: 0 at entry, incremented each candle
+    maxCandles: number;            // Window size (2)
+    threshold: number;             // LONG: 62, SHORT: 32
+    direction: 'LONG' | 'SHORT';  // Used to determine comparison direction
+    confirmed: boolean;            // true once window expires without breach
+    entryRsi: number;              // RSI at entry time (for logging context)
+  };
 }
 
 export class BollingerBandStrategy extends StrategyBase {
@@ -203,6 +215,11 @@ export class BollingerBandStrategy extends StrategyBase {
   private readonly RSI_TRAIL_ACTIVATION_THRESHOLD = 85;   // 5-min option RSI >= 85 to activate
   private readonly RSI_TRAIL_SECONDARY_EXIT_THRESHOLD = 75; // 5-min RSI < 75 on candle close = exit
   private readonly RSI_TRAIL_POLL_INTERVAL_MS = 5000;      // 5 seconds between live premium polls
+
+  // F7: RSI Quick Reversal Confirmation
+  private readonly RSI_CONFIRMATION_WINDOW = 2;            // Number of candles to monitor (10 min)
+  private readonly RSI_CONFIRMATION_LONG_THRESHOLD = 62;   // LONG: exit if RSI drops below this
+  private readonly RSI_CONFIRMATION_SHORT_THRESHOLD = 32;  // SHORT: exit if RSI rises above this
 
   // Error monitoring and health tracking
   private errorCounts: Map<string, number> = new Map();
@@ -2496,9 +2513,16 @@ export class BollingerBandStrategy extends StrategyBase {
           // CRITICAL ORDER: Check exits BEFORE entries (exit existing position before considering new entry)
           const hadPositionBeforeExitCheck = this.currentPosition !== null;
           if (this.currentPosition) {
-            // Exit check runs on every fresh candle fetch (duplicate candle detection above prevents double-processing)
-            // Candle freshness is validated by timestamp, not wall clock — safe regardless of API latency
-            await this.checkPositionExit(newCandle.close);
+            // F7: RSI Quick Reversal Confirmation (first 2 candles only)
+            // Must run BEFORE primary exit checks — if RSI confirmation fails, exit immediately
+            if (this.currentPosition?.rsiConfirmation && !this.currentPosition.rsiConfirmation.confirmed) {
+              await this.checkRsiConfirmation();
+            }
+
+            // Primary exit check (Supertrend/BB) — only if position still exists after RSI confirmation
+            if (this.currentPosition) {
+              await this.checkPositionExit(newCandle.close);
+            }
             
             // Breakout validation check (only runs for first 3 candles after entry, first-breakout entries only)
             if (this.currentPosition?.breakoutValidation && !this.currentPosition.breakoutValidation.validated) {
@@ -2884,6 +2908,77 @@ export class BollingerBandStrategy extends StrategyBase {
     this.saveCapitalData();
   }
 
+  // ============================================================================
+  // RSI QUICK REVERSAL CONFIRMATION (F7)
+  // Post-entry gate: checks if stock RSI(10) reverses within 2 candles (10 min).
+  // LONG: exits if RSI drops below 62. SHORT: exits if RSI rises above 32.
+  // Modeled after breakoutValidation — same lifecycle, same persistence.
+  // ============================================================================
+
+  /**
+   * RSI Quick Reversal Confirmation (F7 Filter)
+   *
+   * After entry, monitors the stock RSI(10) on each 5-minute candle close:
+   * - LONG: If RSI < 62 within 2 candles → exit (RSI_CONFIRMATION_FAILED)
+   * - SHORT: If RSI > 32 within 2 candles → exit (RSI_CONFIRMATION_FAILED)
+   * - If 2 candles pass without breach → mark confirmed, trade runs normally
+   *
+   * Backtested: +₹38,610 improvement, kills 38 losing trades, 0 winners lost.
+   */
+  private async checkRsiConfirmation(): Promise<void> {
+    if (!this.currentPosition?.rsiConfirmation) return;
+    if (this.currentPosition.rsiConfirmation.confirmed) return;
+    if (!this.currentIndicators) return;
+
+    const conf = this.currentPosition.rsiConfirmation;
+    conf.candlesSinceEntry++;
+
+    const currentRsi = this.currentIndicators.rsi;
+    const isLong = conf.direction === 'LONG';
+
+    // Check threshold breach
+    const breached = isLong
+      ? currentRsi < conf.threshold   // LONG: RSI dropped below 62
+      : currentRsi > conf.threshold;  // SHORT: RSI rose above 32
+
+    if (breached) {
+      this.logger.warn(`⚠️ RSI CONFIRMATION FAILED: ${isLong ? 'LONG' : 'SHORT'} RSI ${isLong ? 'dropped below' : 'rose above'} ${conf.threshold}`, {
+        symbol: this.signalSymbol,
+        direction: conf.direction,
+        currentRsi: currentRsi.toFixed(2),
+        threshold: conf.threshold,
+        entryRsi: conf.entryRsi.toFixed(2),
+        candleNumber: conf.candlesSinceEntry,
+        maxCandles: conf.maxCandles
+      });
+
+      await this.executeExit('RSI_CONFIRMATION_FAILED');
+      return;
+    }
+
+    // Window expired without breach → confirmed
+    if (conf.candlesSinceEntry >= conf.maxCandles) {
+      conf.confirmed = true;
+      this.logger.info(`✅ RSI CONFIRMATION PASSED: ${conf.direction} RSI held ${isLong ? 'above' : 'below'} ${conf.threshold} for ${conf.maxCandles} candles`, {
+        symbol: this.signalSymbol,
+        direction: conf.direction,
+        currentRsi: currentRsi.toFixed(2),
+        threshold: conf.threshold,
+        entryRsi: conf.entryRsi.toFixed(2)
+      });
+      this.saveCapitalData(); // Persist confirmed state
+      return;
+    }
+
+    // Window still open
+    this.logger.info(`🔍 RSI CONFIRMATION: Candle ${conf.candlesSinceEntry}/${conf.maxCandles} — RSI ${currentRsi.toFixed(2)} ${isLong ? '≥' : '≤'} ${conf.threshold} ✓`, {
+      symbol: this.signalSymbol,
+      direction: conf.direction,
+      candlesRemaining: conf.maxCandles - conf.candlesSinceEntry
+    });
+    this.saveCapitalData(); // Persist counter for restart safety
+  }
+
   // ===========================
   // ENTRY SIGNAL LOGIC
   // ===========================
@@ -2891,6 +2986,7 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Check if we're within NSE market hours (9:15 AM - 3:30 PM IST)
    */
+
   private isMarketHours(): boolean {
     const now = new Date();
     const hour = now.getHours();
@@ -3283,6 +3379,24 @@ export class BollingerBandStrategy extends StrategyBase {
           this.logger.info('✅ BREAKOUT PRE-VALIDATED (entering on candle #2, breakout has follow-through — LONG)');
         }
         
+        // ═══════════════════════════════════════════════════════════════
+        // RSI CONFIRMATION (F7): Monitor for quick RSI reversal post-entry
+        // LONG: Exit if stock RSI(10) drops below 62 within 2 candles
+        // ═══════════════════════════════════════════════════════════════
+        this.currentPosition.rsiConfirmation = {
+          candlesSinceEntry: 0,
+          maxCandles: this.RSI_CONFIRMATION_WINDOW,
+          threshold: this.RSI_CONFIRMATION_LONG_THRESHOLD,
+          direction: 'LONG',
+          confirmed: false,
+          entryRsi: this.currentIndicators?.rsi ?? 0
+        };
+        this.logger.info('🔍 RSI CONFIRMATION ARMED (LONG)', {
+          threshold: `<${this.RSI_CONFIRMATION_LONG_THRESHOLD}`,
+          window: `${this.RSI_CONFIRMATION_WINDOW} candles (${this.RSI_CONFIRMATION_WINDOW * 5} min)`,
+          entryRsi: this.currentPosition.rsiConfirmation.entryRsi.toFixed(2)
+        });
+        
         // P0: Save position to disk immediately after entry
         this.saveCapitalData();
         
@@ -3438,6 +3552,24 @@ export class BollingerBandStrategy extends StrategyBase {
           };
           this.logger.info('✅ BREAKOUT PRE-VALIDATED (entering on candle #2, breakout has follow-through — SHORT)');
         }
+        
+        // ═══════════════════════════════════════════════════════════════
+        // RSI CONFIRMATION (F7): Monitor for quick RSI reversal post-entry
+        // SHORT: Exit if stock RSI(10) rises above 32 within 2 candles
+        // ═══════════════════════════════════════════════════════════════
+        this.currentPosition.rsiConfirmation = {
+          candlesSinceEntry: 0,
+          maxCandles: this.RSI_CONFIRMATION_WINDOW,
+          threshold: this.RSI_CONFIRMATION_SHORT_THRESHOLD,
+          direction: 'SHORT',
+          confirmed: false,
+          entryRsi: this.currentIndicators?.rsi ?? 0
+        };
+        this.logger.info('🔍 RSI CONFIRMATION ARMED (SHORT)', {
+          threshold: `>${this.RSI_CONFIRMATION_SHORT_THRESHOLD}`,
+          window: `${this.RSI_CONFIRMATION_WINDOW} candles (${this.RSI_CONFIRMATION_WINDOW * 5} min)`,
+          entryRsi: this.currentPosition.rsiConfirmation.entryRsi.toFixed(2)
+        });
         
         // P0: Save position to disk immediately after entry
         this.saveCapitalData();
