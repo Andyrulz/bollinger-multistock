@@ -153,6 +153,11 @@ export class BollingerBandStrategy extends StrategyBase {
   private isProcessingShortExit: boolean = false;
   private isProcessingLongExit: boolean = false;
   
+  // Race condition protection for executeExit (prevents double sell orders)
+  // Multiple exit triggers (8% Hard Stop, Emergency Stop, Supertrend, EOD, Gamma RSI, RSI Trail)
+  // can fire concurrently — this gate ensures only ONE exit order is placed
+  private isExecutingExit: boolean = false;
+  
   // Race condition protection for manual position clearing
   private isClearingPosition: boolean = false;
   
@@ -185,6 +190,10 @@ export class BollingerBandStrategy extends StrategyBase {
   private emergencyStopInterval: NodeJS.Timeout | null = null;
   private readonly EMERGENCY_STOP_PERCENT = 5.0;      // 5% disaster threshold
   private readonly EMERGENCY_POLL_INTERVAL_MS = 30000; // 30 seconds between checks
+  
+  // 🛑 Premium Hard Stop: Exit if option premium drops ≥8% from entry price
+  // Data-backed: 0 winners killed at 8%, 13 losers stopped early → +₹6,662
+  private readonly PREMIUM_HARD_STOP_PCT = 0.08;
   
   // EOD safety exit timer
   private eodExitTimer?: NodeJS.Timeout;
@@ -1490,11 +1499,14 @@ export class BollingerBandStrategy extends StrategyBase {
       const close = candle.close;
       
       if (direction === 'LONG') {
-        // LONG staleness: close > upper BB AND RSI in [68, 85]
-        return close > bb.upper && rsi >= 68 && rsi <= 85;
+        // LONG staleness: close > upper BB AND RSI >= 68 (no upper cap)
+        // RSI > 85 = even more overbought — must count toward staleness, not reset it
+        return close > bb.upper && rsi >= 68;
       } else {
-        // SHORT staleness: close < lower BB AND RSI in [15, 32]
-        return close < bb.lower && rsi >= 15 && rsi <= 32;
+        // SHORT staleness: close < lower BB AND RSI <= 40 (no lower cap)
+        // RSI < 15 = even more oversold — must count toward staleness, not reset it
+        // Upper bound 40 matches the actual SHORT entry condition (was 32, creating a gap)
+        return close < bb.lower && rsi <= 40;
       }
     };
     
@@ -2504,6 +2516,20 @@ export class BollingerBandStrategy extends StrategyBase {
                 this.lastPriceUpdateTime = new Date();
                 
                 this.logger.info(`📊 Dashboard price updated: ${this.currentPosition.instrument.tradingsymbol} @ ₹${optionPremium.toFixed(2)} | P&L: ₹${this.cachedUnrealizedPnL.toFixed(2)}`);
+                
+                // 🛑 8% PREMIUM HARD STOP: Exit if premium drops ≥8% from entry price
+                // Data-backed: 0 winners killed, 13 losers stopped early → +₹6,662
+                if (this.currentPosition) {
+                  const premiumDropPct = (this.currentPosition.entryPrice - optionPremium) / this.currentPosition.entryPrice;
+                  if (premiumDropPct >= this.PREMIUM_HARD_STOP_PCT) {
+                    this.logger.warn(`🛑 PREMIUM HARD STOP: Premium ₹${optionPremium.toFixed(2)} is ${(premiumDropPct * 100).toFixed(1)}% below entry ₹${this.currentPosition.entryPrice.toFixed(2)} (threshold: ${this.PREMIUM_HARD_STOP_PCT * 100}%)`, {
+                      entryPrice: this.currentPosition.entryPrice,
+                      currentPremium: optionPremium,
+                      dropPct: (premiumDropPct * 100).toFixed(1),
+                    });
+                    await this.executeExit('PREMIUM_HARD_STOP_8PCT');
+                  }
+                }
               }
             } catch (priceError) {
               this.logger.warn('⚠️ Failed to update dashboard price:', priceError);
@@ -3015,6 +3041,13 @@ export class BollingerBandStrategy extends StrategyBase {
     // Log first candle readiness (9:20 AM check)
     const now = new Date();
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    
+    // 🍽️ LUNCH ZONE BLOCK: No new entries 11:00-12:30 IST
+    // Data: 12:00-13:30 was worst time bucket, 11:00 start catches lead-in chop
+    if (currentMinutes >= 11 * 60 && currentMinutes < 12 * 60 + 30) {
+      this.logger.debug('🍽️ Entry blocked - Lunch zone (11:00-12:30 IST)');
+      return;
+    }
     if (currentMinutes === 9 * 60 + 20) {  // Exactly 9:20 AM
       this.logger.info('✅ First 5-minute candle ready for entry evaluation', {
         candleTime: '9:15-9:20',
@@ -3145,12 +3178,12 @@ export class BollingerBandStrategy extends StrategyBase {
       
       // ═══════════════════════════════════════════════════════════════
       // SYMBOL COOLDOWN CHECK (LONG)
-      // Block entry if symbol was recently exited (manual/broker exit detection)
+      // Block entry if symbol in cooldown (30-min) or same-day re-entry block
       // ═══════════════════════════════════════════════════════════════
       if (StrategyManager.isSymbolInCooldownStatic(this.signalSymbol)) {
         this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Symbol in cooldown', {
           symbol: this.signalSymbol,
-          reason: 'Recent exit detected (manual/broker exit), waiting 30 min cooldown'
+          reason: 'Symbol in cooldown (30-min or same-day re-entry block)'
         });
         return;  // Skip LONG entry
       }
@@ -3250,12 +3283,12 @@ export class BollingerBandStrategy extends StrategyBase {
       
       // ═══════════════════════════════════════════════════════════════
       // SYMBOL COOLDOWN CHECK (SHORT)
-      // Block entry if symbol was recently exited (manual/broker exit detection)
+      // Block entry if symbol in cooldown (30-min) or same-day re-entry block
       // ═══════════════════════════════════════════════════════════════
       if (StrategyManager.isSymbolInCooldownStatic(this.signalSymbol)) {
         this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Symbol in cooldown', {
           symbol: this.signalSymbol,
-          reason: 'Recent exit detected (manual/broker exit), waiting 30 min cooldown'
+          reason: 'Symbol in cooldown (30-min or same-day re-entry block)'
         });
         return;  // Skip SHORT entry
       }
@@ -3307,7 +3340,7 @@ export class BollingerBandStrategy extends StrategyBase {
       const ceOption = await this.selectOptionInstrument('CE', stockPrice);
       
       if (!ceOption) {
-        this.logger.error(`❌ LONG entry failed: Could not find suitable ${this.signalSymbol} CE option (ATM with premium ≥ ₹10)`);
+        this.logger.error(`❌ LONG entry failed: Could not find suitable ${this.signalSymbol} CE option (ATM with premium ≥ ₹40)`);
         return;
       }
 
@@ -3482,7 +3515,7 @@ export class BollingerBandStrategy extends StrategyBase {
       const peOption = await this.selectOptionInstrument('PE', stockPrice);
       
       if (!peOption) {
-        this.logger.error(`❌ SHORT entry failed: Could not find suitable ${this.signalSymbol} PE option (ATM with premium ≥ ₹10)`);
+        this.logger.error(`❌ SHORT entry failed: Could not find suitable ${this.signalSymbol} PE option (ATM with premium ≥ ₹40)`);
         return;
       }
 
@@ -4195,6 +4228,14 @@ export class BollingerBandStrategy extends StrategyBase {
   private async executeExit(reason: string): Promise<void> {
     if (!this.currentPosition) return;
     
+    // 🔒 RACE CONDITION GUARD: Prevent double sell orders from concurrent exit triggers
+    // (8% Hard Stop, Emergency Stop, Supertrend, EOD, RSI Climax, RSI Trail can overlap)
+    if (this.isExecutingExit) {
+      this.logger.warn(`⚠️ Exit already in progress, skipping duplicate exit trigger: ${reason}`);
+      return;
+    }
+    this.isExecutingExit = true;
+    
     try {
       const orderResult = await this.executeOrder('SELL', this.currentPosition.instrument, this.currentPosition.quantity);
       
@@ -4320,6 +4361,8 @@ export class BollingerBandStrategy extends StrategyBase {
         this.logger.info('✅ Position already cleared - error occurred after successful exit');
         this.logger.info('📝 This is likely a benign error during cleanup');
       }
+    } finally {
+      this.isExecutingExit = false;
     }
   }
 
@@ -4646,14 +4689,14 @@ export class BollingerBandStrategy extends StrategyBase {
 
   /**
    * Select option instrument using ATM-based selection
-   * Selects ATM or 1-strike OTM option with minimum ₹10 premium
+   * Selects ATM or 1-strike OTM option with minimum ₹40 premium
    * 
    * @param optionType - 'CE' for calls, 'PE' for puts
    * @param spotPrice - Current stock spot price (used for ATM calculation)
    * @returns Option instrument with strike, premium, and strikeType
    */
   private async selectOptionInstrument(optionType: 'CE' | 'PE', spotPrice: number): Promise<any> {
-    const MIN_PREMIUM = 10; // Minimum ₹10 premium required for liquidity
+    const MIN_PREMIUM = 40; // Minimum ₹40 premium required (data: ₹20-40 range = 42 trades, -₹28,690)
     
     try {
       // Get NFO instruments from cache (avoids 15MB API call on each entry)
@@ -4719,7 +4762,7 @@ export class BollingerBandStrategy extends StrategyBase {
       const tokens = candidates.map(c => c.option.instrument_token);
       const quotes = await this.kiteConnect.getQuote(tokens);
       
-      // Find first candidate with premium >= ₹10 (ATM preferred)
+      // Find first candidate with premium >= ₹40 (ATM preferred)
       for (const candidate of candidates) {
         const quote = quotes[candidate.option.instrument_token];
         const premium = quote?.last_price || 0;
@@ -4808,9 +4851,9 @@ export class BollingerBandStrategy extends StrategyBase {
         return { success: false, price: 0 };
       }
       
-      // Step 1.5a: LIQUIDITY GUARD - Reject penny options for ENTRY only (high slippage, low liquidity)
+      // Step 1.5a: LIQUIDITY GUARD - Reject low-premium options for ENTRY only (high slippage, low liquidity)
       // EXIT orders must ALWAYS be allowed regardless of premium — blocking exits causes stuck positions
-      const MIN_OPTION_PREMIUM = 10; // Minimum ₹10 premium required for entry
+      const MIN_OPTION_PREMIUM = 40; // Minimum ₹40 premium required for entry (data: ₹20-40 range toxic)
       if (ltp < MIN_OPTION_PREMIUM && transaction === 'BUY') {
         this.logger.error(`❌ LIQUIDITY GUARD: Option premium ₹${ltp.toFixed(2)} is below minimum ₹${MIN_OPTION_PREMIUM}`, {
           instrument: instrument.tradingsymbol,

@@ -103,6 +103,11 @@ export class StrategyManager {
   private symbolCooldownMap: Map<string, Date> = new Map();
   private readonly SYMBOL_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes cooldown after exit
 
+  // Same-day re-entry block: Once a symbol has been traded (exited) today, block it for rest of day
+  // Data: 13 same-day re-entries had 15.4% WR, -₹14,065 PnL
+  private symbolsTradedToday: Map<string, Date> = new Map();
+  private lastTradeDateReset: string = ''; // Track date for daily reset (YYYY-MM-DD)
+
   // Smart Retention: Slot tracking
   private slotStates: SlotState[] = [
     { slotNumber: 0, symbol: null, strategyId: null, deployedAt: null, lastScanScore: null, lastScanBias: null, locked: false, lastRetentionDecision: null, lastRetentionReason: null },
@@ -167,7 +172,7 @@ export class StrategyManager {
       {
         minScore: 7.0,
         topCount: 3,
-        minPremium: 10,
+        minPremium: 40,
         sectorChangeThreshold: { green: 0.25, red: -0.25 },
       }
     );
@@ -213,6 +218,9 @@ export class StrategyManager {
       
       // Initialize OI History Service for Smart Money detection
       await this.initializeOIHistoryService();
+      
+      // Populate symbolsTradedToday from slot files (crash recovery)
+      this.populateSymbolsTradedTodayFromDisk();
       
       this.isInitialized = true;
       this.logger.info('✅ Strategy Manager initialized successfully');
@@ -754,6 +762,25 @@ export class StrategyManager {
    * @returns true if symbol is in cooldown, false if available
    */
   public isSymbolInCooldown(symbol: string): boolean {
+    // Daily reset check: Clear symbolsTradedToday if date has changed
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (this.lastTradeDateReset !== todayStr) {
+      if (this.symbolsTradedToday.size > 0) {
+        this.logger.info(`🔄 New trading day detected — clearing ${this.symbolsTradedToday.size} same-day blocks from ${this.lastTradeDateReset}`);
+      }
+      this.symbolsTradedToday.clear();
+      this.lastTradeDateReset = todayStr;
+    }
+
+    // SAME-DAY RE-ENTRY BLOCK: If symbol already traded today, block for rest of day
+    // Data: 13 same-day re-entries had 15.4% WR, -₹14,065 PnL
+    const tradedTodayAt = this.symbolsTradedToday.get(symbol);
+    if (tradedTodayAt) {
+      this.logger.info(`🚫 Symbol ${symbol} blocked — already traded today at ${tradedTodayAt.toLocaleTimeString()} (same-day re-entry block)`);
+      return true;
+    }
+
+    // Existing 30-min cooldown (safety net for non-exit scenarios)
     const lastExitTime = this.symbolCooldownMap.get(symbol);
     if (!lastExitTime) return false;
     
@@ -777,7 +804,9 @@ export class StrategyManager {
   public recordSymbolExit(symbol: string): void {
     const exitTime = new Date();
     this.symbolCooldownMap.set(symbol, exitTime);
-    this.logger.info(`🔒 Symbol cooldown started: ${symbol} (30 min cooldown until ${new Date(exitTime.getTime() + this.SYMBOL_COOLDOWN_MS).toLocaleTimeString()})`);
+    // Same-day re-entry block: Mark symbol as traded today (blocks rest of day)
+    this.symbolsTradedToday.set(symbol, exitTime);
+    this.logger.info(`🔒 Symbol cooldown started: ${symbol} (30 min cooldown + same-day re-entry block until EOD)`);
   }
 
   /**
@@ -829,6 +858,54 @@ export class StrategyManager {
     this.symbolCooldownMap.clear();
     if (count > 0) {
       this.logger.info(`🧹 Cleared ${count} symbol cooldowns`);
+    }
+  }
+
+  /**
+   * Populate symbolsTradedToday from slot JSON files on startup (crash recovery)
+   * Scans all 3 slot files' tradeHistory for trades closed today
+   * Ensures same-day re-entry block survives bot restarts
+   */
+  private populateSymbolsTradedTodayFromDisk(): void {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    this.lastTradeDateReset = todayStr;
+    
+    const dataDir = path.join(__dirname, '..', 'data');
+    let symbolsFound = 0;
+    
+    for (let slotNumber = 1; slotNumber <= 3; slotNumber++) {
+      const slotDataFile = path.join(dataDir, `bollinger-slot${slotNumber}.json`);
+      
+      try {
+        if (!fs.existsSync(slotDataFile)) continue;
+        
+        const rawData = fs.readFileSync(slotDataFile, 'utf8');
+        const slotData = JSON.parse(rawData);
+        const tradeHistory = slotData.tradeHistory || [];
+        
+        for (const trade of tradeHistory) {
+          if (!trade.exitTime || !trade.instrument?.name) continue;
+          
+          // Check if trade was closed today
+          const exitDate = new Date(trade.exitTime).toISOString().slice(0, 10);
+          if (exitDate === todayStr) {
+            const symbol = trade.instrument.name;
+            if (!this.symbolsTradedToday.has(symbol)) {
+              this.symbolsTradedToday.set(symbol, new Date(trade.exitTime));
+              symbolsFound++;
+            }
+          }
+        }
+      } catch (error) {
+        this.logger.warn(`⚠️ Failed to read slot ${slotNumber} for same-day tracking:`, error);
+      }
+    }
+    
+    if (symbolsFound > 0) {
+      const symbols = [...this.symbolsTradedToday.keys()].join(', ');
+      this.logger.info(`🔄 Restored ${symbolsFound} same-day re-entry blocks from disk: ${symbols}`);
+    } else {
+      this.logger.info('🔄 No same-day trades found on disk (clean start or new day)');
     }
   }
 
