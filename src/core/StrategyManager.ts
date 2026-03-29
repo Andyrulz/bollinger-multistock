@@ -74,7 +74,7 @@ export interface SlotStateWithPosition extends SlotState {
  * Retention decision for logging
  */
 type RetentionDecision = 'LOCK' | 'KEEP' | 'SWAP' | 'DEPLOY';
-type SwapReason = 'empty_slot' | 'active_position' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout' | 'in_cooldown';
+type SwapReason = 'empty_slot' | 'active_position' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout' | 'in_cooldown' | 'outperformed';
 
 /**
  * Central manager for all trading strategies
@@ -1481,6 +1481,41 @@ export class StrategyManager {
         `Score ${stockInScan.score.toFixed(1)} ≥ ${this.smartRetentionConfig.keepThreshold}`);
     }
     
+    // ── CASE 5.7: Score Outperformance SWAP (post-loop, weakest idle only) ──
+    // After all per-slot checks, find the single weakest idle slot and swap it
+    // if the best available candidate outscores it by ≥ 4.0 points.
+    const OUTPERFORM_SCORE_DELTA = 4.0;
+    
+    // Collect idle slots that survived to KEEP (no position, not locked)
+    const idleSlots: { slotIndex: number; score: number; symbol: string }[] = [];
+    for (let i = 0; i < this.slotStates.length; i++) {
+      const ss = this.slotStates[i];
+      if (!ss || !ss.symbol || ss.locked) continue;
+      const strategy = StrategyRegistry.getInstance(ss.strategyId!);
+      if (!strategy) continue;
+      const sts = strategy.getStatus() as any;
+      if (sts?.positionInfo) continue; // has active position — skip
+      if (ss.lastScanScore == null) continue;
+      idleSlots.push({ slotIndex: i, score: ss.lastScanScore, symbol: ss.symbol });
+    }
+    
+    if (idleSlots.length > 0) {
+      // Find weakest idle slot
+      idleSlots.sort((a, b) => a.score - b.score);
+      const weakest = idleSlots[0]!;
+      
+      // Find best available candidate not already deployed and not in cooldown
+      const bestCandidate = selectedCandidates.find(c => 
+        !deployedSymbols.has(c.symbol) && !this.isSymbolInCooldown(c.symbol)
+      );
+      
+      if (bestCandidate && (bestCandidate.score - weakest.score) >= OUTPERFORM_SCORE_DELTA) {
+        this.logRetentionDecision(weakest.slotIndex, weakest.symbol, 'SWAP', 'outperformed',
+          `${bestCandidate.symbol} ${bestCandidate.score.toFixed(1)} vs ${weakest.symbol} ${weakest.score.toFixed(1)} (delta ${(bestCandidate.score - weakest.score).toFixed(1)} ≥ ${OUTPERFORM_SCORE_DELTA})`);
+        await this.swapStrategy(weakest.slotIndex, selectedCandidates, deployedSymbols);
+      }
+    }
+    
     this.logger.info('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     this.logSlotSummary();
   }
@@ -1670,6 +1705,7 @@ export class StrategyManager {
       'not_in_scan': 'Dropped from scan (sector flat/filtered)',
       'stale_breakout': 'Breakout too old (3+ candles outside band)',
       'in_cooldown': 'Symbol in cooldown (slot freed)',
+      'outperformed': 'Outperformed by better candidate',
     };
     
     // Store decision on slot state for dashboard display

@@ -101,6 +101,13 @@ export class BollingerBandStrategy extends StrategyBase {
   // Configuration constants - Default capital per slot
   private readonly INITIAL_CAPITAL = 65000;
   
+  // Market Regime Filter constants
+  private readonly NIFTY_50_TOKEN = 256265; // NIFTY 50 index instrument token
+  private readonly INDIA_VIX_TOKEN = 264969; // India VIX instrument token
+  private readonly EXTREME_INTRADAY_RANGE_PCT = 0.015; // 1.5% — kill switch threshold
+  private readonly WIDE_RANGE_DAY_THRESHOLD = 1.3; // 130% of ADR = wide-range day → block entries
+  private readonly VIX_FALLING_THRESHOLD = -0.05; // -5% VIX change → reduce lot size
+  
   /**
    * Calculate dynamic lot size based on current capital
    * Formula: 1 lot per 40,000 of capital (rounded down)
@@ -110,11 +117,20 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   private calculateLots(): number {
     const lotsPerCapital = Math.floor(this.currentCapital / 40000);
-    const lots = Math.max(1, lotsPerCapital); // Minimum 1 lot
+    let lots = Math.max(1, lotsPerCapital); // Minimum 1 lot
+    
+    // VIX falling caution: reduce lot size by 50% when VIX dropped >5%
+    // Data: 63 trades with VIX falling >3% → -₹26,694
+    if (this.vixChangePct < this.VIX_FALLING_THRESHOLD && lots > 1) {
+      const reducedLots = Math.max(1, Math.floor(lots / 2));
+      this.logger.info(`⚠️ VIX CAUTION: Reducing lots from ${lots} to ${reducedLots} (VIX change: ${(this.vixChangePct * 100).toFixed(1)}%)`);
+      lots = reducedLots;
+    }
     
     this.logger.debug('[LOT CALCULATION]', {
       currentCapital: this.currentCapital.toFixed(2),
       calculatedLots: lotsPerCapital,
+      vixChange: `${(this.vixChangePct * 100).toFixed(1)}%`,
       finalLots: lots
     });
     
@@ -133,6 +149,10 @@ export class BollingerBandStrategy extends StrategyBase {
   private previousDayHigh: number = 0;   // For LONG entry: price > PDH condition  (0 = uninitialized)
   private previousDayLow: number = 0;    // For SHORT entry: price < PDL condition (0 = uninitialized)
   private pivotsLoaded: boolean = false;  // Guard: true only after PDH/PDL/PDC are loaded from market data
+  
+  // Market Regime Filter state
+  private previousDayRangeRatio: number = 1.0; // Yesterday's range as % of ADR (1.0 = normal, fail-open default)
+  private vixChangePct: number = 0; // VIX % change from prior day (0 = neutral, fail-open default)
   
   // Signal instrument token (stock spot from config.instruments[0], e.g., BRITANNIA, TCS)
   private signalInstrumentToken: number = 0; // Will be fetched dynamically from stock symbol
@@ -538,6 +558,9 @@ export class BollingerBandStrategy extends StrategyBase {
       // Step 2: Calculate daily pivots (use fallback if needed)
       await this.calculateDailyPivotsWithFallback();
       
+      // Step 2b: Load VIX data for regime filter (lot size reduction when VIX falling)
+      await this.loadVixData();
+      
       // Step 3: Initialize technical indicators
       this.updateTechnicalIndicators();
       
@@ -767,8 +790,10 @@ export class BollingerBandStrategy extends StrategyBase {
       
       // P0-FIX: Record symbol exit for cooldown tracking (prevents immediate re-entry)
       // This applies even for manual/broker exits detected via reconciliation
-      if (positionSymbol) {
-        const baseSymbol = positionSymbol.replace(/\d{2}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2}(CE|PE)\d+$/, '');
+      // Use this.signalSymbol (clean base name like "CHOLAFIN") — regex on option symbols is fragile
+      // across Zerodha's varying formats (stock options, index weeklies, etc.)
+      const baseSymbol = this.signalSymbol || positionSymbol;
+      if (baseSymbol) {
         StrategyManager.recordSymbolExitStatic(baseSymbol);
         this.logger.info(`🔒 Cooldown applied for ${baseSymbol} (30 min block after manual/broker exit)`);
       }
@@ -2039,6 +2064,25 @@ export class BollingerBandStrategy extends StrategyBase {
       this.previousDayLow = previousDay.low;     // For SHORT entry condition
       this.pivotsLoaded = true;  // Mark pivots as successfully loaded
       
+      // Compute previous day's range ratio for regime filter (Fix 2: Post-Wide-Range Day)
+      // Data: 40 trades after wide days → 20% WR, -₹14,906 | 67 after NR days → 43.3% WR, +₹28,773
+      if (dailyData.length >= 6) {
+        const recentDays = dailyData.slice(-6); // Last 6 days: 5 for ADR + 1 previous day
+        const prevDayForRatio = recentDays[recentDays.length - 1];
+        const adrDays = recentDays.slice(0, -1); // 5 days before previous day
+        
+        const avgDailyRange = adrDays.reduce((sum: number, d: any) => 
+          sum + (d.high - d.low), 0) / adrDays.length;
+        
+        const previousDayRange = prevDayForRatio.high - prevDayForRatio.low;
+        this.previousDayRangeRatio = avgDailyRange > 0 ? previousDayRange / avgDailyRange : 1.0;
+        
+        this.logger.info(`📊 Previous day range ratio: ${this.previousDayRangeRatio.toFixed(2)} (${previousDayRange.toFixed(2)} / ADR ${avgDailyRange.toFixed(2)})`, {
+          isWideDay: this.previousDayRangeRatio > this.WIDE_RANGE_DAY_THRESHOLD,
+          isNarrowDay: this.previousDayRangeRatio < 0.7
+        });
+      }
+      
       this.dailyPivots = this.calculateDailyPivots({
         high: previousDay.high,
         low: previousDay.low,
@@ -2069,6 +2113,81 @@ export class BollingerBandStrategy extends StrategyBase {
     } catch (error) {
       this.logger.error(`Failed to calculate ${this.signalSymbol} daily pivots:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Load India VIX daily data for regime filter (Fix 3: VIX Falling Caution)
+   * Computes % change between last 2 trading days
+   * Fail-open: vixChangePct stays 0 (neutral) if data unavailable
+   */
+  private async loadVixData(): Promise<void> {
+    try {
+      const toDate = new Date();
+      toDate.setDate(toDate.getDate() - 1);
+      const fromDate = new Date(toDate);
+      fromDate.setDate(fromDate.getDate() - 10);
+      
+      const vixData = await this.kiteConnect.getHistoricalData(
+        this.INDIA_VIX_TOKEN,
+        'day',
+        fromDate,
+        toDate
+      );
+      
+      if (vixData && vixData.length >= 2) {
+        const latest = vixData[vixData.length - 1];
+        const prior = vixData[vixData.length - 2];
+        this.vixChangePct = (latest.close - prior.close) / prior.close;
+        
+        this.logger.info(`📊 VIX regime data loaded`, {
+          latestVix: latest.close.toFixed(2),
+          priorVix: prior.close.toFixed(2),
+          changePct: `${(this.vixChangePct * 100).toFixed(1)}%`,
+          isVixFalling: this.vixChangePct < this.VIX_FALLING_THRESHOLD
+        });
+      } else {
+        this.logger.warn('⚠️ Insufficient VIX data for regime filter, using neutral default');
+      }
+    } catch (error) {
+      this.logger.warn('⚠️ Failed to load VIX data for regime filter:', error);
+      this.vixChangePct = 0; // Fail-open: assume neutral
+    }
+  }
+
+  /**
+   * Get NIFTY 50 intraday range for extreme range filter (Fix 1)
+   * Computes (session high - session low) / session open from today's 5-min candles
+   * Fail-open: returns 0 if data unavailable (won't block entry)
+   */
+  private async getNiftyIntradayRange(): Promise<number> {
+    try {
+      const now = new Date();
+      const todayStart = new Date(now);
+      todayStart.setHours(9, 15, 0, 0); // Market open 9:15 AM IST
+      
+      const niftyData = await this.kiteConnect.getHistoricalData(
+        this.NIFTY_50_TOKEN,
+        '5minute',
+        todayStart,
+        now
+      );
+      
+      if (!niftyData || niftyData.length === 0) return 0;
+      
+      let sessionHigh = -Infinity;
+      let sessionLow = Infinity;
+      const sessionOpen = niftyData[0].open;
+      
+      for (const candle of niftyData) {
+        if (candle.high > sessionHigh) sessionHigh = candle.high;
+        if (candle.low < sessionLow) sessionLow = candle.low;
+      }
+      
+      return sessionOpen > 0 ? (sessionHigh - sessionLow) / sessionOpen : 0;
+    } catch (error) {
+      this.logger.warn('⚠️ Failed to fetch NIFTY intraday range:', error);
+      return 0; // Fail-open: don't block entry if data unavailable
     }
   }
 
@@ -3048,6 +3167,27 @@ export class BollingerBandStrategy extends StrategyBase {
       this.logger.debug('🍽️ Entry blocked - Lunch zone (11:00-12:30 IST)');
       return;
     }
+    
+    // 🕐 AFTERNOON CUTOFF: No new entries after 2:00 PM IST (no exceptions)
+    // Data: 56 trades after 14:00 → 26.8% WR, -45,262 P&L
+    // 14:00-14:30 bucket alone: 27 trades, 11.1% WR, -30,924
+    // Even Fridays are net negative after 2PM (-4,320) — no day-of-week exemptions
+    if (currentMinutes >= 14 * 60) {
+      this.logger.debug('🕐 Entry blocked - After 2:00 PM cutoff');
+      return;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // POST-WIDE-RANGE DAY FILTER (Fix 2: Regime-agnostic)
+    // Block all entries after a wide-range day (range > 130% of ADR)
+    // Data: 40 trades after wide days → 20% WR, -₹14,906
+    // Data: 67 trades after NR days → 43.3% WR, +₹28,773
+    // ═══════════════════════════════════════════════════════════════
+    if (this.previousDayRangeRatio > this.WIDE_RANGE_DAY_THRESHOLD) {
+      this.logger.info(`🚫 Entry blocked - Post-wide-range day (ratio: ${this.previousDayRangeRatio.toFixed(2)}, threshold: ${this.WIDE_RANGE_DAY_THRESHOLD})`);
+      return;
+    }
+
     if (currentMinutes === 9 * 60 + 20) {  // Exactly 9:20 AM
       this.logger.info('✅ First 5-minute candle ready for entry evaluation', {
         candleTime: '9:15-9:20',
@@ -3118,24 +3258,6 @@ export class BollingerBandStrategy extends StrategyBase {
       });
       
       // ═══════════════════════════════════════════════════════════════
-      // LATE-DAY LONG ENTRY CUTOFF
-      // Block LONG entries after 2:55 PM (except Fridays) - mirrors SHORT cutoff
-      // Prevents entering positions with <24 min to EOD exit at 3:19 PM
-      // ═══════════════════════════════════════════════════════════════
-      const longCutoffTime = 14 * 60 + 55;  // 2:55 PM in minutes
-      const isFridayLong = now.getDay() === 5;
-      
-      if (currentMinutes > longCutoffTime && !isFridayLong) {
-        this.logger.warn('[BOLLINGER] 🚫 LONG entry blocked - After 2:55 PM (non-Friday)', {
-          currentTime: now.toLocaleTimeString(),
-          dayOfWeek: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()],
-          cutoffTime: '2:55 PM',
-          reason: 'Late-day LONG restriction active - insufficient runway before EOD exit'
-        });
-        return;  // Skip LONG entry
-      }
-      
-      // ═══════════════════════════════════════════════════════════════
       // EXTENDED GAP TRAP FILTER (LONG)
       // Block entry when: Extended UP + Late + RSI Falling (exhaustion)
       // ═══════════════════════════════════════════════════════════════
@@ -3188,6 +3310,20 @@ export class BollingerBandStrategy extends StrategyBase {
         return;  // Skip LONG entry
       }
       
+      // ═══════════════════════════════════════════════════════════════
+      // EXTREME INTRADAY RANGE FILTER (Fix 1: Regime-agnostic)
+      // Block entry when NIFTY 50 intraday range exceeds 1.5%
+      // Data: 15 trades >1.5% → 13.3% WR, -₹18,647
+      // ═══════════════════════════════════════════════════════════════
+      const niftyRangeLong = await this.getNiftyIntradayRange();
+      if (niftyRangeLong > this.EXTREME_INTRADAY_RANGE_PCT) {
+        this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Extreme NIFTY intraday range', {
+          niftyRange: `${(niftyRangeLong * 100).toFixed(2)}%`,
+          threshold: `${this.EXTREME_INTRADAY_RANGE_PCT * 100}%`
+        });
+        return;  // Skip LONG entry
+      }
+      
       // Extract entry candle values BEFORE async operations
       const entryCandleHigh = latestCandle.high;
       const entryCandleLow = latestCandle.low;
@@ -3225,20 +3361,6 @@ export class BollingerBandStrategy extends StrategyBase {
         s1: s1.toFixed(2),
         previousDayLow: this.previousDayLow.toFixed(2)
       });
-      
-      // Block SHORT entries after 2:55 PM (except Fridays)
-      const shortCutoffTime = 14 * 60 + 55;  // 2:55 PM in minutes
-      const isFriday = now.getDay() === 5;   // Friday = 5 (0=Sunday, 1=Monday, ..., 5=Friday)
-      
-      if (currentMinutes > shortCutoffTime && !isFriday) {
-        this.logger.warn('[BOLLINGER] 🚫 SHORT entry blocked - After 2:55 PM (non-Friday)', {
-          currentTime: now.toLocaleTimeString(),
-          dayOfWeek: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()],
-          cutoffTime: '2:55 PM',
-          reason: 'Late-day SHORT restriction active'
-        });
-        return;  // Skip SHORT entry
-      }
       
       // ═══════════════════════════════════════════════════════════════
       // EXTENDED GAP TRAP FILTER (SHORT)
@@ -3289,6 +3411,20 @@ export class BollingerBandStrategy extends StrategyBase {
         this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Symbol in cooldown', {
           symbol: this.signalSymbol,
           reason: 'Symbol in cooldown (30-min or same-day re-entry block)'
+        });
+        return;  // Skip SHORT entry
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // EXTREME INTRADAY RANGE FILTER (Fix 1: Regime-agnostic)
+      // Block entry when NIFTY 50 intraday range exceeds 1.5%
+      // Data: 15 trades >1.5% → 13.3% WR, -₹18,647
+      // ═══════════════════════════════════════════════════════════════
+      const niftyRangeShort = await this.getNiftyIntradayRange();
+      if (niftyRangeShort > this.EXTREME_INTRADAY_RANGE_PCT) {
+        this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Extreme NIFTY intraday range', {
+          niftyRange: `${(niftyRangeShort * 100).toFixed(2)}%`,
+          threshold: `${this.EXTREME_INTRADAY_RANGE_PCT * 100}%`
         });
         return;  // Skip SHORT entry
       }
@@ -4331,6 +4467,11 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Stop RSI Trail monitoring (5-min checks + live polling)
         this.stopRsiTrailMonitoring();
+      } else {
+        this.logger.error(`🚨 EXIT FAILED: Could not close ${this.currentPosition?.instrument?.tradingsymbol} | Reason: ${reason} | Position remains OPEN`, {
+          instrument: this.currentPosition?.instrument?.tradingsymbol,
+          reason
+        });
       }
       
     } catch (error) {
@@ -4870,26 +5011,25 @@ export class BollingerBandStrategy extends StrategyBase {
         });
       }
       
-      // Step 1.5b: LIQUIDITY GUARD - Check OI and Volume before execution (ENTRY only)
+      // Step 1.5b: LIQUIDITY GUARD - Hard OI floor before execution (ENTRY only)
       // EXIT orders must ALWAYS proceed — a stuck position is worse than slippage
-      const CRITICAL_OI = 10000;   // Minimum OI to execute
-      const CRITICAL_VOL = 100;    // Minimum Volume to execute
+      // OI is the true liquidity signal; volume can be misleading (a few retail orders spike it)
+      const CRITICAL_OI = 10000;   // Hard minimum OI floor for entries
       const oi = quoteData?.oi || 0;
       const volume = quoteData?.volume || 0;
       
-      if (oi < CRITICAL_OI && volume < CRITICAL_VOL && transaction === 'BUY') {
-        this.logger.error(`❌ EXECUTION ABORTED: Liquidity Evaporated! ${instrument.tradingsymbol} - OI:${oi} Vol:${volume} (Need OI≥${CRITICAL_OI} OR Vol≥${CRITICAL_VOL})`, {
+      if (oi < CRITICAL_OI && transaction === 'BUY') {
+        this.logger.error(`❌ EXECUTION ABORTED: OI below safety floor! ${instrument.tradingsymbol} - OI:${oi} Vol:${volume} (Need OI≥${CRITICAL_OI})`, {
           instrument: instrument.tradingsymbol,
           oi,
           volume,
           criticalOI: CRITICAL_OI,
-          criticalVol: CRITICAL_VOL,
-          reason: 'Option liquidity dropped below critical threshold - entry aborted for safety'
+          reason: 'Option OI below minimum threshold - entry aborted for safety'
         });
         return { success: false, price: 0 };
       }
-      if (oi < CRITICAL_OI && volume < CRITICAL_VOL && transaction === 'SELL') {
-        this.logger.warn(`⚠️ LIQUIDITY WARNING: Low liquidity exit - OI:${oi} Vol:${volume} - proceeding with exit anyway`, {
+      if (oi < CRITICAL_OI && transaction === 'SELL') {
+        this.logger.warn(`⚠️ LIQUIDITY WARNING: Low OI exit - OI:${oi} Vol:${volume} - proceeding with exit anyway`, {
           instrument: instrument.tradingsymbol
         });
       }
@@ -4960,14 +5100,45 @@ export class BollingerBandStrategy extends StrategyBase {
       const orderResponse = await this.kiteConnect.placeOrder('regular', orderParams);
       
       if (orderResponse.order_id) {
-        // Wait for order execution and get fill price
-        const fillPrice = await this.waitForOrderExecution(orderResponse.order_id);
-        
-        return {
-          success: true,
-          price: fillPrice,
-          orderId: orderResponse.order_id
-        };
+        try {
+          // Wait for order execution and get fill price
+          const fillPrice = await this.waitForOrderExecution(orderResponse.order_id);
+          
+          return {
+            success: true,
+            price: fillPrice,
+            orderId: orderResponse.order_id
+          };
+        } catch (waitError: any) {
+          // EXIT ONLY: If SELL order timed out, retry with aggressive pricing
+          // Original order is already confirmed-cancelled by Clean Kill in waitForOrderExecution
+          if (transaction === 'SELL' && waitError.message?.includes('timed out and was cancelled')) {
+            this.logger.warn(`🔥 EXIT RETRY: First exit timed out for ${instrument.tradingsymbol}. Placing aggressive order...`);
+            try {
+              const retryQuotes = await this.kiteConnect.getQuote([quoteKey]);
+              const retryLtp = retryQuotes[quoteKey]?.last_price;
+              if (retryLtp && retryLtp > 0) {
+                const TICK_SIZE = 0.05;
+                const aggressivePrice = Math.max(
+                  Math.round((retryLtp * 0.90) / TICK_SIZE) * TICK_SIZE, TICK_SIZE
+                );
+                this.logger.warn(`🔥 EXIT RETRY: SELL at ₹${aggressivePrice.toFixed(2)} (LTP: ₹${retryLtp.toFixed(2)}, -10%)`, {
+                  instrument: instrument.tradingsymbol, retryLtp, aggressivePrice
+                });
+                const retryOrder = await this.kiteConnect.placeOrder('regular', {
+                  ...orderParams, price: aggressivePrice, tag: 'BB_EXIT_RETRY'
+                });
+                if (retryOrder.order_id) {
+                  const retryFill = await this.waitForOrderExecution(retryOrder.order_id);
+                  return { success: true, price: retryFill, orderId: retryOrder.order_id };
+                }
+              }
+            } catch (retryError) {
+              this.logger.error(`❌ EXIT RETRY ALSO FAILED for ${instrument.tradingsymbol}:`, retryError);
+            }
+          }
+          throw waitError; // Re-throw — outer catch returns {success: false}
+        }
       }
       
       return { success: false, price: 0 };

@@ -31,15 +31,15 @@ const MAX_BANDWIDTH_PERCENT = 3.5; // Maximum Bollinger Band width (over-extensi
  * Applied only when base score >= 5.0
  */
 export interface TacticalBonus {
-  freshBreakout: number;  // 0 or 3.0 - First candle outside band
+  freshBreakout: number;  // 0 or 1.5 - First candle outside band (reduced from 3.0)
   rvolSurge: number;      // 0, 1.0, 1.5, or 2.0 - Volume spike
-  proximity: number;      // 0 or 1.5 - Close to band and approaching
-  rsiAccel: number;       // 0 or 1.0 - RSI acceleration in bias direction
+  proximity: number;      // 0 or 2.0 - Close to band and approaching (boosted from 1.5)
+  rsiAccel: number;       // 0 or 1.5 - RSI acceleration in bias direction (boosted from 1.0)
   squeeze: number;        // 0 to 1.0 - Gradient based on BB width (tighter = higher)
   gammaWall: number;      // 0, 0.5, 1.0, or 1.5 - Tiered Eiffel Tower bonus (Concentration Gate + Runway)
   runwayTier?: 'VACUUM' | 'CLEAN' | 'PASSABLE' | 'CONGESTED' | 'NO_WALL';  // Runway classification
   runwayRatio?: number;   // Runway OI ratio for logging (0-100%)
-  total: number;          // Sum of above (max 10.0)
+  total: number;          // Sum of above (max ~9.5)
 }
 
 export interface ScoredStock {
@@ -52,7 +52,7 @@ export interface ScoredStock {
   breakdown: {
     trend: number; // Max 3.0
     momentum: number; // Max 3.0
-    volume: number; // Max 2.0
+    volume: number; // Max 1.0 (reduced from 2.0)
     sector: number; // Max 2.0
     smartMoney: number; // Max 2.0 (Coiled Spring bonus)
   };
@@ -815,14 +815,24 @@ export class MarketScanner {
         // ADX (direction agnostic)
         if (adx > 25) breakdown.momentum += 1.0;
 
-        // C. VOLUME (Max 2.0) - Climax Penalty Scoring
-        // Extreme volume (>5x) often marks tops/bottoms - penalize it
-        if (rvol > 2.0 && rvol <= 5.0) {
-          breakdown.volume += 2.0;  // 🌟 IDEAL BREAKOUT (Strong institutional participation)
-        } else if (rvol > 5.0) {
-          breakdown.volume += 1.0;  // ⚠️ CLIMAX VOLUME (Reversal risk, de-prioritize)
-        } else if (rvol >= 1.5 && rvol <= 2.0) {
-          breakdown.volume += 1.0;  // DECENT SUPPORT
+        // C. VOLUME (Direction-aware) - LONG volume is a stronger exhaustion signal
+        // Data: LONG V>0 underperforms badly, SHORT volume is closer to neutral
+        if (bias === 'LONG') {
+          if (rvol > 2.0 && rvol <= 5.0) {
+            breakdown.volume += 0.5;  // LONG ideal breakout: further reduced
+          } else if (rvol > 5.0) {
+            breakdown.volume += 0.0;  // LONG climax volume: treat as exhaustion, no credit
+          } else if (rvol >= 1.5 && rvol <= 2.0) {
+            breakdown.volume += 0.25; // LONG decent support: minimal credit
+          }
+        } else {
+          if (rvol > 2.0 && rvol <= 5.0) {
+            breakdown.volume += 1.0;  // SHORT ideal breakdown: keep current weight
+          } else if (rvol > 5.0) {
+            breakdown.volume += 0.5;  // SHORT climax volume: keep current weight
+          } else if (rvol >= 1.5 && rvol <= 2.0) {
+            breakdown.volume += 0.5;  // SHORT decent support: keep current weight
+          }
         }
         // rvol < 1.5 = 0 points (insufficient volume)
 
@@ -946,7 +956,18 @@ export class MarketScanner {
         }
 
         // Step 4: Final score = base + tactical
-        const score = baseScore + tacticalBonus.total;
+        const rawScore = baseScore + tacticalBonus.total;
+        // Score cap at 13.0 — data shows Score ≥13 has 14% WR (p<0.05)
+        // Raw score logged for traceability, capped score used for ranking
+        const score = Math.min(rawScore, 13.0);
+
+        // Step 4.5: Double Trap filter — FB fired + Volume present but no PX/RA
+        // Data: 18% WR (p<0.10) — exhausted breakouts with no confirming momentum
+        if (tacticalBonus.freshBreakout > 0 && breakdown.volume > 0
+            && tacticalBonus.proximity === 0 && tacticalBonus.rsiAccel === 0) {
+          this.logger.info(`🛑 ${stock.symbol}: Double Trap filter — FB+V without PX/RA, skipping`);
+          continue;
+        }
 
         // Step 5: Threshold gate for non-sector-supported entries
         // Flat sector breakouts need higher base quality to compensate for lack of sector support
@@ -1108,7 +1129,7 @@ export class MarketScanner {
     // Log top 10 scored stocks for debugging (new format with Base + Tactical breakdown)
     this.logger.info(`📊 Top 10 Scored Stocks (Base + Tactical):`);
     sorted.slice(0, 10).forEach((stock, i) => {
-      const smDisplay = stock.breakdown.smartMoney > 0 ? ` SM:${stock.breakdown.smartMoney.toFixed(1)}` : '';
+      const smDisplay = ` SM:${stock.breakdown.smartMoney.toFixed(1)}`;
       const tacDisplay = stock.tacticalBonus.total > 0 
         ? ` | Tac: FB:${stock.tacticalBonus.freshBreakout} RV:${stock.tacticalBonus.rvolSurge} PX:${stock.tacticalBonus.proximity} RA:${stock.tacticalBonus.rsiAccel} SQ:${stock.tacticalBonus.squeeze.toFixed(1)} GW:${stock.tacticalBonus.gammaWall}`
         : '';
@@ -1375,9 +1396,16 @@ export class MarketScanner {
     let runwayTier: 'VACUUM' | 'CLEAN' | 'PASSABLE' | 'CONGESTED' | 'NO_WALL' = 'NO_WALL';
     let runwayRatio = 0;
     
+    // Absolute minimum OI for a wall to be considered real
+    // Prevents false VACUUM bonuses on illiquid options (e.g. BOSCHLTD with 3K OI)
+    const MIN_WALL_OI = 10000;
+
     if (!passesConcentrationGate) {
       // No dominant wall → GW = 0
       this.logger.debug(`📊 ${symbol}: No Concentration Gate (${selected.oi.toLocaleString()} vs ${secondHighestOI.toLocaleString()}) - GW:0`);
+    } else if (selected.oi < MIN_WALL_OI) {
+      // Wall passes concentration gate but OI is too thin to be meaningful
+      this.logger.debug(`📊 ${symbol}: Wall OI too thin (${selected.oi.toLocaleString()} < ${MIN_WALL_OI.toLocaleString()}) - GW:0 [THIN_WALL]`);
     } else {
       // Stage 2: Runway Tier Analysis (The Path)
       // Fetch 3 OTM strikes in the direction of trade
@@ -1771,26 +1799,26 @@ export class MarketScanner {
     const currClose = currCandle.close;
     const prevClose = prevCandle.close;
     
-    // === A. FRESH BREAKOUT (+3.0) ===
+    // === A. FRESH BREAKOUT (Direction-aware) ===
     // LONG: Previous candle inside/at upper band, Current candle broke outside
     // SHORT: Previous candle inside/at lower band, Current candle broke outside
     let isFreshBreakout = false;
     
     if (bias === 'LONG') {
       if (prevClose <= bb.upper && currClose > bb.upper) {
-        tactical.freshBreakout = 3.0;
+        tactical.freshBreakout = 0.75;  // LONG only: further reduced, loud breakout is anti-signal
         isFreshBreakout = true;
         this.logger.debug(`  🔥 Fresh LONG Breakout: ${prevClose.toFixed(2)} → ${currClose.toFixed(2)} (BB Upper: ${bb.upper.toFixed(2)})`);
       }
     } else {
       if (prevClose >= bb.lower && currClose < bb.lower) {
-        tactical.freshBreakout = 3.0;
+        tactical.freshBreakout = 1.5;  // SHORT: retain current weight
         isFreshBreakout = true;
         this.logger.debug(`  🔥 Fresh SHORT Breakout: ${prevClose.toFixed(2)} → ${currClose.toFixed(2)} (BB Lower: ${bb.lower.toFixed(2)})`);
       }
     }
     
-    // === B. RVOL SURGE (Max +2.0) ===
+    // === B. RVOL SURGE (Direction-aware) ===
     // Current candle volume vs average of previous candles (up to 20)
     const currVolume = currCandle.volume;
     const prevCandlesForVol = candles.slice(-21, -1); // Up to 20 previous candles
@@ -1800,15 +1828,25 @@ export class MarketScanner {
       : currVolume;
     const tacticalRvol = avgVolume > 0 ? currVolume / avgVolume : 1.0;
     
-    if (tacticalRvol > 3.0) {
-      tactical.rvolSurge = 2.0;
-    } else if (tacticalRvol > 2.0) {
-      tactical.rvolSurge = 1.5;
-    } else if (tacticalRvol > 1.5) {
-      tactical.rvolSurge = 1.0;
+    if (bias === 'LONG') {
+      if (tacticalRvol > 3.0) {
+        tactical.rvolSurge = 1.0;
+      } else if (tacticalRvol > 2.0) {
+        tactical.rvolSurge = 0.75;
+      } else if (tacticalRvol > 1.5) {
+        tactical.rvolSurge = 0.5;
+      }
+    } else {
+      if (tacticalRvol > 3.0) {
+        tactical.rvolSurge = 2.0;
+      } else if (tacticalRvol > 2.0) {
+        tactical.rvolSurge = 1.5;
+      } else if (tacticalRvol > 1.5) {
+        tactical.rvolSurge = 1.0;
+      }
     }
     
-    // === C. PROXIMITY VECTOR (+1.5) ===
+    // === C. PROXIMITY VECTOR (Direction-aware) ===
     // Only if NOT a fresh breakout (no double-dipping)
     // Stock must be approaching the band, not retreating
     if (!isFreshBreakout) {
@@ -1816,20 +1854,20 @@ export class MarketScanner {
         const distance = (bb.upper - currentPrice) / currentPrice;
         // Distance < 0.2% AND price rising (approaching upper band)
         if (distance > 0 && distance < 0.002 && currClose > prevClose) {
-          tactical.proximity = 1.5;
+          tactical.proximity = 2.5;  // LONG only: strongest positive discriminator
           this.logger.debug(`  📍 Proximity LONG: ${(distance * 100).toFixed(3)}% from upper band, approaching`);
         }
       } else {
         const distance = (currentPrice - bb.lower) / currentPrice;
         // Distance < 0.2% AND price falling (approaching lower band)
         if (distance > 0 && distance < 0.002 && currClose < prevClose) {
-          tactical.proximity = 1.5;
+          tactical.proximity = 2.0;  // SHORT: retain current weight
           this.logger.debug(`  📍 Proximity SHORT: ${(distance * 100).toFixed(3)}% from lower band, approaching`);
         }
       }
     }
     
-    // === D. RSI ACCELERATION (+1.0) ===
+    // === D. RSI ACCELERATION (Direction-aware) ===
     // RSI moved 5+ points in direction of bias over last 3 candles
     if (candles.length >= 4) {
       const closes = candles.map(c => c.close);
@@ -1837,19 +1875,19 @@ export class MarketScanner {
       const rsi3Ago = this.calculateRSI(closes.slice(0, -3), 14);
       
       if (bias === 'LONG' && (rsiCurrent - rsi3Ago) > 5) {
-        tactical.rsiAccel = 1.0;
+        tactical.rsiAccel = 2.0;  // LONG only: boost confirmation over breakout loudness
         this.logger.debug(`  🚀 RSI Accel LONG: ${rsi3Ago.toFixed(1)} → ${rsiCurrent.toFixed(1)} (+${(rsiCurrent - rsi3Ago).toFixed(1)})`);
       } else if (bias === 'SHORT' && (rsi3Ago - rsiCurrent) > 5) {
-        tactical.rsiAccel = 1.0;
+        tactical.rsiAccel = 1.5;  // SHORT: retain current weight
         this.logger.debug(`  🚀 RSI Accel SHORT: ${rsi3Ago.toFixed(1)} → ${rsiCurrent.toFixed(1)} (${(rsiCurrent - rsi3Ago).toFixed(1)})`);
       }
     }
     
     // === E. SQUEEZE GRADIENT (+1.0 max) ===
     // Linear decay: 1.0 at ≤1.0% bandwidth, 0.0 at 3.5% bandwidth
-    // Formula: max(0, (3.5 - bandwidth) / 2.5)
+    // Formula: min(1.0, max(0, (3.5 - bandwidth) / 2.5))
     // Unconditional - tighter bands = more stored energy
-    tactical.squeeze = Math.max(0, (3.5 - bandwidthPercent) / 2.5);
+    tactical.squeeze = Math.min(1.0, Math.max(0, (3.5 - bandwidthPercent) / 2.5));
     if (tactical.squeeze > 0.1) {
       this.logger.debug(`  💠 Squeeze: Bandwidth ${bandwidthPercent.toFixed(2)}% → +${tactical.squeeze.toFixed(2)} bonus`);
     }
