@@ -1,5 +1,5 @@
 {
-  "capital": 61848.75,
+  "capital": 67976.25,
   "tradeHistory": [
     {
       "tradeId": "BB_1769579405609",
@@ -1800,9 +1800,99 @@
       "exitReason": "PREMIUM_HARD_STOP_8PCT",
       "status": "CLOSED",
       "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1775029207231",
+      "entryOrderId": "260401151037856",
+      "exitOrderId": "260401151072175",
+      "instrument": {
+        "instrument_token": "26998786",
+        "exchange_token": "105464",
+        "tradingsymbol": "HAL26APR3650CE",
+        "name": "HAL",
+        "last_price": 156.95,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 3650,
+        "tick_size": 0.05,
+        "lot_size": 150,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 150,
+      "entryPrice": 157.35,
+      "exitPrice": 153.45,
+      "entryTime": "2026-04-01T07:25:07.510Z",
+      "exitTime": "2026-04-01T07:40:07.231Z",
+      "pnl": -585.0000000000009,
+      "exitReason": "BREAKOUT_NO_FOLLOWTHROUGH",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1775107807232",
+      "entryOrderId": "260402150719809",
+      "exitOrderId": "260402150741956",
+      "instrument": {
+        "instrument_token": "21771778",
+        "exchange_token": "85046",
+        "tradingsymbol": "AXISBANK26APR1160PE",
+        "name": "AXISBANK",
+        "last_price": 47.45,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 1160,
+        "tick_size": 0.05,
+        "lot_size": 625,
+        "instrument_type": "PE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "SHORT",
+      "quantity": 625,
+      "entryPrice": 47.4,
+      "exitPrice": 44.4,
+      "entryTime": "2026-04-02T05:25:07.420Z",
+      "exitTime": "2026-04-02T05:30:07.232Z",
+      "pnl": -1875,
+      "exitReason": "RSI_CONFIRMATION_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_MANUAL_CLEAR_1775119856000",
+      "entryOrderId": "260402151216380",
+      "exitOrderId": "260402151623459",
+      "instrument": {
+        "instrument_token": "24187906",
+        "exchange_token": "94484",
+        "tradingsymbol": "COFORGE26APR1180CE",
+        "name": "COFORGE",
+        "last_price": 64.1,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 1180,
+        "tick_size": 0.05,
+        "lot_size": 375,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 375,
+      "entryPrice": 63.85,
+      "exitPrice": 86.75,
+      "entryTime": "2026-04-02T07:35:07.409Z",
+      "exitTime": "2026-04-02T08:50:38.000Z",
+      "pnl": 8587.5,
+      "exitReason": "MANUAL_CLEAR_BROKER_AUTO_SQUAREOFF",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
     }
   ],
   "activePosition": null,
   "rsiTrailState": null,
-  "lastUpdated": "2026-03-27T14:00:59.165Z"
+  "lastUpdated": "2026-04-02T09:04:22.236Z"
 }

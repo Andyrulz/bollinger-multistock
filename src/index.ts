@@ -18,10 +18,12 @@ class TradingBot {
   private strategyManager: StrategyManager;
   private logger: Logger;
   private app: express.Application;
+  private basePath: string;
 
   constructor() {
     this.logger = new Logger();
     this.app = express();
+    this.basePath = (process.env.BASE_PATH || '').replace(/\/$/, '');
     
     if (!process.env.ZERODHA_API_KEY || !process.env.ZERODHA_API_SECRET) {
       throw new Error('ZERODHA_API_KEY and ZERODHA_API_SECRET must be set in environment variables');
@@ -135,7 +137,7 @@ class TradingBot {
         // After successful authentication, initialize pending strategies
         await StrategyRegistry.initializePendingStrategies();
         
-        res.redirect('/');
+        res.redirect(this.basePath + '/');
       } catch (error) {
         this.logger.error('Authentication failed:', error);
         res.status(500).send(`
@@ -143,7 +145,7 @@ class TradingBot {
             <body>
               <h1>Authentication Failed</h1>
               <p>${error instanceof Error ? error.message : 'Unknown error'}</p>
-              <a href="/auth/login">Try Again</a>
+              <a href="${this.basePath}/auth/login">Try Again</a>
             </body>
           </html>
         `);
@@ -918,7 +920,7 @@ class TradingBot {
                     <strong>Authenticated:</strong> ${sessionData?.user_name || 'Unknown'}
                     ${sessionData?.login_time ? ` | Login: ${new Date(sessionData.login_time).toLocaleTimeString()}` : ''}
                 </div>
-                <a href="/auth/session-info" class="btn btn-secondary" style="flex: 0 0 auto;">Session Info</a>
+                <a href="${this.basePath}/auth/session-info" class="btn btn-secondary" style="flex: 0 0 auto;">Session Info</a>
             </div>
         </div>
 
@@ -981,7 +983,7 @@ class TradingBot {
                     <span style="font-size: 0.9rem; color: #64748b;">
                         ${aggregateMetrics.activeSlots}/3 slots active
                     </span>
-                    <a href="/trade-history" class="btn btn-secondary" style="background: #f1f5f9; border: 1px solid #cbd5e1;">📜 View Trade History</a>
+                    <a href="${this.basePath}/trade-history" class="btn btn-secondary" style="background: #f1f5f9; border: 1px solid #cbd5e1;">📜 View Trade History</a>
                 </div>
             </div>
             
@@ -1100,7 +1102,7 @@ class TradingBot {
                 </div>
                 <div class="scanner-actions">
                     <button onclick="runScanner()" class="btn btn-primary">🔍 Run Scanner Now</button>
-                    <a href="/scanner-results" class="btn btn-secondary">📊 View Detailed Results</a>
+                    <a href="${this.basePath}/scanner-results" class="btn btn-secondary">📊 View Detailed Results</a>
                 </div>
             </div>
             
@@ -1267,7 +1269,7 @@ class TradingBot {
                     <span>📈</span> Active Strategies ${activeStrategies.length > 0 ? `(${activeStrategies.length})` : ''}
                 </div>
                 <div>
-                    <a href="/strategies" class="btn btn-primary" style="flex: 0 0 auto;">View All Strategies</a>
+                    <a href="${this.basePath}/strategies" class="btn btn-primary" style="flex: 0 0 auto;">View All Strategies</a>
                 </div>
             </div>
             
@@ -1304,7 +1306,7 @@ class TradingBot {
                         </div>
                     </div>
                     <div class="strategy-actions">
-                        <a href="/strategy/${strategy.config?.id}" class="btn btn-secondary">View Details</a>
+                        <a href="${this.basePath}/strategy/${strategy.config?.id}" class="btn btn-secondary">View Details</a>
                     </div>
                 </div>
                     `;
@@ -1334,7 +1336,7 @@ class TradingBot {
 
         <div class="refresh-note" style="margin-top: 20px;">
             <strong>📡 Real-time Updates:</strong> Slot position data updates every page refresh. 
-            Use <a href="/strategies" style="color: #3b82f6; text-decoration: underline;">View All Strategies</a> 
+            Use <a href="${this.basePath}/strategies" style="color: #3b82f6; text-decoration: underline;">View All Strategies</a> 
             for detailed live metrics.
         </div>
         ` : `
@@ -1349,7 +1351,7 @@ class TradingBot {
                           : 'Authentication required to access trading system. Click login to authenticate with Zerodha.'}
                     </p>
                 </div>
-                <a href="/auth/login" class="btn btn-success" style="flex: 0 0 auto;">
+                <a href="${this.basePath}/auth/login" class="btn btn-success" style="flex: 0 0 auto;">
                     🔐 Login with Zerodha
                 </a>
             </div>
@@ -1379,9 +1381,9 @@ class TradingBot {
             btn.textContent = '⏳ Running Scanner...';
             
             try {
-                const response = await fetch('/api/scanner/run', { method: 'POST' });
+                const response = await fetch('${this.basePath}/api/scanner/run', { method: 'POST' });
                 if (response.ok) {
-                    window.location.href = '/scanner-results';
+                    window.location.href = '${this.basePath}/scanner-results';
                 } else {
                     const data = await response.json();
                     alert('Scanner Error: ' + (data.message || 'Failed to run scanner'));
@@ -1673,7 +1675,7 @@ class TradingBot {
 </head>
 <body>
     <div class="container">
-        <a href="/" class="back-btn">← Back to Dashboard</a>
+        <a href="${this.basePath}/" class="back-btn">← Back to Dashboard</a>
         
         <div class="header">
             <h1>🎯 Scanner Results</h1>
@@ -2055,7 +2057,7 @@ class TradingBot {
 </head>
 <body>
     <div class="container">
-        <a href="/" class="back-btn">← Back to Dashboard</a>
+        <a href="${this.basePath}/" class="back-btn">← Back to Dashboard</a>
         
         <div class="header">
             <h1>📜 Trade History</h1>
@@ -2368,7 +2370,7 @@ class TradingBot {
               <body>
                 <h1>Strategy Not Found</h1>
                 <p>Strategy "${strategyId}" was not found.</p>
-                <a href="/">← Back to Main Dashboard</a>
+                <a href="${this.basePath}/">← Back to Main Dashboard</a>
               </body>
             </html>
           `);
@@ -2899,8 +2901,8 @@ class TradingBot {
           : `<button class="btn btn-primary" onclick="startStrategy('${strategyId}')">▶️ Start Strategy</button>`
         }
         <button class="btn btn-secondary" onclick="clearPosition('${strategyId}')">🧹 Clear Position</button>
-        <a href="/strategies/${strategyId}" class="btn btn-secondary">📄 View JSON</a>
-        <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
+        <a href="${this.basePath}/strategies/${strategyId}" class="btn btn-secondary">📄 View JSON</a>
+        <a href="${this.basePath}/" class="btn btn-secondary">← Back to Dashboard</a>
       </div>
     </div>
     
@@ -2908,7 +2910,7 @@ class TradingBot {
     async function startStrategy(id) {
       if (!confirm('Start strategy ' + id + '?')) return;
       try {
-        const res = await fetch('/strategies/' + id + '/start', { method: 'POST' });
+        const res = await fetch('${this.basePath}/strategies/' + id + '/start', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           alert('Strategy started successfully!');
@@ -2922,7 +2924,7 @@ class TradingBot {
     async function stopStrategy(id) {
       if (!confirm('Stop strategy ' + id + '?')) return;
       try {
-        const res = await fetch('/strategies/' + id + '/stop', { method: 'POST' });
+        const res = await fetch('${this.basePath}/strategies/' + id + '/stop', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           alert('Strategy stopped successfully!');
@@ -2936,7 +2938,7 @@ class TradingBot {
     async function clearPosition(id) {
       if (!confirm('Clear active position for ' + id + '? This will record the P&L.')) return;
       try {
-        const res = await fetch('/api/strategy/' + id + '/clear-position', { method: 'POST' });
+        const res = await fetch('${this.basePath}/api/strategy/' + id + '/clear-position', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           alert('Position cleared successfully!');
@@ -2970,15 +2972,15 @@ class TradingBot {
 
       // Check authentication status
       if (!this.authService.isAuthenticated()) {
-        this.logger.warn('Bot is not authenticated. Please visit /auth/login to authenticate.');
+        this.logger.warn(`Bot is not authenticated. Please visit ${this.basePath}/auth/login to authenticate.`);
       }
 
       // Start the web server
       const port = process.env.PORT || 3000;
       this.app.listen(port, () => {
-        this.logger.info(`Trading bot server started on port ${port}`);
-        this.logger.info('Visit http://localhost:3000/auth/login to authenticate with Zerodha');
-        this.logger.info('🎯 Multi-Strategy Dashboard: http://localhost:3000/');
+        this.logger.info(`Trading bot server started on port ${port} (basePath: ${this.basePath || '/'})`);
+        this.logger.info(`Visit http://localhost:${port}${this.basePath}/auth/login to authenticate with Zerodha`);
+        this.logger.info(`🎯 Multi-Strategy Dashboard: http://localhost:${port}${this.basePath}/`);
       });
 
     } catch (error) {

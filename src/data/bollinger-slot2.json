@@ -1,5 +1,5 @@
 {
-  "capital": 62283.3,
+  "capital": 60653.3,
   "tradeHistory": [
     {
       "tradeId": "BB_1769592888631",
@@ -1440,9 +1440,39 @@
       "exitReason": "GAMMA_CLIMAX_RSI87",
       "status": "CLOSED",
       "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1775028906253",
+      "entryOrderId": "260401151024842",
+      "exitOrderId": "260401151060754",
+      "instrument": {
+        "instrument_token": "27427586",
+        "exchange_token": "107139",
+        "tradingsymbol": "EICHERMOT26APR6900CE",
+        "name": "EICHERMOT",
+        "last_price": 264,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 6900,
+        "tick_size": 0.05,
+        "lot_size": 100,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 100,
+      "entryPrice": 263.45,
+      "exitPrice": 247.15,
+      "entryTime": "2026-04-01T07:20:06.504Z",
+      "exitTime": "2026-04-01T07:35:06.253Z",
+      "pnl": -1629.9999999999982,
+      "exitReason": "BREAKOUT_NO_FOLLOWTHROUGH",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
     }
   ],
   "activePosition": null,
   "rsiTrailState": null,
-  "lastUpdated": "2026-03-27T14:00:59.171Z"
+  "lastUpdated": "2026-04-02T09:09:15.497Z"
 }

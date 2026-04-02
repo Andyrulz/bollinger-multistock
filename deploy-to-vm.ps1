@@ -1,8 +1,9 @@
 # ========================================
-# Azure VM Fresh Deployment Script
+# Azure VM Deployment Script - Bollinger Bot
 # ========================================
 # VM: 98.70.40.23 | User: azureuser
-# Purpose: Clean deployment of trading bot
+# Purpose: Deploy Bollinger bot alongside existing Nifty bot
+# SAFE: Only manages trading-bot-bollinger PM2 process
 # ========================================
 
 param(
@@ -16,15 +17,19 @@ $ErrorActionPreference = "Stop"
 $VM_IP = "98.70.40.23"
 $VM_USER = "azureuser"
 $SSH_KEY = "C:\Users\aabishek\Downloads\nifty-trading-bot_key.pem"
-$LOCAL_PROJECT = "c:\Users\aabishek\Documents\repo-local\tradebot-kite"
-$REMOTE_PATH = "~/tradebot-kite"
-$BACKUP_PATH = "~/tradebot-backup-$(Get-Date -Format 'yyyy-MM-dd-HHmmss')"
+$LOCAL_PROJECT = "c:\Users\aabishek\Documents\repo-local\tradebot-bollinger-multistock"
+$REMOTE_PATH = "~/tradebot-bollinger"
+$PM2_PROCESS_NAME = "trading-bot-bollinger"
+$BACKUP_PATH = "~/tradebot-bollinger-backup-$(Get-Date -Format 'yyyy-MM-dd-HHmmss')"
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Azure VM Fresh Deployment" -ForegroundColor Cyan
+Write-Host "Azure VM Deployment - Bollinger Bot" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "VM: $VM_IP" -ForegroundColor Yellow
 Write-Host "Project: $LOCAL_PROJECT" -ForegroundColor Yellow
+Write-Host "Remote: $REMOTE_PATH" -ForegroundColor Yellow
+Write-Host "PM2 Process: $PM2_PROCESS_NAME" -ForegroundColor Yellow
+Write-Host "⚠️  Existing bot (trading-bot-multi-strategy) will NOT be touched" -ForegroundColor Green
 Write-Host ""
 
 # Function to run SSH command
@@ -94,10 +99,10 @@ try {
     }
     Write-Host ""
 
-    # Step 4: Stop PM2 services
-    Write-Host "[4/8] Stopping PM2 services..." -ForegroundColor Green
-    Invoke-SSHCommand "pm2 stop all 2>/dev/null || echo '  ℹ️  No PM2 processes running'"
-    Invoke-SSHCommand "pm2 delete all 2>/dev/null || echo '  ℹ️  No PM2 processes to delete'"
+    # Step 4: Stop Bollinger bot PM2 process only (existing bot untouched)
+    Write-Host "[4/8] Stopping Bollinger bot PM2 process..." -ForegroundColor Green
+    Invoke-SSHCommand "pm2 stop trading-bot-bollinger 2>/dev/null; echo 'Bollinger bot stop attempted'"
+    Invoke-SSHCommand "pm2 delete trading-bot-bollinger 2>/dev/null; echo 'Bollinger bot delete attempted'"
     Write-Host "  ✅ PM2 services stopped" -ForegroundColor Green
     Write-Host ""
 
@@ -138,6 +143,16 @@ try {
     Write-Host "  → Transferring compiled code (dist/)..." -ForegroundColor Yellow
     Invoke-SCPTransfer "$LOCAL_PROJECT\dist" "$REMOTE_PATH/"
     
+    # Transfer trading data files (trade history, slot data, OI history)
+    Write-Host "  → Transferring trading data files to dist/data/..." -ForegroundColor Yellow
+    Invoke-SSHCommand "mkdir -p $REMOTE_PATH/dist/data"
+    if (Test-Path "$LOCAL_PROJECT\src\data") {
+        Get-ChildItem "$LOCAL_PROJECT\src\data\*.json" | ForEach-Object {
+            Invoke-SCPTransfer $_.FullName "$REMOTE_PATH/dist/data/"
+        }
+        Write-Host "  ✅ Trading data files transferred" -ForegroundColor Green
+    }
+    
     # Transfer package files
     Write-Host "  → Transferring package.json and package-lock.json..." -ForegroundColor Yellow
     Invoke-SCPTransfer "$LOCAL_PROJECT\package.json" "$REMOTE_PATH/"
@@ -155,7 +170,15 @@ try {
     
     # Create necessary directories
     Write-Host "  → Creating data directories..." -ForegroundColor Yellow
-    Invoke-SSHCommand "mkdir -p $REMOTE_PATH/data/auth $REMOTE_PATH/data/strategy $REMOTE_PATH/logs"
+    Invoke-SSHCommand "mkdir -p $REMOTE_PATH/data/auth $REMOTE_PATH/data/strategy $REMOTE_PATH/data/cache $REMOTE_PATH/logs"
+    
+    # Transfer .env file
+    if (Test-Path "$LOCAL_PROJECT\.env") {
+        Write-Host "  → Transferring .env file..." -ForegroundColor Yellow
+        Invoke-SCPTransfer "$LOCAL_PROJECT\.env" "$REMOTE_PATH/"
+    } else {
+        Write-Host "  ⚠️  No .env file found locally! Bot will fail without ZERODHA_API_KEY." -ForegroundColor Red
+    }
     
     # Restore backed up data
     if (-not $SkipBackup) {
@@ -193,25 +216,22 @@ try {
     
     Write-Host "`n🏥 Health Check:" -ForegroundColor Yellow
     Start-Sleep -Seconds 3
-    Invoke-SSHCommand "curl -s http://localhost:3000/health || echo '  ⚠️  Service not responding yet (may need 10-20 seconds to start)'"
+    Invoke-SSHCommand "curl -s http://localhost:3001/health"
     
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "✅ DEPLOYMENT COMPLETED SUCCESSFULLY" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Next Steps:" -ForegroundColor Yellow
-    Write-Host "  1. Copy .env file to VM:" -ForegroundColor White
-    Write-Host "     scp -i `"$SSH_KEY`" .env.production ${VM_USER}@${VM_IP}:$REMOTE_PATH/.env" -ForegroundColor DarkGray
+    Write-Host "  1. Authenticate with Zerodha:" -ForegroundColor White
+    Write-Host "     https://${VM_IP}/tradebot-multistock/auth/login" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "  2. Authenticate with Zerodha:" -ForegroundColor White
-    Write-Host "     http://${VM_IP}:3000/auth/login" -ForegroundColor DarkGray
+    Write-Host "  2. Access Dashboard:" -ForegroundColor White
+    Write-Host "     https://${VM_IP}/tradebot-multistock/" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "  3. Access Dashboard:" -ForegroundColor White
-    Write-Host "     http://${VM_IP}:3000/" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  4. Verify deployment:" -ForegroundColor White
+    Write-Host "  3. Verify deployment:" -ForegroundColor White
     Write-Host "     ssh -i `"$SSH_KEY`" ${VM_USER}@${VM_IP}" -ForegroundColor DarkGray
-    Write-Host "     pm2 logs trading-bot-multi-strategy" -ForegroundColor DarkGray
+    Write-Host "     pm2 logs $PM2_PROCESS_NAME" -ForegroundColor DarkGray
     Write-Host ""
     
     if (-not $SkipBackup) {

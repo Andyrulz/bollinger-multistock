@@ -233,7 +233,7 @@ export class BollingerBandStrategy extends StrategyBase {
   private readonly OPTION_RSI_CLIMAX_THRESHOLD = 85;  // RSI >= 85 = Gamma Climax
   private readonly OPTION_RSI_MICRO_GRACE_SECONDS = 60;  // 60-second micro-grace to prevent double-fire
 
-  // RSI-Activated Live Premium Trailing Stop (SHORT trades only)
+  // RSI-Activated Live Premium Trailing Stop (LONG & SHORT trades)
   // When 5-min option RSI crosses 85, activates live polling with candle-LOW trailing floor
   private rsiTrailActivated: boolean = false;
   private rsiTrailFloorPrice: number = 0;
@@ -454,8 +454,8 @@ export class BollingerBandStrategy extends StrategyBase {
         }
       }
       
-      // Restore RSI Trail state if it was persisted
-      if (data.rsiTrailState && this.currentPosition?.type === 'SHORT') {
+      // Restore RSI Trail state if it was persisted (LONG & SHORT)
+      if (data.rsiTrailState && this.currentPosition) {
         this.rsiTrailActivated = data.rsiTrailState.activated || false;
         this.rsiTrailFloorPrice = data.rsiTrailState.floorPrice || 0;
         this.rsiTrailActivationRsi = data.rsiTrailState.activationRsi || 0;
@@ -494,13 +494,11 @@ export class BollingerBandStrategy extends StrategyBase {
         // P0: Start Option RSI Climax monitoring for recovered positions
         this.startOptionRsiMonitoring();
         
-        // Start RSI-Activated Live Premium Trailing Stop for recovered SHORT positions
-        if (this.currentPosition?.type === 'SHORT') {
-          this.startRsiTrail5MinMonitoring();
-          // If trail was activated before restart, also resume live polling
-          if (this.rsiTrailActivated && this.rsiTrailFloorPrice > 0) {
-            this.startRsiTrailLivePolling();
-          }
+        // Start RSI-Activated Live Premium Trailing Stop for recovered positions (LONG & SHORT)
+        this.startRsiTrail5MinMonitoring();
+        // If trail was activated before restart, also resume live polling
+        if (this.rsiTrailActivated && this.rsiTrailFloorPrice > 0) {
+          this.startRsiTrailLivePolling();
         }
         
         // NOTE: shortMonitoringInterval validation REMOVED - polling-based monitoring was replaced
@@ -508,7 +506,7 @@ export class BollingerBandStrategy extends StrategyBase {
         // 1. Master cycle (startMasterCycle → fetchLatest5MinuteCandle → checkPositionExit)
         // 2. Emergency Hard Stop (startEmergencyStopMonitoring - already started above)
         // 3. Option RSI Climax (startOptionRsiMonitoring - already started above)
-        // 4. RSI Trail (startRsiTrail5MinMonitoring - already started above for SHORT)
+        // 4. RSI Trail (startRsiTrail5MinMonitoring - already started above for LONG & SHORT)
         // 5. EOD Safety Exit (scheduleEODExit - starts in start())
         
         this.logger.info('✅ Position monitoring restarted successfully after recovery');
@@ -803,6 +801,9 @@ export class BollingerBandStrategy extends StrategyBase {
       
       // Stop monitoring
       this.stopPositionMonitoring();
+      
+      // Stop RSI Trail monitoring (5-min checks + live polling)
+      this.stopRsiTrailMonitoring();
       
       // Clear from disk (saves updated capital and trade history)
       this.saveCapitalData();
@@ -1154,7 +1155,7 @@ export class BollingerBandStrategy extends StrategyBase {
               this.currentIndicators?.bollingerBands?.middle || 0
             )
           : this.currentPosition.entryCandleHigh || 0,
-        // RSI Trail state (SHORT only — no new API calls, just in-memory state)
+        // RSI Trail state (LONG & SHORT — no new API calls, just in-memory state)
         rsiTrail: {
           activated: this.rsiTrailActivated,
           floorPrice: this.rsiTrailFloorPrice,
@@ -1414,7 +1415,7 @@ export class BollingerBandStrategy extends StrategyBase {
 
   /**
    * Fetch 5-minute historical data for the active option instrument
-   * Used for RSI-Activated Live Premium Trailing Stop (SHORT trades)
+   * Used for RSI-Activated Live Premium Trailing Stop (LONG & SHORT trades)
    * 
    * @returns Array of 5-min candles (30+ for RSI stability)
    */
@@ -3586,6 +3587,9 @@ export class BollingerBandStrategy extends StrategyBase {
         // P0: Start Option RSI Climax monitoring (15-min boundary checks, RSI >= 85 = Gamma Climax exit)
         this.startOptionRsiMonitoring();
         
+        // Start RSI-Activated Live Premium Trailing Stop for LONG positions
+        this.startRsiTrail5MinMonitoring();
+        
         this.metrics.totalTrades++;
         // Update metrics to reflect successful trade execution
         this.updateMetrics({ 
@@ -3754,7 +3758,7 @@ export class BollingerBandStrategy extends StrategyBase {
         // P0: Start Option RSI Climax monitoring (15-min boundary checks, RSI >= 85 = Gamma Climax exit)
         this.startOptionRsiMonitoring();
         
-        // Start RSI-Activated Live Premium Trailing Stop (5-min option RSI monitoring for SHORT)
+        // Start RSI-Activated Live Premium Trailing Stop (5-min option RSI monitoring for LONG & SHORT)
         this.startRsiTrail5MinMonitoring();
         
         this.metrics.totalTrades++;
@@ -4077,7 +4081,7 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // RSI-ACTIVATED LIVE PREMIUM TRAILING STOP (SHORT trades only)
+  // RSI-ACTIVATED LIVE PREMIUM TRAILING STOP (LONG & SHORT trades)
   // When 5-min option RSI crosses 85, starts live polling with candle-LOW floor.
   // Primary exit: option premium breaks below most recently completed 5-min candle LOW.
   // Secondary exit: on 5-min candle close, RSI drops below 75.
@@ -4090,9 +4094,6 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   private async check5MinOptionRsiForTrail(): Promise<void> {
     if (!this.currentPosition) return;
-    
-    // SHORT-only feature
-    if (this.currentPosition.type !== 'SHORT') return;
     
     const now = new Date();
     const secondsSinceEntry = (now.getTime() - this.currentPosition.entryTime.getTime()) / 1000;
@@ -4157,9 +4158,9 @@ export class BollingerBandStrategy extends StrategyBase {
     } else {
       // === POST-ACTIVATION: Update rolling floor + check secondary exit ===
       
-      // Update floor to latest completed candle's LOW (rolling trailing floor)
+      // Update floor to latest completed candle's LOW (ratcheting — only moves UP)
       const previousFloor = this.rsiTrailFloorPrice;
-      this.rsiTrailFloorPrice = latestCandle.low;
+      this.rsiTrailFloorPrice = Math.max(this.rsiTrailFloorPrice, latestCandle.low);
       
       this.logger.info(`[RSI TRAIL] ${optionSymbol} | 5-min RSI: ${optionRsi.toFixed(1)} | Floor updated: ₹${previousFloor.toFixed(2)} → ₹${this.rsiTrailFloorPrice.toFixed(2)}`);
       
@@ -4179,14 +4180,9 @@ export class BollingerBandStrategy extends StrategyBase {
   /**
    * Start 5-minute RSI Trail monitoring
    * Aligned to 5-minute boundaries (9:20, 9:25, 9:30, etc.)
-   * SHORT trades only — checks activation pre-trigger, and secondary exit + floor update post-trigger.
+   * LONG & SHORT trades — checks activation pre-trigger, and secondary exit + floor update post-trigger.
    */
   private startRsiTrail5MinMonitoring(): void {
-    // Only for SHORT positions
-    if (this.currentPosition?.type !== 'SHORT') {
-      this.logger.debug('[RSI TRAIL] Skipping: Not a SHORT position');
-      return;
-    }
     
     if (this.rsiTrail5MinCheckInterval || this.rsiTrail5MinInitialTimeout) {
       this.logger.debug('[RSI TRAIL] 5-min monitoring already running');

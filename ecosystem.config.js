@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'trading-bot-multi-strategy',
+      name: 'trading-bot-bollinger',
       script: 'dist/index.js',
       instances: 1,
       autorestart: true,
@@ -9,7 +9,8 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
-        PORT: 3000,
+        PORT: 3001,
+        BASE_PATH: '/tradebot-multistock',
         TZ: 'Asia/Kolkata'
       },
       error_file: 'logs/error.log',
@@ -38,8 +39,8 @@ module.exports = {
       user: 'azureuser',
       host: '98.70.40.23',
       ref: 'origin/main',
-      repo: 'git@github.com:Andyrulz/tradebot-kite.git',
-      path: '~/tradebot-kite',
+      repo: 'git@github.com:Andyrulz/tradebot-bollinger-multistock.git',
+      path: '~/tradebot-bollinger',
       'post-deploy': 'npm install --production && pm2 reload ecosystem.config.js --env production && pm2 save'
     }
   }

@@ -1,5 +1,5 @@
 {
-  "capital": 66224.75,
+  "capital": 64244.75,
   "tradeHistory": [
     {
       "tradeId": "BB_1769586742338",
@@ -2010,9 +2010,69 @@
       "exitReason": "GAMMA_CLIMAX_RSI86",
       "status": "CLOSED",
       "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1775030705233",
+      "entryOrderId": "260401150972468",
+      "exitOrderId": "260401151157968",
+      "instrument": {
+        "instrument_token": "21155586",
+        "exchange_token": "82639",
+        "tradingsymbol": "ASIANPAINT26APR2240CE",
+        "name": "ASIANPAINT",
+        "last_price": 84.95,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 2240,
+        "tick_size": 0.05,
+        "lot_size": 250,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 250,
+      "entryPrice": 85.25,
+      "exitPrice": 78.45,
+      "entryTime": "2026-04-01T07:00:05.490Z",
+      "exitTime": "2026-04-01T08:05:05.233Z",
+      "pnl": -1699.9999999999993,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1775103305270",
+      "entryOrderId": "260402150336636",
+      "exitOrderId": "260402150369838",
+      "instrument": {
+        "instrument_token": "32722946",
+        "exchange_token": "127824",
+        "tradingsymbol": "INFY26APR1270PE",
+        "name": "INFY",
+        "last_price": 56.5,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 1270,
+        "tick_size": 0.05,
+        "lot_size": 400,
+        "instrument_type": "PE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "SHORT",
+      "quantity": 400,
+      "entryPrice": 56.9,
+      "exitPrice": 56.2,
+      "entryTime": "2026-04-02T04:10:05.472Z",
+      "exitTime": "2026-04-02T04:15:05.270Z",
+      "pnl": -279.9999999999983,
+      "exitReason": "RSI_CONFIRMATION_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
     }
   ],
   "activePosition": null,
   "rsiTrailState": null,
-  "lastUpdated": "2026-03-27T14:00:59.168Z"
+  "lastUpdated": "2026-04-02T09:24:18.362Z"
 }
