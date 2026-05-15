@@ -53,6 +53,25 @@
       "maxDailyLoss": 50000,
       "maxDrawdown": 100000,
       "emergencyStop": true
+    },
+    "experimental": {
+      "_comment": "Profitability Recovery Plan — May 15, 2026. Flip any flag to revert behavior without code change.",
+      "enableShortEntries": false,
+      "enablePremiumHardStop": false,
+      "enableRsiConfirmationExit": false,
+      "enableBreakoutNoFollowThroughExit": false,
+      "enableExtendedGapTrap": false,
+      "enableStaleBreakoutFilter": false,
+      "enableWideRangeDayFilter": false,
+      "enableExtremeNiftyRangeFilter": false,
+      "enableVixLotReduction": false,
+      "enableSameSlotPostLossLockout": true,
+      "lunchBlockEndMinutesIst": 780,
+      "minHoldingTimeMinutes": 20,
+      "scannerKillSwitch": {
+        "enabled": true,
+        "maxConsecutiveLossesPerDay": 4
+      }
     }
   }
 }

@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { Logger } from '../../utils/Logger';
+import { calculateRoundTripCharges } from '../../utils/ChargesCalculator';
 import { StrategyBase, StrategyConfig, StrategyStatus } from '../../core/StrategyBase';
 import { StrategyManager } from '../../core/StrategyManager';
 
@@ -119,9 +120,10 @@ export class BollingerBandStrategy extends StrategyBase {
     const lotsPerCapital = Math.floor(this.currentCapital / 40000);
     let lots = Math.max(1, lotsPerCapital); // Minimum 1 lot
     
-    // VIX falling caution: reduce lot size by 50% when VIX dropped >5%
+    // VIX falling caution: reduce lot size by 50% when VIX dropped >5% — gated P1.4c
     // Data: 63 trades with VIX falling >3% → -₹26,694
-    if (this.vixChangePct < this.VIX_FALLING_THRESHOLD && lots > 1) {
+    const expFlags = StrategyManager.getExperimentalFlags();
+    if (expFlags.enableVixLotReduction && this.vixChangePct < this.VIX_FALLING_THRESHOLD && lots > 1) {
       const reducedLots = Math.max(1, Math.floor(lots / 2));
       this.logger.info(`⚠️ VIX CAUTION: Reducing lots from ${lots} to ${reducedLots} (VIX change: ${(this.vixChangePct * 100).toFixed(1)}%)`);
       lots = reducedLots;
@@ -2637,11 +2639,14 @@ export class BollingerBandStrategy extends StrategyBase {
                 
                 this.logger.info(`📊 Dashboard price updated: ${this.currentPosition.instrument.tradingsymbol} @ ₹${optionPremium.toFixed(2)} | P&L: ₹${this.cachedUnrealizedPnL.toFixed(2)}`);
                 
-                // 🛑 8% PREMIUM HARD STOP: Exit if premium drops ≥8% from entry price
-                // Data-backed: 0 winners killed, 13 losers stopped early → +₹6,662
+                // 🛑 8% PREMIUM HARD STOP: Exit if premium drops ≥8% from entry price — gated P0.3
+                // Data ALL-TIME: 26 trades, 0% WR, -₹52,226 (largest single-reason loss)
+                // Polling delay lets fast moves exceed 8% before exit (actual exits ranged -7.9% to -21%)
+                // The existing 5% EMERGENCY_HARD_STOP polled every 30s remains for crash protection.
                 if (this.currentPosition) {
                   const premiumDropPct = (this.currentPosition.entryPrice - optionPremium) / this.currentPosition.entryPrice;
-                  if (premiumDropPct >= this.PREMIUM_HARD_STOP_PCT) {
+                  const expFlags = StrategyManager.getExperimentalFlags();
+                  if (expFlags.enablePremiumHardStop && premiumDropPct >= this.PREMIUM_HARD_STOP_PCT) {
                     this.logger.warn(`🛑 PREMIUM HARD STOP: Premium ₹${optionPremium.toFixed(2)} is ${(premiumDropPct * 100).toFixed(1)}% below entry ₹${this.currentPosition.entryPrice.toFixed(2)} (threshold: ${this.PREMIUM_HARD_STOP_PCT * 100}%)`, {
                       entryPrice: this.currentPosition.entryPrice,
                       currentPremium: optionPremium,
@@ -3041,7 +3046,16 @@ export class BollingerBandStrategy extends StrategyBase {
         candlesChecked: validation.candlesSinceBreakout
       });
 
-      await this.executeExit('BREAKOUT_NO_FOLLOWTHROUGH');
+      // P1.1: Exit gated by flag. When disabled, mark as validated so the gate
+      // stops firing (the breakout window is over) without exiting.
+      const expFlags = StrategyManager.getExperimentalFlags();
+      if (expFlags.enableBreakoutNoFollowThroughExit) {
+        await this.executeExit('BREAKOUT_NO_FOLLOWTHROUGH');
+      } else {
+        validation.validated = true;
+        this.logger.info('🔕 BREAKOUT_NO_FOLLOWTHROUGH exit disabled by flag — letting position run');
+        this.saveCapitalData();
+      }
       return;
     }
 
@@ -3088,18 +3102,26 @@ export class BollingerBandStrategy extends StrategyBase {
       : currentRsi > conf.threshold;  // SHORT: RSI rose above 32
 
     if (breached) {
-      this.logger.warn(`⚠️ RSI CONFIRMATION FAILED: ${isLong ? 'LONG' : 'SHORT'} RSI ${isLong ? 'dropped below' : 'rose above'} ${conf.threshold}`, {
-        symbol: this.signalSymbol,
-        direction: conf.direction,
-        currentRsi: currentRsi.toFixed(2),
-        threshold: conf.threshold,
-        entryRsi: conf.entryRsi.toFixed(2),
-        candleNumber: conf.candlesSinceEntry,
-        maxCandles: conf.maxCandles
-      });
+      // P0.4: RSI confirmation exit gated — 46 trades, 0% WR, -₹38,265 lifetime.
+      // When disabled we let the position run (do NOT mark confirmed, so the
+      // gate naturally retires at maxCandles below).
+      const expFlags = StrategyManager.getExperimentalFlags();
+      if (!expFlags.enableRsiConfirmationExit) {
+        this.logger.info(`🔕 RSI confirmation breach IGNORED (exit disabled by flag): ${isLong ? 'LONG' : 'SHORT'} RSI ${currentRsi.toFixed(2)} vs threshold ${conf.threshold}`);
+      } else {
+        this.logger.warn(`⚠️ RSI CONFIRMATION FAILED: ${isLong ? 'LONG' : 'SHORT'} RSI ${isLong ? 'dropped below' : 'rose above'} ${conf.threshold}`, {
+          symbol: this.signalSymbol,
+          direction: conf.direction,
+          currentRsi: currentRsi.toFixed(2),
+          threshold: conf.threshold,
+          entryRsi: conf.entryRsi.toFixed(2),
+          candleNumber: conf.candlesSinceEntry,
+          maxCandles: conf.maxCandles
+        });
 
-      await this.executeExit('RSI_CONFIRMATION_FAILED');
-      return;
+        await this.executeExit('RSI_CONFIRMATION_FAILED');
+        return;
+      }
     }
 
     // Window expired without breach → confirmed
@@ -3157,18 +3179,36 @@ export class BollingerBandStrategy extends StrategyBase {
       this.logger.debug('🔒 Signal check skipped - Outside market hours (9:15 AM - 3:30 PM)');
       return;
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════
+    // PROFITABILITY RECOVERY PLAN — Pre-checks (P0.5, P1.6)
+    // ═══════════════════════════════════════════════════════════════
+    const expFlags = StrategyManager.getExperimentalFlags();
+
+    // P0.5: Slot locked due to losing trade today
+    if (StrategyManager.isSlotLockedTodayStatic(this.slotIndex)) {
+      this.logger.debug(`🔒 Entry blocked - Slot ${this.slotIndex + 1} locked (had losing trade today)`);
+      return;
+    }
+
+    // P1.6: System-wide kill switch (4 consecutive losses today)
+    if (StrategyManager.isKillSwitchActiveStatic()) {
+      this.logger.debug('🛑 Entry blocked - kill switch active (consecutive losses limit reached for today)');
+      return;
+    }
+
     // Log first candle readiness (9:20 AM check)
     const now = new Date();
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    
-    // 🍽️ LUNCH ZONE BLOCK: No new entries 11:00-12:30 IST
-    // Data: 12:00-13:30 was worst time bucket, 11:00 start catches lead-in chop
-    if (currentMinutes >= 11 * 60 && currentMinutes < 12 * 60 + 30) {
-      this.logger.debug('🍽️ Entry blocked - Lunch zone (11:00-12:30 IST)');
+
+    // 🍽️ LUNCH ZONE BLOCK: No new entries 11:00 IST → configurable end (default 13:00 IST)
+    // Data: 12:00-13:30 was worst time bucket; 12:30 bucket alone lost ₹24K post-deploy.
+    const lunchEnd = expFlags.lunchBlockEndMinutesIst; // default 780 (13:00)
+    if (currentMinutes >= 11 * 60 && currentMinutes < lunchEnd) {
+      this.logger.debug(`🍽️ Entry blocked - Lunch zone (11:00 IST until ${Math.floor(lunchEnd / 60)}:${String(lunchEnd % 60).padStart(2, '0')})`);
       return;
     }
-    
+
     // 🕐 AFTERNOON CUTOFF: No new entries after 2:00 PM IST (no exceptions)
     // Data: 56 trades after 14:00 → 26.8% WR, -45,262 P&L
     // 14:00-14:30 bucket alone: 27 trades, 11.1% WR, -30,924
@@ -3177,14 +3217,14 @@ export class BollingerBandStrategy extends StrategyBase {
       this.logger.debug('🕐 Entry blocked - After 2:00 PM cutoff');
       return;
     }
-    
+
     // ═══════════════════════════════════════════════════════════════
-    // POST-WIDE-RANGE DAY FILTER (Fix 2: Regime-agnostic)
+    // POST-WIDE-RANGE DAY FILTER (Fix 2: Regime-agnostic) — gated P1.4a
     // Block all entries after a wide-range day (range > 130% of ADR)
     // Data: 40 trades after wide days → 20% WR, -₹14,906
     // Data: 67 trades after NR days → 43.3% WR, +₹28,773
     // ═══════════════════════════════════════════════════════════════
-    if (this.previousDayRangeRatio > this.WIDE_RANGE_DAY_THRESHOLD) {
+    if (expFlags.enableWideRangeDayFilter && this.previousDayRangeRatio > this.WIDE_RANGE_DAY_THRESHOLD) {
       this.logger.info(`🚫 Entry blocked - Post-wide-range day (ratio: ${this.previousDayRangeRatio.toFixed(2)}, threshold: ${this.WIDE_RANGE_DAY_THRESHOLD})`);
       return;
     }
@@ -3259,38 +3299,42 @@ export class BollingerBandStrategy extends StrategyBase {
       });
       
       // ═══════════════════════════════════════════════════════════════
-      // EXTENDED GAP TRAP FILTER (LONG)
+      // EXTENDED GAP TRAP FILTER (LONG) — gated P1.2
       // Block entry when: Extended UP + Late + RSI Falling (exhaustion)
       // ═══════════════════════════════════════════════════════════════
-      const todayChangePctLong = this.previousDayClose > 0 
-        ? ((close - this.previousDayClose) / this.previousDayClose) * 100 
-        : 0;
-      const isExtendedLong = todayChangePctLong > 3.0;  // Already UP 3%+
-      const isLateLong = currentMinutes > 10 * 60 + 30;  // After 10:30 AM
-      
-      // RSI 5 candles ago (require -2 fall to confirm exhaustion, not noise)
-      const rsi5CandlesAgoLong = this.candleHistory.length >= 6 
-        ? this.calculateRSI(this.candleHistory.slice(0, -5), 10) 
-        : rsi;
-      const isRsiFalling = rsi < (rsi5CandlesAgoLong - 2.0);
-      
-      if (isExtendedLong && isLateLong && isRsiFalling) {
-        this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Extended Gap Trap detected', {
-          todayChange: `+${todayChangePctLong.toFixed(2)}% (threshold: +3%)`,
-          time: now.toLocaleTimeString(),
-          rsiNow: rsi.toFixed(2),
-          rsi5CandlesAgo: rsi5CandlesAgoLong.toFixed(2),
-          rsiFall: (rsi5CandlesAgoLong - rsi).toFixed(2)
-        });
-        return;  // Skip LONG entry
+      if (expFlags.enableExtendedGapTrap) {
+        const todayChangePctLong = this.previousDayClose > 0 
+          ? ((close - this.previousDayClose) / this.previousDayClose) * 100 
+          : 0;
+        const isExtendedLong = todayChangePctLong > 3.0;  // Already UP 3%+
+        const isLateLong = currentMinutes > 10 * 60 + 30;  // After 10:30 AM
+
+        // RSI 5 candles ago (require -2 fall to confirm exhaustion, not noise)
+        const rsi5CandlesAgoLong = this.candleHistory.length >= 6 
+          ? this.calculateRSI(this.candleHistory.slice(0, -5), 10) 
+          : rsi;
+        const isRsiFalling = rsi < (rsi5CandlesAgoLong - 2.0);
+
+        if (isExtendedLong && isLateLong && isRsiFalling) {
+          this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Extended Gap Trap detected', {
+            todayChange: `+${todayChangePctLong.toFixed(2)}% (threshold: +3%)`,
+            time: now.toLocaleTimeString(),
+            rsiNow: rsi.toFixed(2),
+            rsi5CandlesAgo: rsi5CandlesAgoLong.toFixed(2),
+            rsiFall: (rsi5CandlesAgoLong - rsi).toFixed(2)
+          });
+          return;  // Skip LONG entry
+        }
       }
-      
+
       // ═══════════════════════════════════════════════════════════════
-      // STALE BREAKOUT FILTER (LONG)
+      // STALE BREAKOUT FILTER (LONG) — gated P1.3
       // Block entry if last 3 consecutive candles were outside band + RSI range
+      // Note: checkBreakoutStaleness() is still called to compute consecutiveCount
+      // (needed by executeLongEntryWithRetry below) — only the block is gated.
       // ═══════════════════════════════════════════════════════════════
       const longStaleness = this.checkBreakoutStaleness('LONG');
-      if (longStaleness.isStale) {
+      if (expFlags.enableStaleBreakoutFilter && longStaleness.isStale) {
         this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Stale Breakout detected', {
           consecutiveCandles: longStaleness.consecutiveCount,
           message: `${longStaleness.consecutiveCount} candles already outside band`,
@@ -3312,17 +3356,19 @@ export class BollingerBandStrategy extends StrategyBase {
       }
       
       // ═══════════════════════════════════════════════════════════════
-      // EXTREME INTRADAY RANGE FILTER (Fix 1: Regime-agnostic)
+      // EXTREME INTRADAY RANGE FILTER (Fix 1: Regime-agnostic) — gated P1.4b
       // Block entry when NIFTY 50 intraday range exceeds 1.5%
       // Data: 15 trades >1.5% → 13.3% WR, -₹18,647
       // ═══════════════════════════════════════════════════════════════
-      const niftyRangeLong = await this.getNiftyIntradayRange();
-      if (niftyRangeLong > this.EXTREME_INTRADAY_RANGE_PCT) {
-        this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Extreme NIFTY intraday range', {
-          niftyRange: `${(niftyRangeLong * 100).toFixed(2)}%`,
-          threshold: `${this.EXTREME_INTRADAY_RANGE_PCT * 100}%`
-        });
-        return;  // Skip LONG entry
+      if (expFlags.enableExtremeNiftyRangeFilter) {
+        const niftyRangeLong = await this.getNiftyIntradayRange();
+        if (niftyRangeLong > this.EXTREME_INTRADAY_RANGE_PCT) {
+          this.logger.warn('[BOLLINGER] 🚫 LONG blocked - Extreme NIFTY intraday range', {
+            niftyRange: `${(niftyRangeLong * 100).toFixed(2)}%`,
+            threshold: `${this.EXTREME_INTRADAY_RANGE_PCT * 100}%`
+          });
+          return;  // Skip LONG entry
+        }
       }
       
       // Extract entry candle values BEFORE async operations
@@ -3354,6 +3400,17 @@ export class BollingerBandStrategy extends StrategyBase {
     const shortSignal = Object.values(shortConditions).every(Boolean);
     
     if (shortSignal) {
+      // ═══════════════════════════════════════════════════════════════
+      // SHORT ENTRIES MASTER GATE (P0.2) — SHORTs structurally lose money
+      // Data ALL-TIME: 133 SHORTs, 29% WR, -₹34,188
+      // Data POST Apr-02: 24 SHORTs, 8% WR, -₹14,428
+      // Flag-gated so behavior can be restored without code change.
+      // ═══════════════════════════════════════════════════════════════
+      if (!expFlags.enableShortEntries) {
+        this.logger.info('🚫 SHORT entry blocked - SHORTs disabled in experimental flags');
+        return;
+      }
+
       this.logger.info('[BOLLINGER] 🔻 SHORT entry signal detected', {
         close: close.toFixed(2),
         rsi: rsi.toFixed(2),
@@ -3362,40 +3419,42 @@ export class BollingerBandStrategy extends StrategyBase {
         s1: s1.toFixed(2),
         previousDayLow: this.previousDayLow.toFixed(2)
       });
-      
+
       // ═══════════════════════════════════════════════════════════════
-      // EXTENDED GAP TRAP FILTER (SHORT)
+      // EXTENDED GAP TRAP FILTER (SHORT) — gated P1.2
       // Block entry when: Extended DOWN + Late + RSI Recovering
       // ═══════════════════════════════════════════════════════════════
-      const todayChangePctShort = this.previousDayClose > 0 
-        ? ((close - this.previousDayClose) / this.previousDayClose) * 100 
-        : 0;
-      const isExtendedShort = todayChangePctShort < -3.0;  // Already DOWN 3%+
-      const isLateShort = currentMinutes > 10 * 60 + 30;  // After 10:30 AM
-      
-      // RSI 5 candles ago (require +2 rise to confirm recovery, not noise)
-      const rsi5CandlesAgoShort = this.candleHistory.length >= 6 
-        ? this.calculateRSI(this.candleHistory.slice(0, -5), 10) 
-        : rsi;
-      const isRsiRecovering = rsi > (rsi5CandlesAgoShort + 2.0);
-      
-      if (isExtendedShort && isLateShort && isRsiRecovering) {
-        this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Extended Gap Trap detected', {
-          todayChange: `${todayChangePctShort.toFixed(2)}% (threshold: -3%)`,
-          time: now.toLocaleTimeString(),
-          rsiNow: rsi.toFixed(2),
-          rsi5CandlesAgo: rsi5CandlesAgoShort.toFixed(2),
-          rsiRise: (rsi - rsi5CandlesAgoShort).toFixed(2)
-        });
-        return;  // Skip SHORT entry
+      if (expFlags.enableExtendedGapTrap) {
+        const todayChangePctShort = this.previousDayClose > 0 
+          ? ((close - this.previousDayClose) / this.previousDayClose) * 100 
+          : 0;
+        const isExtendedShort = todayChangePctShort < -3.0;  // Already DOWN 3%+
+        const isLateShort = currentMinutes > 10 * 60 + 30;  // After 10:30 AM
+
+        // RSI 5 candles ago (require +2 rise to confirm recovery, not noise)
+        const rsi5CandlesAgoShort = this.candleHistory.length >= 6 
+          ? this.calculateRSI(this.candleHistory.slice(0, -5), 10) 
+          : rsi;
+        const isRsiRecovering = rsi > (rsi5CandlesAgoShort + 2.0);
+
+        if (isExtendedShort && isLateShort && isRsiRecovering) {
+          this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Extended Gap Trap detected', {
+            todayChange: `${todayChangePctShort.toFixed(2)}% (threshold: -3%)`,
+            time: now.toLocaleTimeString(),
+            rsiNow: rsi.toFixed(2),
+            rsi5CandlesAgo: rsi5CandlesAgoShort.toFixed(2),
+            rsiRise: (rsi - rsi5CandlesAgoShort).toFixed(2)
+          });
+          return;  // Skip SHORT entry
+        }
       }
-      
+
       // ═══════════════════════════════════════════════════════════════
-      // STALE BREAKOUT FILTER (SHORT)
-      // Block entry if last 3 consecutive candles were outside band + RSI range
+      // STALE BREAKOUT FILTER (SHORT) — gated P1.3
+      // Note: checkBreakoutStaleness() still called for consecutiveCount.
       // ═══════════════════════════════════════════════════════════════
       const shortStaleness = this.checkBreakoutStaleness('SHORT');
-      if (shortStaleness.isStale) {
+      if (expFlags.enableStaleBreakoutFilter && shortStaleness.isStale) {
         this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Stale Breakout detected', {
           consecutiveCandles: shortStaleness.consecutiveCount,
           message: `${shortStaleness.consecutiveCount} candles already outside band`,
@@ -3417,17 +3476,17 @@ export class BollingerBandStrategy extends StrategyBase {
       }
       
       // ═══════════════════════════════════════════════════════════════
-      // EXTREME INTRADAY RANGE FILTER (Fix 1: Regime-agnostic)
-      // Block entry when NIFTY 50 intraday range exceeds 1.5%
-      // Data: 15 trades >1.5% → 13.3% WR, -₹18,647
+      // EXTREME INTRADAY RANGE FILTER (Fix 1: Regime-agnostic) — gated P1.4b
       // ═══════════════════════════════════════════════════════════════
-      const niftyRangeShort = await this.getNiftyIntradayRange();
-      if (niftyRangeShort > this.EXTREME_INTRADAY_RANGE_PCT) {
-        this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Extreme NIFTY intraday range', {
-          niftyRange: `${(niftyRangeShort * 100).toFixed(2)}%`,
-          threshold: `${this.EXTREME_INTRADAY_RANGE_PCT * 100}%`
-        });
-        return;  // Skip SHORT entry
+      if (expFlags.enableExtremeNiftyRangeFilter) {
+        const niftyRangeShort = await this.getNiftyIntradayRange();
+        if (niftyRangeShort > this.EXTREME_INTRADAY_RANGE_PCT) {
+          this.logger.warn('[BOLLINGER] 🚫 SHORT blocked - Extreme NIFTY intraday range', {
+            niftyRange: `${(niftyRangeShort * 100).toFixed(2)}%`,
+            threshold: `${this.EXTREME_INTRADAY_RANGE_PCT * 100}%`
+          });
+          return;  // Skip SHORT entry
+        }
       }
       
       // Extract entry candle values BEFORE async operations
@@ -4359,7 +4418,29 @@ export class BollingerBandStrategy extends StrategyBase {
    */
   private async executeExit(reason: string): Promise<void> {
     if (!this.currentPosition) return;
-    
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // P1.5 — MIN HOLDING TIME GATE
+    // Data: trades exited <15min lost ₹86,396 (10% WR); trades held >=45min
+    // won 48% with +₹72,597. Block premature exits except for safety/EOD/profit.
+    // ═══════════════════════════════════════════════════════════════════════
+    const expFlags = StrategyManager.getExperimentalFlags();
+    if (expFlags.minHoldingTimeMinutes > 0) {
+      const heldMinutes = (Date.now() - new Date(this.currentPosition.entryTime).getTime()) / 60000;
+      // Exempt: real safety, end-of-day, manual, proven-winner exits
+      const isExempt =
+        reason === 'EMERGENCY_HARD_STOP' ||
+        reason.startsWith('EOD_') ||
+        reason.startsWith('MANUAL_') ||
+        reason.startsWith('GAMMA_CLIMAX_') ||
+        reason.startsWith('RSI_TRAIL_') ||
+        reason === 'MONITORING_RESTART_FAILED';
+      if (!isExempt && heldMinutes < expFlags.minHoldingTimeMinutes) {
+        this.logger.info(`⏸️ Exit '${reason}' DEFERRED — held only ${heldMinutes.toFixed(1)} min (min ${expFlags.minHoldingTimeMinutes})`);
+        return;
+      }
+    }
+
     // 🔒 RACE CONDITION GUARD: Prevent double sell orders from concurrent exit triggers
     // (8% Hard Stop, Emergency Stop, Supertrend, EOD, RSI Climax, RSI Trail can overlap)
     if (this.isExecutingExit) {
@@ -4374,10 +4455,14 @@ export class BollingerBandStrategy extends StrategyBase {
       if (orderResult.success) {
         // Calculate P&L correctly for options trading: (Exit Premium - Entry Premium) × Total Quantity
         const totalQuantity = this.currentPosition.quantity * this.currentPosition.instrument.lot_size; // Use instrument's actual lot size
-        const pnl = (orderResult.price - this.currentPosition.entryPrice) * totalQuantity;
+        const grossPnl = (orderResult.price - this.currentPosition.entryPrice) * totalQuantity;
         
-        // Update capital with P&L
-        this.currentCapital += pnl;
+        // Calculate all statutory charges (brokerage, STT, txn charges, GST, stamp duty, SEBI, IPFT)
+        const charges = calculateRoundTripCharges(this.currentPosition.entryPrice, orderResult.price, totalQuantity);
+        const netPnl = grossPnl - charges.totalCharges;
+        
+        // Update capital with NET P&L (after all charges)
+        this.currentCapital += netPnl;
         
         // Create trade record for history
         const tradeRecord = {
@@ -4391,7 +4476,13 @@ export class BollingerBandStrategy extends StrategyBase {
           exitPrice: orderResult.price,
           entryTime: this.currentPosition.entryTime,
           exitTime: new Date(),
-          pnl: pnl,
+          grossPnl: grossPnl,
+          charges: {
+            buy: charges.buy,
+            sell: charges.sell,
+            totalCharges: charges.totalCharges
+          },
+          pnl: netPnl,
           exitReason: reason,
           status: 'CLOSED',
           strategy: 'BOLLINGER_BAND'
@@ -4405,13 +4496,25 @@ export class BollingerBandStrategy extends StrategyBase {
           instrument: this.currentPosition.instrument.tradingsymbol,
           entryPrice: this.currentPosition.entryPrice,
           exitPrice: orderResult.price,
-          pnl: pnl.toFixed(2),
+          grossPnl: grossPnl.toFixed(2),
+          charges: charges.totalCharges.toFixed(2),
+          netPnl: netPnl.toFixed(2),
           newCapital: this.currentCapital.toFixed(2)
         });
         
         // P0-FIX: Record symbol exit for cooldown tracking (prevents repeated losses)
         // This notifies StrategyManager to block re-entry for 30 minutes
         StrategyManager.recordSymbolExitStatic(this.signalSymbol);
+
+        // P0.5: Slot lockout — if this trade was a net loss, lock this slot for the rest of today.
+        // Data: 86 trades after losing same-slot trade -> 34% WR, -₹19,321
+        if (netPnl < 0) {
+          StrategyManager.recordSlotLossStatic(this.slotIndex);
+        }
+
+        // P1.6: Daily loss-streak kill switch — record outcome system-wide.
+        // After N consecutive losses across all slots today, scanner pauses for rest of day.
+        StrategyManager.recordTradeOutcomeStatic(netPnl);
         
         // Position cleared - REST API polling will stop automatically
         

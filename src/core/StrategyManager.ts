@@ -77,6 +77,50 @@ type RetentionDecision = 'LOCK' | 'KEEP' | 'SWAP' | 'DEPLOY';
 type SwapReason = 'empty_slot' | 'active_position' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout' | 'in_cooldown' | 'outperformed';
 
 /**
+ * Experimental flags (Profitability Recovery Plan, May 2026)
+ * Loaded from config/strategies.json -> global.experimental
+ * Every behavioral change in the recovery plan is gated behind one of these flags.
+ */
+export interface ExperimentalFlags {
+  // Phase 0 — Stop the bleeding
+  enableShortEntries: boolean;             // P0.2 default false — SHORT side lost ₹34K all-time
+  enablePremiumHardStop: boolean;          // P0.3 default false — 26 trades, 0% WR, -₹52K
+  enableRsiConfirmationExit: boolean;      // P0.4 default false — 46 trades, 0% WR, -₹38K
+  enableSameSlotPostLossLockout: boolean;  // P0.5 default true — after-loss revenge trades lose ₹19K
+  lunchBlockEndMinutesIst: number;         // P0.6 default 780 (13:00 IST) — 12:30 bucket lost ₹24K
+
+  // Phase 1 — Restore edge (filter removals)
+  enableBreakoutNoFollowThroughExit: boolean; // P1.1 default false — 15 trades, 7% WR, -₹12K
+  enableExtendedGapTrap: boolean;             // P1.2 default false — Mar 30 regime filter
+  enableStaleBreakoutFilter: boolean;         // P1.3 default false — Mar 30 regime filter
+  enableWideRangeDayFilter: boolean;          // P1.4a default false — Mar 30 regime filter
+  enableExtremeNiftyRangeFilter: boolean;     // P1.4b default false — Mar 30 regime filter
+  enableVixLotReduction: boolean;             // P1.4c default false — Mar 30 regime filter
+  minHoldingTimeMinutes: number;              // P1.5 default 20 — sub-15-min trades lost ₹86K
+  scannerKillSwitch: {
+    enabled: boolean;                         // P1.6 default true
+    maxConsecutiveLossesPerDay: number;       // default 4
+  };
+}
+
+export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
+  // Conservative defaults (= old behavior) used if JSON load fails
+  enableShortEntries: true,
+  enablePremiumHardStop: true,
+  enableRsiConfirmationExit: true,
+  enableSameSlotPostLossLockout: false,
+  lunchBlockEndMinutesIst: 750,  // 12:30 IST
+  enableBreakoutNoFollowThroughExit: true,
+  enableExtendedGapTrap: true,
+  enableStaleBreakoutFilter: true,
+  enableWideRangeDayFilter: true,
+  enableExtremeNiftyRangeFilter: true,
+  enableVixLotReduction: true,
+  minHoldingTimeMinutes: 0,
+  scannerKillSwitch: { enabled: false, maxConsecutiveLossesPerDay: 4 },
+};
+
+/**
  * Central manager for all trading strategies
  * Handles loading, starting, stopping, and monitoring of multiple strategies
  */
@@ -107,6 +151,21 @@ export class StrategyManager {
   // Data: 13 same-day re-entries had 15.4% WR, -₹14,065 PnL
   private symbolsTradedToday: Map<string, Date> = new Map();
   private lastTradeDateReset: string = ''; // Track date for daily reset (YYYY-MM-DD)
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PROFITABILITY RECOVERY PLAN (May 2026) — feature-flagged behavior
+  // Loaded from config/strategies.json -> global.experimental
+  // ═══════════════════════════════════════════════════════════════════════════
+  private experimentalFlags: ExperimentalFlags = DEFAULT_EXPERIMENTAL_FLAGS;
+
+  // P0.5: Slot-level same-day post-loss lockout
+  // Data: 86 trades after losing trade same slot same day -> 34% WR, -₹19,321
+  private slotsLockedToday: Set<number> = new Set(); // slot indexes (0-based)
+
+  // P1.6: System-wide daily loss-streak kill switch
+  // Data: max consecutive losers in baseline = 12, max drawdown ₹47K
+  private dailyLossStreak: number = 0;
+  private dailyLossStreakDate: string = ''; // YYYY-MM-DD
 
   // Smart Retention: Slot tracking
   private slotStates: SlotState[] = [
@@ -477,7 +536,29 @@ export class StrategyManager {
       
       const configData = fs.readFileSync(this.config.configPath, 'utf8');
       const configs = JSON.parse(configData);
-      
+
+      // ─── Profitability Recovery Plan: Load experimental flags ───────────
+      // Any flag missing in JSON falls back to DEFAULT_EXPERIMENTAL_FLAGS (= old behavior)
+      // so partial configs cannot accidentally enable risky behavior.
+      const expFromJson = configs?.global?.experimental || {};
+      this.experimentalFlags = {
+        ...DEFAULT_EXPERIMENTAL_FLAGS,
+        ...expFromJson,
+        scannerKillSwitch: {
+          ...DEFAULT_EXPERIMENTAL_FLAGS.scannerKillSwitch,
+          ...(expFromJson.scannerKillSwitch || {}),
+        },
+      };
+      this.logger.info('🧪 Experimental flags loaded', {
+        shortEntries: this.experimentalFlags.enableShortEntries,
+        premiumHardStop: this.experimentalFlags.enablePremiumHardStop,
+        rsiConfirmationExit: this.experimentalFlags.enableRsiConfirmationExit,
+        slotLockoutAfterLoss: this.experimentalFlags.enableSameSlotPostLossLockout,
+        lunchBlockEndMinutesIst: this.experimentalFlags.lunchBlockEndMinutesIst,
+        minHoldingTimeMinutes: this.experimentalFlags.minHoldingTimeMinutes,
+        killSwitch: this.experimentalFlags.scannerKillSwitch,
+      });
+
       // Create strategy instances for enabled strategies
       for (const strategyConfig of configs.strategies) {
         if (strategyConfig.enabled) {
@@ -762,15 +843,8 @@ export class StrategyManager {
    * @returns true if symbol is in cooldown, false if available
    */
   public isSymbolInCooldown(symbol: string): boolean {
-    // Daily reset check: Clear symbolsTradedToday if date has changed
-    const todayStr = new Date().toISOString().slice(0, 10);
-    if (this.lastTradeDateReset !== todayStr) {
-      if (this.symbolsTradedToday.size > 0) {
-        this.logger.info(`🔄 New trading day detected — clearing ${this.symbolsTradedToday.size} same-day blocks from ${this.lastTradeDateReset}`);
-      }
-      this.symbolsTradedToday.clear();
-      this.lastTradeDateReset = todayStr;
-    }
+    // Daily reset check: clears symbolsTradedToday + slotsLockedToday + lossStreak if date changed
+    this.checkDailyReset();
 
     // SAME-DAY RE-ENTRY BLOCK: If symbol already traded today, block for rest of day
     // Data: 13 same-day re-entries had 15.4% WR, -₹14,065 PnL
@@ -850,6 +924,136 @@ export class StrategyManager {
     return false; // No instance = no cooldown tracking
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PROFITABILITY RECOVERY PLAN — Experimental Flags Accessor
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get current experimental flags. Returns DEFAULT_EXPERIMENTAL_FLAGS (= old
+   * behavior) if no instance is available, so strategies are safe under all
+   * initialization orders.
+   */
+  public static getExperimentalFlags(): ExperimentalFlags {
+    if (StrategyManager.instance) {
+      return StrategyManager.instance.experimentalFlags;
+    }
+    return DEFAULT_EXPERIMENTAL_FLAGS;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // P0.5 — Slot-level same-day post-loss lockout
+  // Data: 86 trades after losing same-slot trade -> 34% WR, -₹19,321 (-₹225 EV)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Daily reset helper — clears slot lockouts + symbol same-day blocks if the
+   * date has rolled over. Idempotent; safe to call from multiple gates.
+   */
+  private checkDailyReset(): void {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (this.lastTradeDateReset !== todayStr) {
+      if (this.symbolsTradedToday.size > 0 || this.slotsLockedToday.size > 0) {
+        this.logger.info(`🔄 New trading day — clearing same-day state from ${this.lastTradeDateReset}`, {
+          symbolsCleared: this.symbolsTradedToday.size,
+          slotsCleared: this.slotsLockedToday.size,
+        });
+      }
+      this.symbolsTradedToday.clear();
+      this.slotsLockedToday.clear();
+      this.lastTradeDateReset = todayStr;
+    }
+    if (this.dailyLossStreakDate !== todayStr) {
+      this.dailyLossStreak = 0;
+      this.dailyLossStreakDate = todayStr;
+    }
+  }
+
+  /**
+   * Mark a slot as locked for the rest of today after a losing trade.
+   * Gated by experimentalFlags.enableSameSlotPostLossLockout.
+   */
+  public recordSlotLoss(slotIndex: number): void {
+    if (!this.experimentalFlags.enableSameSlotPostLossLockout) return;
+    this.checkDailyReset();
+    this.slotsLockedToday.add(slotIndex);
+    this.logger.info(`🔒 Slot ${slotIndex + 1} locked for rest of day (had losing trade)`);
+  }
+
+  /**
+   * Check if a slot is locked-out due to a losing trade earlier today.
+   */
+  public isSlotLockedToday(slotIndex: number): boolean {
+    if (!this.experimentalFlags.enableSameSlotPostLossLockout) return false;
+    this.checkDailyReset();
+    return this.slotsLockedToday.has(slotIndex);
+  }
+
+  /** STATIC accessor for slot-lockout (called from strategy instances). */
+  public static recordSlotLossStatic(slotIndex: number): void {
+    if (StrategyManager.instance) {
+      StrategyManager.instance.recordSlotLoss(slotIndex);
+    }
+  }
+
+  /** STATIC accessor for slot-lockout check. */
+  public static isSlotLockedTodayStatic(slotIndex: number): boolean {
+    if (StrategyManager.instance) {
+      return StrategyManager.instance.isSlotLockedToday(slotIndex);
+    }
+    return false;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // P1.6 — System-wide daily loss-streak kill switch
+  // Data: max consecutive losers in baseline = 12, max drawdown ₹47K
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Record a trade outcome system-wide. WIN resets the streak; LOSS increments.
+   * After N losses in one day, kill switch triggers (see isKillSwitchActive).
+   */
+  public recordTradeOutcome(pnl: number): void {
+    this.checkDailyReset();
+    if (pnl > 0) {
+      if (this.dailyLossStreak > 0) {
+        this.logger.info(`✅ Daily loss streak broken (was ${this.dailyLossStreak}, reset to 0)`);
+      }
+      this.dailyLossStreak = 0;
+    } else {
+      this.dailyLossStreak++;
+      const limit = this.experimentalFlags.scannerKillSwitch.maxConsecutiveLossesPerDay;
+      if (this.experimentalFlags.scannerKillSwitch.enabled && this.dailyLossStreak >= limit) {
+        this.logger.warn(`🛑 KILL SWITCH ACTIVATED: ${this.dailyLossStreak} consecutive losses today — blocking new entries for rest of day`);
+      } else {
+        this.logger.info(`📉 Daily loss streak: ${this.dailyLossStreak} (limit ${limit})`);
+      }
+    }
+  }
+
+  /**
+   * Check if kill switch is active (block all new entries today).
+   */
+  public isKillSwitchActive(): boolean {
+    if (!this.experimentalFlags.scannerKillSwitch.enabled) return false;
+    this.checkDailyReset();
+    return this.dailyLossStreak >= this.experimentalFlags.scannerKillSwitch.maxConsecutiveLossesPerDay;
+  }
+
+  /** STATIC accessor — used by strategies before taking entries. */
+  public static isKillSwitchActiveStatic(): boolean {
+    if (StrategyManager.instance) {
+      return StrategyManager.instance.isKillSwitchActive();
+    }
+    return false;
+  }
+
+  /** STATIC accessor — record trade outcome from strategies. */
+  public static recordTradeOutcomeStatic(pnl: number): void {
+    if (StrategyManager.instance) {
+      StrategyManager.instance.recordTradeOutcome(pnl);
+    }
+  }
+
   /**
    * Clear all symbol cooldowns (used for daily reset)
    */
@@ -862,50 +1066,80 @@ export class StrategyManager {
   }
 
   /**
-   * Populate symbolsTradedToday from slot JSON files on startup (crash recovery)
-   * Scans all 3 slot files' tradeHistory for trades closed today
-   * Ensures same-day re-entry block survives bot restarts
+   * Populate symbolsTradedToday + slotsLockedToday + dailyLossStreak from disk
+   * on startup (crash recovery). Scans all 3 slot files' tradeHistory for
+   * trades closed today. Ensures same-day state survives bot restarts.
    */
   private populateSymbolsTradedTodayFromDisk(): void {
     const todayStr = new Date().toISOString().slice(0, 10);
     this.lastTradeDateReset = todayStr;
-    
+    this.dailyLossStreakDate = todayStr;
+
     const dataDir = path.join(__dirname, '..', 'data');
     let symbolsFound = 0;
-    
+    const todayTradesAcrossSlots: { slot: number; exitTime: Date; pnl: number }[] = [];
+
     for (let slotNumber = 1; slotNumber <= 3; slotNumber++) {
       const slotDataFile = path.join(dataDir, `bollinger-slot${slotNumber}.json`);
-      
+      const slotIndex = slotNumber - 1;
+
       try {
         if (!fs.existsSync(slotDataFile)) continue;
-        
+
         const rawData = fs.readFileSync(slotDataFile, 'utf8');
         const slotData = JSON.parse(rawData);
         const tradeHistory = slotData.tradeHistory || [];
-        
+
         for (const trade of tradeHistory) {
           if (!trade.exitTime || !trade.instrument?.name) continue;
-          
-          // Check if trade was closed today
+
           const exitDate = new Date(trade.exitTime).toISOString().slice(0, 10);
-          if (exitDate === todayStr) {
-            const symbol = trade.instrument.name;
-            if (!this.symbolsTradedToday.has(symbol)) {
-              this.symbolsTradedToday.set(symbol, new Date(trade.exitTime));
-              symbolsFound++;
-            }
+          if (exitDate !== todayStr) continue;
+
+          // Same-day symbol block (existing behavior)
+          const symbol = trade.instrument.name;
+          if (!this.symbolsTradedToday.has(symbol)) {
+            this.symbolsTradedToday.set(symbol, new Date(trade.exitTime));
+            symbolsFound++;
           }
+
+          // P0.5: Slot lockout if this slot had a losing trade today
+          if (this.experimentalFlags.enableSameSlotPostLossLockout && typeof trade.pnl === 'number' && trade.pnl < 0) {
+            this.slotsLockedToday.add(slotIndex);
+          }
+
+          // P1.6: Track for daily loss streak reconstruction
+          todayTradesAcrossSlots.push({
+            slot: slotIndex,
+            exitTime: new Date(trade.exitTime),
+            pnl: typeof trade.pnl === 'number' ? trade.pnl : 0,
+          });
         }
       } catch (error) {
         this.logger.warn(`⚠️ Failed to read slot ${slotNumber} for same-day tracking:`, error);
       }
     }
-    
+
+    // Reconstruct dailyLossStreak from today's trades sorted by exitTime
+    todayTradesAcrossSlots.sort((a, b) => a.exitTime.getTime() - b.exitTime.getTime());
+    let streak = 0;
+    for (const t of todayTradesAcrossSlots) {
+      if (t.pnl > 0) streak = 0;
+      else streak++;
+    }
+    this.dailyLossStreak = streak;
+
     if (symbolsFound > 0) {
       const symbols = [...this.symbolsTradedToday.keys()].join(', ');
       this.logger.info(`🔄 Restored ${symbolsFound} same-day re-entry blocks from disk: ${symbols}`);
     } else {
       this.logger.info('🔄 No same-day trades found on disk (clean start or new day)');
+    }
+    if (this.slotsLockedToday.size > 0) {
+      this.logger.info(`🔄 Restored slot lockouts: slots=${[...this.slotsLockedToday].map(i => i + 1).join(',')}`);
+    }
+    if (this.dailyLossStreak > 0) {
+      this.logger.info(`🔄 Restored daily loss streak: ${this.dailyLossStreak} (kill-switch limit ${this.experimentalFlags.scannerKillSwitch.maxConsecutiveLossesPerDay})`);
     }
   }
 
