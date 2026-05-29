@@ -71,7 +71,19 @@
       "scannerKillSwitch": {
         "enabled": true,
         "maxConsecutiveLossesPerDay": 4
-      }
+      },
+      "_phase2_comment": "Pullback entry state machine. Default OFF. To A/B on Slot 3 only: set enablePullbackEntry=true and pullbackSlots=[2]. To roll out fully: pullbackSlots=[0,1,2].",
+      "enablePullbackEntry": false,
+      "pullbackSlots": [],
+      "pullbackArmTimeoutCandles": 4,
+      "pullbackConfirmTimeoutCandles": 2,
+      "pullbackAbandonOnExtensionPct": 0.015,
+      "pullbackLongRsiThreshold": 60,
+      "pullbackShortRsiThreshold": 40,
+      "pullbackLongConfirmRsiThreshold": 60,
+      "pullbackShortConfirmRsiThreshold": 40,
+      "useStructuralStockStop": true,
+      "structuralStopBufferPct": 0.0005
     }
   }
 }

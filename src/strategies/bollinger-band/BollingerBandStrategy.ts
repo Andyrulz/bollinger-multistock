@@ -2,7 +2,7 @@ import * as path from 'path';
 import { Logger } from '../../utils/Logger';
 import { calculateRoundTripCharges } from '../../utils/ChargesCalculator';
 import { StrategyBase, StrategyConfig, StrategyStatus } from '../../core/StrategyBase';
-import { StrategyManager } from '../../core/StrategyManager';
+import { StrategyManager, ExperimentalFlags } from '../../core/StrategyManager';
 
 /**
  * Bollinger Band Strategy - Complete Implementation
@@ -95,6 +95,30 @@ interface Position {
     confirmed: boolean;            // true once window expires without breach
     entryRsi: number;              // RSI at entry time (for logging context)
   };
+
+  // Phase 2: Structural stop derived from the pullback level (stock-price based, not premium based)
+  structuralStop?: {
+    stockPrice: number;            // Triggers exit when underlying crosses this
+    basedOnPullbackLevel: number;  // Raw pullbackLow (LONG) / pullbackHigh (SHORT)
+    direction: 'LONG' | 'SHORT';
+  };
+}
+
+// Phase 2: Armed-but-not-yet-entered signal state. Lives on the strategy instance, persisted on disk.
+interface ArmedSignalState {
+  direction: 'LONG' | 'SHORT';
+  signalSymbol: string;            // Underlying symbol at arm time (zombie guard on restart / slot swap)
+  armedAtCandle: Date;             // Timestamp of the signal candle
+  armedAtWallClock: Date;          // Wall-clock time at arm — for >30min staleness discard on restart
+  signalCandleHigh: number;
+  signalCandleLow: number;
+  signalCandleClose: number;
+  signalCandleRsi: number;
+  candlesElapsedSinceArm: number;
+  pullbackSeen: boolean;
+  pullbackLow: number;             // running min low while ARMED (LONG)
+  pullbackHigh: number;            // running max high while ARMED (SHORT)
+  candlesSincePullback: number;    // counter after pullback confirmed, for confirm-timeout
 }
 
 export class BollingerBandStrategy extends StrategyBase {
@@ -162,6 +186,9 @@ export class BollingerBandStrategy extends StrategyBase {
   
   // Position management
   private currentPosition: Position | null = null;
+
+  // Phase 2: Armed-but-unentered signal waiting for pullback + confirmation
+  private currentArmedSignal: ArmedSignalState | null = null;
   
   // 5-minute candle building
   private currentCandle: CurrentCandle | null = null;
@@ -330,11 +357,37 @@ export class BollingerBandStrategy extends StrategyBase {
           this.logger.info('🔄 Found persisted active position, will recover after initialization');
           // Will be recovered in initialize() after all services are ready
         }
+
+        // Phase 2: Restore armed-but-unentered pullback signal (with safety guards)
+        if (data.armedSignal) {
+          const restored = data.armedSignal as ArmedSignalState;
+          // Reify Date fields (JSON.parse returns strings)
+          restored.armedAtCandle = new Date(restored.armedAtCandle);
+          restored.armedAtWallClock = new Date(restored.armedAtWallClock);
+
+          // Guard 1: Symbol mismatch — slot has been swapped to a different stock since arm
+          const configSymbol = this.config.instruments?.[0];
+          if (configSymbol && restored.signalSymbol && restored.signalSymbol !== configSymbol) {
+            this.logger.warn(`⚠️ Discarding armed signal — symbol mismatch (armed for ${restored.signalSymbol}, slot now ${configSymbol})`);
+          }
+          // Guard 2: Stale wall-clock — older than 30 minutes means bot was offline through the arm window
+          else if ((Date.now() - restored.armedAtWallClock.getTime()) > 30 * 60 * 1000) {
+            const ageMin = ((Date.now() - restored.armedAtWallClock.getTime()) / 60000).toFixed(1);
+            this.logger.warn(`⚠️ Discarding armed signal — stale (${ageMin} min old, max 30 min)`);
+          } else {
+            this.currentArmedSignal = restored;
+            this.logger.info(`🔄 Restored armed ${restored.direction} signal for ${restored.signalSymbol}`, {
+              candlesElapsedSinceArm: restored.candlesElapsedSinceArm,
+              pullbackSeen: restored.pullbackSeen,
+            });
+          }
+        }
         
         this.logger.info('💰 Bollinger Band capital loaded', {
           capital: this.currentCapital,
           totalTrades: this.tradeHistory.length,
-          hasActivePosition: !!data.activePosition
+          hasActivePosition: !!data.activePosition,
+          hasArmedSignal: !!this.currentArmedSignal
         });
       } else {
         // Create initial data file
@@ -365,6 +418,7 @@ export class BollingerBandStrategy extends StrategyBase {
         capital: this.currentCapital,
         tradeHistory: this.tradeHistory,
         activePosition: this.currentPosition, // P0: Persist active position
+        armedSignal: this.currentArmedSignal, // Phase 2: Persist armed-but-unentered signal
         rsiTrailState: this.currentPosition ? {
           activated: this.rsiTrailActivated,
           floorPrice: this.rsiTrailFloorPrice,
@@ -428,6 +482,7 @@ export class BollingerBandStrategy extends StrategyBase {
         
         // Purge the ghost position from disk to prevent repeated warnings
         this.currentPosition = null;
+        this.currentArmedSignal = null; // Phase 2: also clear any armed signal from prior symbol
         this.saveCapitalData(); // This saves capital but clears activePosition
         return;
       }
@@ -2832,6 +2887,32 @@ export class BollingerBandStrategy extends StrategyBase {
       const entryStockPrice = this.currentPosition.entryStockPrice;
       const movePercent = ((currentStockLTP - entryStockPrice) / entryStockPrice) * 100;
       
+      // ═══════════════════════════════════════════════════════════════
+      // PHASE 2 — STRUCTURAL STOCK STOP (checked BEFORE 5% emergency stop)
+      // The pullback level was the structural failure point at entry. If the
+      // underlying crosses it, the trade thesis is broken — exit immediately.
+      // Bypasses min-holding guard (this is a real-money structural stop, not a
+      // probabilistic exit). Fires before the wider 5% emergency check.
+      // ═══════════════════════════════════════════════════════════════
+      const ss = this.currentPosition.structuralStop;
+      const expFlagsLocal = StrategyManager.getExperimentalFlags();
+      if (ss && expFlagsLocal.useStructuralStockStop) {
+        const breached =
+          ss.direction === 'LONG' ? currentStockLTP < ss.stockPrice : currentStockLTP > ss.stockPrice;
+        if (breached) {
+          this.logger.warn(`🛑 STRUCTURAL STOCK STOP HIT — ${ss.direction} stock ${currentStockLTP.toFixed(2)} crossed ${ss.stockPrice.toFixed(2)} (pullback level ${ss.basedOnPullbackLevel.toFixed(2)})`, {
+            symbol: this.signalSymbol,
+            slot: this.slotIndex + 1,
+            entryStockPrice: entryStockPrice.toFixed(2),
+            movePercent: movePercent.toFixed(2),
+            note: 'Structural stop overrides min-holding guard',
+          });
+          this.stopEmergencyStopMonitoring();
+          await this.executeExit('STRUCTURAL_STOCK_STOP');
+          return;
+        }
+      }
+
       // LONG: Exit if stock dropped >5%
       if (this.currentPosition.type === 'LONG') {
         if (currentStockLTP < entryStockPrice * (1 - this.EMERGENCY_STOP_PERCENT / 100)) {
@@ -3276,7 +3357,17 @@ export class BollingerBandStrategy extends StrategyBase {
       });
       return;  // Block ALL entries until pivots are valid
     }
-    
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 2 — PULLBACK STATE MACHINE EARLY PROGRESS
+    // If pullback is enabled for this slot and we already have an armed signal,
+    // progress the state machine on this candle and skip new-signal evaluation entirely.
+    // ══════════════════════════════════════════════════════════════
+    if (this.isPullbackActiveForThisSlot(expFlags) && this.currentArmedSignal) {
+      await this.progressArmedSignal(latestCandle, rsi, expFlags);
+      return;
+    }
+
     // LONG Entry Signal - RSI range optimized for overbought momentum
     const longConditions = {
       priceAboveUpperBB: close > bollingerBands.upper,
@@ -3376,6 +3467,13 @@ export class BollingerBandStrategy extends StrategyBase {
       const entryCandleLow = latestCandle.low;
       const entryCandleTimestamp = latestCandle.timestamp; // FIXED: Capture timestamp
       
+      // PHASE 2 — If pullback is active for this slot, arm instead of entering.
+      // All upstream filters have already passed, so this is a clean ARM point.
+      if (this.isPullbackActiveForThisSlot(expFlags)) {
+        this.armSignal('LONG', latestCandle, rsi, expFlags);
+        return;
+      }
+
       await this.executeLongEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp, longStaleness.consecutiveCount);
     } else {
       // Show why LONG was blocked
@@ -3494,6 +3592,13 @@ export class BollingerBandStrategy extends StrategyBase {
       const entryCandleLow = latestCandle.low;
       const entryCandleTimestamp = latestCandle.timestamp; // FIXED: Capture timestamp
       
+      // PHASE 2 — If pullback is active for this slot, arm instead of entering.
+      // All upstream filters have already passed, so this is a clean ARM point.
+      if (this.isPullbackActiveForThisSlot(expFlags)) {
+        this.armSignal('SHORT', latestCandle, rsi, expFlags);
+        return;
+      }
+
       await this.executeShortEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp, shortStaleness.consecutiveCount);
     } else {
       // Show why SHORT was blocked
@@ -3505,6 +3610,239 @@ export class BollingerBandStrategy extends StrategyBase {
         candleIsBearish: `${shortConditions.candleIsBearish}`
       });
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE 2 — PULLBACK ENTRY STATE MACHINE
+  //
+  //   IDLE  ──signal──▶  ARMED  ──pullback──▶  WAITING_CONFIRMATION
+  //                       │                          │
+  //                  abandon (timeout /          confirm candle
+  //                  extension / regime)              │
+  //                       │                          ▼
+  //                       ▼                       ENTER + structural stop
+  //                     IDLE
+  //
+  // Default OFF. Slot-gated via expFlags.pullbackSlots so we can A/B in production.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Returns true if pullback mode is enabled AND this strategy's slot is in pullbackSlots.
+   */
+  private isPullbackActiveForThisSlot(flags: ExperimentalFlags): boolean {
+    return !!flags.enablePullbackEntry && Array.isArray(flags.pullbackSlots) && flags.pullbackSlots.includes(this.slotIndex);
+  }
+
+  /**
+   * Transition IDLE → ARMED. Captures signal-candle reference points and persists to disk.
+   * No order is placed. We just remember the signal and start watching for a pullback.
+   */
+  private armSignal(direction: 'LONG' | 'SHORT', signalCandle: Candle, signalRsi: number, flags: ExperimentalFlags): void {
+    this.currentArmedSignal = {
+      direction,
+      signalSymbol: this.signalSymbol,
+      armedAtCandle: signalCandle.timestamp,
+      armedAtWallClock: new Date(),
+      signalCandleHigh: signalCandle.high,
+      signalCandleLow: signalCandle.low,
+      signalCandleClose: signalCandle.close,
+      signalCandleRsi: signalRsi,
+      candlesElapsedSinceArm: 0,
+      pullbackSeen: false,
+      pullbackLow: direction === 'LONG' ? signalCandle.low : Number.POSITIVE_INFINITY,
+      pullbackHigh: direction === 'SHORT' ? signalCandle.high : Number.NEGATIVE_INFINITY,
+      candlesSincePullback: 0,
+    };
+    this.logger.info(`🎯 ${direction} signal ARMED — waiting for pullback`, {
+      symbol: this.signalSymbol,
+      slot: this.slotIndex + 1,
+      signalClose: signalCandle.close.toFixed(2),
+      signalHigh: signalCandle.high.toFixed(2),
+      signalLow: signalCandle.low.toFixed(2),
+      signalRsi: signalRsi.toFixed(2),
+      armTimeoutCandles: flags.pullbackArmTimeoutCandles,
+    });
+    this.saveCapitalData();
+  }
+
+  /**
+   * Advance the state machine by one 5-min candle. Called from checkEntrySignals
+   * when an armed signal already exists. Handles ABANDON, PULLBACK detection,
+   * and CONFIRMATION → entry.
+   */
+  private async progressArmedSignal(latestCandle: Candle, currentRsi: number, flags: ExperimentalFlags): Promise<void> {
+    const armed = this.currentArmedSignal;
+    if (!armed) return;
+
+    armed.candlesElapsedSinceArm++;
+
+    // Step 1: Abandonment checks (timeout, price extension, regime flip)
+    const abandonReason = this.shouldAbandonArmedSignal(latestCandle, currentRsi, flags);
+    if (abandonReason) {
+      this.logger.info(`❌ Armed ${armed.direction} signal ABANDONED: ${abandonReason}`, {
+        symbol: this.signalSymbol,
+        slot: this.slotIndex + 1,
+        candlesElapsed: armed.candlesElapsedSinceArm,
+        pullbackSeen: armed.pullbackSeen,
+      });
+      this.currentArmedSignal = null;
+      this.saveCapitalData();
+      return;
+    }
+
+    // Step 2: Either watching for pullback, or watching for confirmation after pullback
+    if (!armed.pullbackSeen) {
+      // ARMED → check for pullback this candle
+      if (armed.direction === 'LONG') {
+        armed.pullbackLow = Math.min(armed.pullbackLow, latestCandle.low);
+        const pullbackHappened =
+          currentRsi < flags.pullbackLongRsiThreshold && latestCandle.close < armed.signalCandleHigh;
+        if (pullbackHappened) {
+          armed.pullbackSeen = true;
+          armed.candlesSincePullback = 0;
+          this.logger.info(`📉 LONG pullback DETECTED — waiting for confirmation`, {
+            symbol: this.signalSymbol,
+            slot: this.slotIndex + 1,
+            pullbackLow: armed.pullbackLow.toFixed(2),
+            currentClose: latestCandle.close.toFixed(2),
+            currentRsi: currentRsi.toFixed(2),
+            confirmTimeoutCandles: flags.pullbackConfirmTimeoutCandles,
+          });
+          this.saveCapitalData();
+        }
+      } else {
+        armed.pullbackHigh = Math.max(armed.pullbackHigh, latestCandle.high);
+        const pullbackHappened =
+          currentRsi > flags.pullbackShortRsiThreshold && latestCandle.close > armed.signalCandleLow;
+        if (pullbackHappened) {
+          armed.pullbackSeen = true;
+          armed.candlesSincePullback = 0;
+          this.logger.info(`📈 SHORT pullback DETECTED — waiting for confirmation`, {
+            symbol: this.signalSymbol,
+            slot: this.slotIndex + 1,
+            pullbackHigh: armed.pullbackHigh.toFixed(2),
+            currentClose: latestCandle.close.toFixed(2),
+            currentRsi: currentRsi.toFixed(2),
+            confirmTimeoutCandles: flags.pullbackConfirmTimeoutCandles,
+          });
+          this.saveCapitalData();
+        }
+      }
+    } else {
+      // WAITING_CONFIRMATION
+      armed.candlesSincePullback++;
+      if (this.checkConfirmation(latestCandle, currentRsi, armed, flags)) {
+        await this.enterAfterConfirmation(latestCandle, armed, flags);
+      }
+    }
+  }
+
+  /**
+   * Returns a string reason if the armed signal should be abandoned, otherwise null.
+   * Reasons: timeout (arm or confirm), price extension (trade ran without us), regime flip.
+   */
+  private shouldAbandonArmedSignal(candle: Candle, _currentRsi: number, flags: ExperimentalFlags): string | null {
+    const armed = this.currentArmedSignal;
+    if (!armed) return null;
+
+    // Timeout: ARMED waiting for pullback
+    if (!armed.pullbackSeen && armed.candlesElapsedSinceArm > flags.pullbackArmTimeoutCandles) {
+      return `No pullback in ${flags.pullbackArmTimeoutCandles} candles`;
+    }
+    // Timeout: pullback seen, waiting for confirmation
+    if (armed.pullbackSeen && armed.candlesSincePullback > flags.pullbackConfirmTimeoutCandles) {
+      return `No confirmation in ${flags.pullbackConfirmTimeoutCandles} candles after pullback`;
+    }
+
+    // Price extension — trade already ran past us, don't chase
+    if (armed.direction === 'LONG' && candle.close > armed.signalCandleClose * (1 + flags.pullbackAbandonOnExtensionPct)) {
+      const pct = ((candle.close / armed.signalCandleClose - 1) * 100).toFixed(2);
+      return `Price extended +${pct}% above signal — won't chase`;
+    }
+    if (armed.direction === 'SHORT' && candle.close < armed.signalCandleClose * (1 - flags.pullbackAbandonOnExtensionPct)) {
+      const pct = ((1 - candle.close / armed.signalCandleClose) * 100).toFixed(2);
+      return `Price extended -${pct}% below signal — won't chase`;
+    }
+
+    // Regime flip: supertrend now against us
+    const trend = this.currentIndicators?.supertrend?.trend;
+    if (armed.direction === 'LONG' && trend === 'DOWN') {
+      return 'Supertrend flipped DOWN before confirmation';
+    }
+    if (armed.direction === 'SHORT' && trend === 'UP') {
+      return 'Supertrend flipped UP before confirmation';
+    }
+
+    return null;
+  }
+
+  /**
+   * Returns true if the current candle is a valid CONFIRMATION candle for the armed signal.
+   * LONG: bullish close > signal-candle high AND RSI back above threshold.
+   * SHORT: bearish close < signal-candle low AND RSI back below threshold.
+   */
+  private checkConfirmation(candle: Candle, currentRsi: number, armed: ArmedSignalState, flags: ExperimentalFlags): boolean {
+    if (armed.direction === 'LONG') {
+      const isBullish = candle.close > candle.open;
+      const breaksLevel = candle.close > armed.signalCandleHigh;
+      const rsiStrong = currentRsi > flags.pullbackLongConfirmRsiThreshold;
+      return isBullish && breaksLevel && rsiStrong;
+    }
+    const isBearish = candle.close < candle.open;
+    const breaksLevel = candle.close < armed.signalCandleLow;
+    const rsiWeak = currentRsi < flags.pullbackShortConfirmRsiThreshold;
+    return isBearish && breaksLevel && rsiWeak;
+  }
+
+  /**
+   * Execute entry via existing path, then attach a structural stop derived from the
+   * pullback level. Clears the armed-signal state and persists.
+   */
+  private async enterAfterConfirmation(latestCandle: Candle, armed: ArmedSignalState, flags: ExperimentalFlags): Promise<void> {
+    const close = latestCandle.close;
+    const entryCandleHigh = latestCandle.high;
+    const entryCandleLow = latestCandle.low;
+    const entryCandleTimestamp = latestCandle.timestamp;
+
+    const pullbackLevel = armed.direction === 'LONG' ? armed.pullbackLow : armed.pullbackHigh;
+    const stopBuffer = flags.structuralStopBufferPct;
+    const structuralStopPrice =
+      armed.direction === 'LONG'
+        ? pullbackLevel * (1 - stopBuffer)
+        : pullbackLevel * (1 + stopBuffer);
+
+    this.logger.info(`✅ ${armed.direction} pullback CONFIRMED — entering`, {
+      symbol: this.signalSymbol,
+      slot: this.slotIndex + 1,
+      signalClose: armed.signalCandleClose.toFixed(2),
+      pullbackLevel: pullbackLevel.toFixed(2),
+      confirmClose: close.toFixed(2),
+      structuralStop: structuralStopPrice.toFixed(2),
+      armedToConfirmCandles: armed.candlesElapsedSinceArm,
+    });
+
+    // Reuse the existing retry-wrapped entry path. We don't have a stale-breakout
+    // consecutive count in pullback mode — pass 0 (immediate-mode passes the real count
+    // for logging only; the executor doesn't gate on it).
+    if (armed.direction === 'LONG') {
+      await this.executeLongEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp, 0);
+    } else {
+      await this.executeShortEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp, 0);
+    }
+
+    // Attach structural stop only if the entry actually established a position
+    // (executeXEntryWithRetry may bail on order failure without setting currentPosition).
+    if (this.currentPosition && flags.useStructuralStockStop) {
+      this.currentPosition.structuralStop = {
+        stockPrice: structuralStopPrice,
+        basedOnPullbackLevel: pullbackLevel,
+        direction: armed.direction,
+      };
+      this.logger.info(`🛡️ Structural stock stop set at ${structuralStopPrice.toFixed(2)} (pullback level ${pullbackLevel.toFixed(2)})`);
+    }
+
+    this.currentArmedSignal = null;
+    this.saveCapitalData();
   }
 
   /**
@@ -4430,6 +4768,7 @@ export class BollingerBandStrategy extends StrategyBase {
       // Exempt: real safety, end-of-day, manual, proven-winner exits
       const isExempt =
         reason === 'EMERGENCY_HARD_STOP' ||
+        reason === 'STRUCTURAL_STOCK_STOP' ||  // Phase 2: structural stops are real-money exits
         reason.startsWith('EOD_') ||
         reason.startsWith('MANUAL_') ||
         reason.startsWith('GAMMA_CLIMAX_') ||
