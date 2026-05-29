@@ -101,6 +101,20 @@ export interface ExperimentalFlags {
     enabled: boolean;                         // P1.6 default true
     maxConsecutiveLossesPerDay: number;       // default 4
   };
+
+  // Phase 2 — Pullback entry state machine (ARM → PULLBACK → CONFIRM)
+  // Slot-gated via pullbackSlots so we can A/B against baseline slots in production.
+  enablePullbackEntry: boolean;               // master switch, default false (= immediate-entry, unchanged behavior)
+  pullbackSlots: number[];                    // 0-indexed slot list pullback applies to; e.g. [2] = slot 3 only
+  pullbackArmTimeoutCandles: number;          // default 4 (20 min) — ARMED → ABANDON if no pullback
+  pullbackConfirmTimeoutCandles: number;      // default 2 (10 min) — WAITING → ABANDON if no confirmation
+  pullbackAbandonOnExtensionPct: number;      // default 0.015 (1.5%) — don't chase if price already ran
+  pullbackLongRsiThreshold: number;           // default 60 — LONG pullback = RSI drops below this
+  pullbackShortRsiThreshold: number;          // default 40 — SHORT pullback = RSI rises above this
+  pullbackLongConfirmRsiThreshold: number;    // default 60 — LONG confirm = RSI back above this
+  pullbackShortConfirmRsiThreshold: number;   // default 40 — SHORT confirm = RSI back below this
+  useStructuralStockStop: boolean;            // default true (only effective when enablePullbackEntry)
+  structuralStopBufferPct: number;            // default 0.0005 (0.05%) — buffer beyond pullback level
 }
 
 export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
@@ -118,6 +132,18 @@ export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
   enableVixLotReduction: true,
   minHoldingTimeMinutes: 0,
   scannerKillSwitch: { enabled: false, maxConsecutiveLossesPerDay: 4 },
+  // Phase 2 defaults — pullback OFF, sensible knobs if accidentally enabled
+  enablePullbackEntry: false,
+  pullbackSlots: [],
+  pullbackArmTimeoutCandles: 4,
+  pullbackConfirmTimeoutCandles: 2,
+  pullbackAbandonOnExtensionPct: 0.015,
+  pullbackLongRsiThreshold: 60,
+  pullbackShortRsiThreshold: 40,
+  pullbackLongConfirmRsiThreshold: 60,
+  pullbackShortConfirmRsiThreshold: 40,
+  useStructuralStockStop: true,
+  structuralStopBufferPct: 0.0005,
 };
 
 /**
