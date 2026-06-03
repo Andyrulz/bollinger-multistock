@@ -35,6 +35,7 @@ export interface SmartRetentionConfig {
   lockOnActivePosition: boolean;    // true - never swap if in position
   swapOnBiasFlip: boolean;          // true - swap if LONG↔SHORT flip
   lastScanCutoff: string;           // '14:35' - no scans after this
+  minDeploymentAgeMinutes: number;  // 10 - block soft swaps (momentum_died/outperformed/stale) on freshly-deployed slots
 }
 
 /**
@@ -74,7 +75,7 @@ export interface SlotStateWithPosition extends SlotState {
  * Retention decision for logging
  */
 type RetentionDecision = 'LOCK' | 'KEEP' | 'SWAP' | 'DEPLOY';
-type SwapReason = 'empty_slot' | 'active_position' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout' | 'in_cooldown' | 'outperformed';
+type SwapReason = 'empty_slot' | 'active_position' | 'armed_signal' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout' | 'in_cooldown' | 'outperformed' | 'too_young';
 
 /**
  * Experimental flags (Profitability Recovery Plan, May 2026)
@@ -115,6 +116,12 @@ export interface ExperimentalFlags {
   pullbackShortConfirmRsiThreshold: number;   // default 40 — SHORT confirm = RSI back below this
   useStructuralStockStop: boolean;            // default true (only effective when enablePullbackEntry)
   structuralStopBufferPct: number;            // default 0.0005 (0.05%) — buffer beyond pullback level
+
+  // Phase 2 fixes — reconcile executor liquidity floor with scanner (Jun 2026)
+  // Scanner accepts options when (oi ≥ oiMultiplier×lot_size) OR (vol ≥ minVolFallback).
+  // Executor must match or scanner-picked stocks get aborted at order time.
+  liquidityOiMultiplier: number;              // default 500 — matches MarketScanner DYNAMIC_OI_MULTIPLIER
+  liquidityMinVolFallback: number;            // default 500 — matches MarketScanner MIN_VOL
 }
 
 export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
@@ -144,6 +151,8 @@ export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
   pullbackShortConfirmRsiThreshold: 40,
   useStructuralStockStop: true,
   structuralStopBufferPct: 0.0005,
+  liquidityOiMultiplier: 500,
+  liquidityMinVolFallback: 500,
 };
 
 /**
@@ -218,6 +227,7 @@ export class StrategyManager {
     lockOnActivePosition: true,
     swapOnBiasFlip: true,
     lastScanCutoff: '14:58',
+    minDeploymentAgeMinutes: 10,
   };
 
   // 5-min scanner timer (setTimeout for precise timing at :05 seconds)
@@ -1670,16 +1680,32 @@ export class StrategyManager {
       // Mark this symbol as deployed
       deployedSymbols.add(slotState.symbol);
       
-      // CASE 2: Has active position → LOCK
+      // CASE 2: Has active position OR an armed Phase 2 signal in flight → LOCK
+      // Phase 2 (Jun 2026 fix): retention must respect in-flight armed state or it destroys
+      // the signal mid-cycle via routine SWAP, triggering the symbol-mismatch guard.
+      // See /memories/repo/phase2-integration.md.
       const status = strategy.getStatus() as any;
       const hasActivePosition = !!status?.positionInfo;
+      const hasArmedSignal = typeof (strategy as any).hasArmedSignal === 'function'
+        ? (strategy as any).hasArmedSignal()
+        : false;
       
-      if (hasActivePosition && this.smartRetentionConfig.lockOnActivePosition) {
-        this.logRetentionDecision(slotIndex, slotState.symbol, 'LOCK', 'active_position', null);
+      if ((hasActivePosition || hasArmedSignal) && this.smartRetentionConfig.lockOnActivePosition) {
+        const lockReason: SwapReason = hasActivePosition ? 'active_position' : 'armed_signal';
+        this.logRetentionDecision(slotIndex, slotState.symbol, 'LOCK', lockReason, null);
         slotState.locked = true;
         continue;
       }
       slotState.locked = false;
+      
+      // Compute slot age once. Soft-swap reasons (stale_breakout, momentum_died, outperformed)
+      // are deferred while a freshly-deployed slot is still warming up. Hard reasons
+      // (not_in_scan, bias_flip, in_cooldown) still fire immediately because they signal
+      // a quality problem with the current symbol, not just churn noise.
+      const slotAgeMin = slotState.deployedAt
+        ? (Date.now() - new Date(slotState.deployedAt).getTime()) / 60000
+        : Infinity;
+      const tooYoungToSoftSwap = slotAgeMin < this.smartRetentionConfig.minDeploymentAgeMinutes;
       
       // Find current stock in new scan results
       const stockInScan = allScored.find(s => s.symbol === slotState.symbol);
@@ -1703,11 +1729,18 @@ export class StrategyManager {
       
       // CASE 4.5: Strategy is stale (3+ candles outside band) - eject to make room for fresh candidates
       // Only swap if no active position (safety check, though hasActivePosition should have caught it earlier)
-      const isStrategyStale = typeof (strategy as any).isStale === 'function' && slotState.lastScanBias
+      // Gated on enableStaleBreakoutFilter so retention behavior matches strategy-side filter
+      const isStrategyStale = this.experimentalFlags.enableStaleBreakoutFilter
+        && typeof (strategy as any).isStale === 'function' && slotState.lastScanBias
         ? (strategy as any).isStale(slotState.lastScanBias)
         : false;
       
       if (isStrategyStale && !hasActivePosition) {
+        if (tooYoungToSoftSwap) {
+          this.logRetentionDecision(slotIndex, slotState.symbol, 'KEEP', 'too_young',
+            `Stale but slot only ${slotAgeMin.toFixed(1)}m old (< ${this.smartRetentionConfig.minDeploymentAgeMinutes}m)`);
+          continue;
+        }
         this.logRetentionDecision(slotIndex, slotState.symbol, 'SWAP', 'stale_breakout',
           `Breakout expired (3+ candles outside band)`);
         await this.swapStrategy(slotIndex, selectedCandidates, deployedSymbols);
@@ -1720,6 +1753,11 @@ export class StrategyManager {
       
       // CASE 5: Score dropped below keepThreshold
       if (stockInScan.score < this.smartRetentionConfig.keepThreshold) {
+        if (tooYoungToSoftSwap) {
+          this.logRetentionDecision(slotIndex, slotState.symbol, 'KEEP', 'too_young',
+            `Score ${stockInScan.score.toFixed(1)} dropped but slot only ${slotAgeMin.toFixed(1)}m old`);
+          continue;
+        }
         this.logRetentionDecision(slotIndex, slotState.symbol, 'SWAP', 'momentum_died',
           `Score ${stockInScan.score.toFixed(1)} < ${this.smartRetentionConfig.keepThreshold}`);
         await this.swapStrategy(slotIndex, selectedCandidates, deployedSymbols);
@@ -1770,9 +1808,19 @@ export class StrategyManager {
       );
       
       if (bestCandidate && (bestCandidate.score - weakest.score) >= OUTPERFORM_SCORE_DELTA) {
-        this.logRetentionDecision(weakest.slotIndex, weakest.symbol, 'SWAP', 'outperformed',
-          `${bestCandidate.symbol} ${bestCandidate.score.toFixed(1)} vs ${weakest.symbol} ${weakest.score.toFixed(1)} (delta ${(bestCandidate.score - weakest.score).toFixed(1)} ≥ ${OUTPERFORM_SCORE_DELTA})`);
-        await this.swapStrategy(weakest.slotIndex, selectedCandidates, deployedSymbols);
+        // Apply min-deployment-age guard to outperform swap as well
+        const weakestSlotState = this.slotStates[weakest.slotIndex];
+        const weakestAgeMin = weakestSlotState?.deployedAt
+          ? (Date.now() - new Date(weakestSlotState.deployedAt).getTime()) / 60000
+          : Infinity;
+        if (weakestAgeMin < this.smartRetentionConfig.minDeploymentAgeMinutes) {
+          this.logRetentionDecision(weakest.slotIndex, weakest.symbol, 'KEEP', 'too_young',
+            `Outperformed by ${bestCandidate.symbol} but only ${weakestAgeMin.toFixed(1)}m old`);
+        } else {
+          this.logRetentionDecision(weakest.slotIndex, weakest.symbol, 'SWAP', 'outperformed',
+            `${bestCandidate.symbol} ${bestCandidate.score.toFixed(1)} vs ${weakest.symbol} ${weakest.score.toFixed(1)} (delta ${(bestCandidate.score - weakest.score).toFixed(1)} ≥ ${OUTPERFORM_SCORE_DELTA})`);
+          await this.swapStrategy(weakest.slotIndex, selectedCandidates, deployedSymbols);
+        }
       }
     }
     
@@ -1959,6 +2007,7 @@ export class StrategyManager {
     const reasonText: Record<SwapReason, string> = {
       'empty_slot': 'Empty slot',
       'active_position': 'Active position (protected)',
+      'armed_signal': 'Armed pullback signal (protected)',
       'still_top_tier': 'Still performing well',
       'momentum_died': 'Momentum dropped',
       'bias_flip': 'Bias reversed',
@@ -1966,6 +2015,7 @@ export class StrategyManager {
       'stale_breakout': 'Breakout too old (3+ candles outside band)',
       'in_cooldown': 'Symbol in cooldown (slot freed)',
       'outperformed': 'Outperformed by better candidate',
+      'too_young': 'Slot too young to swap (deployment age guard)',
     };
     
     // Store decision on slot state for dashboard display
