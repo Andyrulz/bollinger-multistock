@@ -1825,6 +1825,8 @@ class TradingBot {
         
         // Calculate totals
         const totalPnL = allTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+        const totalGrossPnL = allTrades.reduce((sum, t) => sum + (t.grossPnl ?? t.pnl ?? 0), 0);
+        const totalCharges = allTrades.reduce((sum, t) => sum + (t.charges?.totalCharges ?? 0), 0);
         const wins = allTrades.filter(t => (t.pnl || 0) > 0).length;
         const losses = allTrades.filter(t => (t.pnl || 0) < 0).length;
         const winRate = allTrades.length > 0 ? (wins / allTrades.length) * 100 : 0;
@@ -1879,6 +1881,7 @@ class TradingBot {
               <td>${trade.quantity || '—'}</td>
               <td class="pnl-cell ${isProfitable ? 'profit' : 'loss'}">
                 ${isProfitable ? '+' : ''}₹${pnl.toFixed(2)}
+                ${trade.charges ? `<div class="charges-detail">Gross: ${(trade.grossPnl >= 0 ? '+' : '')}₹${(trade.grossPnl || 0).toFixed(2)} | Chg: ₹${trade.charges.totalCharges.toFixed(2)}</div>` : ''}
               </td>
               <td class="exit-reason">${(trade.exitReason || '—').replace(/_/g, ' ')}</td>
               <td class="date-cell">${entryTimeStr}</td>
@@ -2018,6 +2021,13 @@ class TradingBot {
         .pnl-cell.profit { color: #10b981; }
         .pnl-cell.loss { color: #ef4444; }
         
+        .charges-detail {
+            font-size: 0.7rem;
+            font-weight: 400;
+            color: #94a3b8;
+            margin-top: 2px;
+        }
+        
         .slot-badge {
             display: inline-block;
             padding: 2px 8px;
@@ -2084,6 +2094,14 @@ class TradingBot {
             <div class="summary-card ${winRate >= 50 ? 'profit' : ''}">
                 <div class="summary-label">Win Rate</div>
                 <div class="summary-value ${winRate >= 50 ? 'profit' : ''}">${winRate.toFixed(1)}%</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-label">Total Charges</div>
+                <div class="summary-value" style="color: #f59e0b;">₹${totalCharges.toFixed(2)}</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-label">Gross P&L</div>
+                <div class="summary-value ${totalGrossPnL >= 0 ? 'profit' : 'loss'}">${totalGrossPnL >= 0 ? '+' : ''}₹${totalGrossPnL.toFixed(2)}</div>
             </div>
         </div>
         
@@ -2388,7 +2406,18 @@ class TradingBot {
         const currentPrice = (status as any).currentStockPrice || (status as any).currentNiftyPrice || 0;
         const signalSymbol = (status as any).signalSymbol || 'N/A';
         const positionInfo = (status as any).positionInfo || null;
-        
+
+        // Resolve live experimental-flag state for THIS slot so the rendered
+        // entry rules reflect what the bot is actually doing right now.
+        const slotMatch = strategyId.match(/bollinger-slot(\d+)-/);
+        const slotIndex = slotMatch && slotMatch[1] ? parseInt(slotMatch[1], 10) - 1 : -1;
+        const expFlags = StrategyManager.getExperimentalFlags();
+        const pullbackActive = !!(expFlags.enablePullbackEntry
+          && Array.isArray(expFlags.pullbackSlots)
+          && expFlags.pullbackSlots.includes(slotIndex));
+        const shortsEnabled = !!expFlags.enableShortEntries;
+        const structuralStopOn = pullbackActive && !!expFlags.useStructuralStockStop;
+
         // Helper functions for styling
         const getStrengthBadge = (strength: string) => {
           const colors: any = { 'SIGNAL': '#10b981', 'STRONG': '#3b82f6', 'WEAK': '#f59e0b', 'NO_SIGNAL': '#ef4444', 'NO_DATA': '#6b7280' };
@@ -2819,29 +2848,83 @@ class TradingBot {
     
     <!-- Strategy Rules -->
     <div class="section">
-      <div class="section-title">📋 Strategy Rules (${signalSymbol} Options)</div>
+      <div class="section-title">
+        📋 Strategy Rules (${signalSymbol} Options)
+        <span style="margin-left:10px; padding:3px 10px; border-radius:10px; font-size:0.75rem; font-weight:600; background:${pullbackActive ? '#a78bfa' : '#94a3b8'}; color:white;">
+          ${pullbackActive ? '🎯 PULLBACK MODE' : '⚡ IMMEDIATE MODE'}
+        </span>
+        ${!shortsEnabled ? '<span style="margin-left:6px; padding:3px 10px; border-radius:10px; font-size:0.75rem; font-weight:600; background:#fca5a5; color:#7f1d1d;">SHORTS DISABLED</span>' : ''}
+      </div>
       <div class="grid-2">
         <div class="rules-box">
           <strong class="text-green">🚀 LONG Entry (Buy ${signalSymbol} CE)</strong>
+          ${pullbackActive ? `
+          <div style="margin-top:8px; padding:8px; background:#ede9fe; border-radius:6px; font-size:0.85rem;">
+            <div style="font-weight:600; color:#5b21b6; margin-bottom:4px;">🎯 ARM — signal candle must satisfy:</div>
+            <ul class="rules-list" style="margin:4px 0 6px 0;">
+              <li>${signalSymbol} Close > Bollinger Upper Band</li>
+              <li>RSI between 68–85</li>
+              <li>Supertrend = UP</li>
+              <li>${signalSymbol} above R1 or Previous Day High</li>
+            </ul>
+            <div style="font-weight:600; color:#5b21b6; margin:6px 0 4px 0;">📉 PULLBACK — within ${expFlags.pullbackArmTimeoutCandles} candles:</div>
+            <ul class="rules-list" style="margin:4px 0 6px 0;">
+              <li>RSI cools below ${expFlags.pullbackLongRsiThreshold}</li>
+              <li>Price retreats from signal-candle high</li>
+              <li>Abandon if price extends > ${(expFlags.pullbackAbandonOnExtensionPct * 100).toFixed(1)}% past signal</li>
+            </ul>
+            <div style="font-weight:600; color:#5b21b6; margin:6px 0 4px 0;">✅ CONFIRM — within ${expFlags.pullbackConfirmTimeoutCandles} candles:</div>
+            <ul class="rules-list" style="margin:4px 0 0 0;">
+              <li>Resumption candle closes above signal-candle high</li>
+              <li>RSI back ≥ ${expFlags.pullbackLongConfirmRsiThreshold} → entry fires</li>
+            </ul>
+          </div>
+          ` : `
           <ul class="rules-list">
             <li>${signalSymbol} Price > Bollinger Upper Band</li>
             <li>RSI between 68-85 (overbought momentum)</li>
             <li>Supertrend = UP</li>
             <li>${signalSymbol} Price above R1 or Previous Day High</li>
           </ul>
-          <div class="exit-rule">Exit: 5-min Candle Close < Supertrend (10,2)</div>
+          `}
+          <div class="exit-rule">Exit: 5-min Close < Supertrend (10,2)${structuralStopOn ? ` &nbsp;|&nbsp; Structural stop: ${signalSymbol} breaks pullback low − ${(expFlags.structuralStopBufferPct * 100).toFixed(2)}%` : ''} &nbsp;|&nbsp; Emergency −5% premium</div>
         </div>
-        <div class="rules-box short">
+        <div class="rules-box short" style="${shortsEnabled ? '' : 'opacity:0.55; position:relative;'}">
           <strong class="text-red">🔻 SHORT Entry (Buy ${signalSymbol} PE)</strong>
+          ${!shortsEnabled ? '<div style="display:inline-block; margin-left:8px; padding:2px 8px; border-radius:6px; font-size:0.7rem; font-weight:700; background:#7f1d1d; color:white;">DISABLED</div>' : ''}
+          ${pullbackActive && shortsEnabled ? `
+          <div style="margin-top:8px; padding:8px; background:#ede9fe; border-radius:6px; font-size:0.85rem;">
+            <div style="font-weight:600; color:#5b21b6; margin-bottom:4px;">🎯 ARM — signal candle must satisfy:</div>
+            <ul class="rules-list" style="margin:4px 0 6px 0;">
+              <li>${signalSymbol} Close < Bollinger Lower Band</li>
+              <li>RSI between 15–40</li>
+              <li>Supertrend = DOWN</li>
+              <li>${signalSymbol} below S1 or Previous Day Low</li>
+            </ul>
+            <div style="font-weight:600; color:#5b21b6; margin:6px 0 4px 0;">📈 PULLBACK — within ${expFlags.pullbackArmTimeoutCandles} candles:</div>
+            <ul class="rules-list" style="margin:4px 0 6px 0;">
+              <li>RSI rises above ${expFlags.pullbackShortRsiThreshold}</li>
+              <li>Price rallies from signal-candle low</li>
+              <li>Abandon if price extends > ${(expFlags.pullbackAbandonOnExtensionPct * 100).toFixed(1)}% past signal</li>
+            </ul>
+            <div style="font-weight:600; color:#5b21b6; margin:6px 0 4px 0;">✅ CONFIRM — within ${expFlags.pullbackConfirmTimeoutCandles} candles:</div>
+            <ul class="rules-list" style="margin:4px 0 0 0;">
+              <li>Resumption candle closes below signal-candle low</li>
+              <li>RSI back ≤ ${expFlags.pullbackShortConfirmRsiThreshold} → entry fires</li>
+            </ul>
+          </div>
+          ` : `
           <ul class="rules-list">
             <li>${signalSymbol} Price < Bollinger Lower Band</li>
             <li>RSI between 15-40 (oversold momentum)</li>
             <li>Supertrend = DOWN</li>
             <li>${signalSymbol} Price below S1 or Previous Day Low</li>
           </ul>
-          <div class="exit-rule short">Exit: 5-min Candle Close > MIN(Supertrend, BB Middle)</div>
+          `}
+          <div class="exit-rule short">Exit: 5-min Close > MIN(Supertrend, BB Middle)${structuralStopOn && shortsEnabled ? ` &nbsp;|&nbsp; Structural stop: ${signalSymbol} breaks pullback high + ${(expFlags.structuralStopBufferPct * 100).toFixed(2)}%` : ''} &nbsp;|&nbsp; Emergency −5% premium</div>
         </div>
       </div>
+      ${pullbackActive ? `<div style="margin-top:12px; padding:10px 14px; background:#f5f3ff; border-left:3px solid #8b5cf6; border-radius:6px; font-size:0.85rem; color:#4c1d95;"><strong>Slot ${slotIndex + 1} is in Pullback A/B group.</strong> Bot waits for an ARMED signal, a pullback, then a confirmation candle before entering. Other slots remain on immediate entry.</div>` : `<div style="margin-top:12px; padding:10px 14px; background:#f1f5f9; border-left:3px solid #94a3b8; border-radius:6px; font-size:0.85rem; color:#475569;"><strong>Immediate entry mode.</strong> Bot enters on the signal candle close as soon as all conditions are met. Pullback flag is OFF for this slot (enablePullbackEntry=${expFlags.enablePullbackEntry}, pullbackSlots=[${(expFlags.pullbackSlots || []).join(',')}]).</div>`}
     </div>
     
     <!-- Performance Metrics -->
