@@ -83,7 +83,10 @@
       "pullbackLongConfirmRsiThreshold": 60,
       "pullbackShortConfirmRsiThreshold": 40,
       "useStructuralStockStop": true,
-      "structuralStopBufferPct": 0.0005
+      "structuralStopBufferPct": 0.0005,
+      "_liquidity_comment": "Phase 2 fix Jun 2026 — executor liquidity gate now matches scanner: accept if (oi >= multiplier*lot_size) OR (vol >= minVolFallback). Was hardcoded oi>=10000 which rejected scanner-picked NIFTY 100 stocks like BOSCHLTD.",
+      "liquidityOiMultiplier": 500,
+      "liquidityMinVolFallback": 500
     }
   }
 }

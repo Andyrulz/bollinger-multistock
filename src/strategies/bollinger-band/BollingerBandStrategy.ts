@@ -3388,6 +3388,7 @@ export class BollingerBandStrategy extends StrategyBase {
         r1: r1.toFixed(2),
         previousDayHigh: this.previousDayHigh.toFixed(2)
       });
+      this.logSignalLifecycle('DETECTED', 'LONG', null, { close, rsi, mode: this.isPullbackActiveForThisSlot(expFlags) ? 'pullback' : 'immediate' });
       
       // ═══════════════════════════════════════════════════════════════
       // EXTENDED GAP TRAP FILTER (LONG) — gated P1.2
@@ -3517,6 +3518,7 @@ export class BollingerBandStrategy extends StrategyBase {
         s1: s1.toFixed(2),
         previousDayLow: this.previousDayLow.toFixed(2)
       });
+      this.logSignalLifecycle('DETECTED', 'SHORT', null, { close, rsi, mode: this.isPullbackActiveForThisSlot(expFlags) ? 'pullback' : 'immediate' });
 
       // ═══════════════════════════════════════════════════════════════
       // EXTENDED GAP TRAP FILTER (SHORT) — gated P1.2
@@ -3627,6 +3629,36 @@ export class BollingerBandStrategy extends StrategyBase {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
+   * Public accessor used by StrategyManager.runScannerCycle to LOCK the slot
+   * while a pullback is in flight. Without this, retention can swap the slot
+   * symbol mid-arm and the symbol-mismatch guard discards the signal.
+   */
+  public hasArmedSignal(): boolean {
+    return this.currentArmedSignal !== null;
+  }
+
+  /**
+   * Structured one-line lifecycle event for greppable post-mortem analysis.
+   * Co-exists with the existing emoji logs; adds a parseable shape.
+   */
+  private logSignalLifecycle(
+    stage: 'DETECTED' | 'ARMED' | 'PULLBACK_SEEN' | 'CONFIRMED' | 'ABANDONED' | 'ENTRY_REJECTED' | 'ENTRY_FILLED' | 'EXIT_FIRED',
+    direction: 'LONG' | 'SHORT',
+    reason: string | null = null,
+    extra: Record<string, unknown> = {}
+  ): void {
+    this.logger.info('SIGNAL_LIFECYCLE', {
+      event: 'SIGNAL_LIFECYCLE',
+      stage,
+      direction,
+      slot: this.slotIndex + 1,
+      symbol: this.signalSymbol,
+      reason,
+      ...extra,
+    });
+  }
+
+  /**
    * Returns true if pullback mode is enabled AND this strategy's slot is in pullbackSlots.
    */
   private isPullbackActiveForThisSlot(flags: ExperimentalFlags): boolean {
@@ -3662,6 +3694,7 @@ export class BollingerBandStrategy extends StrategyBase {
       signalRsi: signalRsi.toFixed(2),
       armTimeoutCandles: flags.pullbackArmTimeoutCandles,
     });
+    this.logSignalLifecycle('ARMED', direction, null, { signalClose: signalCandle.close, signalRsi });
     this.saveCapitalData();
   }
 
@@ -3685,6 +3718,7 @@ export class BollingerBandStrategy extends StrategyBase {
         candlesElapsed: armed.candlesElapsedSinceArm,
         pullbackSeen: armed.pullbackSeen,
       });
+      this.logSignalLifecycle('ABANDONED', armed.direction, abandonReason, { candlesElapsed: armed.candlesElapsedSinceArm, pullbackSeen: armed.pullbackSeen });
       this.currentArmedSignal = null;
       this.saveCapitalData();
       return;
@@ -3708,6 +3742,7 @@ export class BollingerBandStrategy extends StrategyBase {
             currentRsi: currentRsi.toFixed(2),
             confirmTimeoutCandles: flags.pullbackConfirmTimeoutCandles,
           });
+          this.logSignalLifecycle('PULLBACK_SEEN', 'LONG', null, { pullbackLow: armed.pullbackLow, currentClose: latestCandle.close, currentRsi });
           this.saveCapitalData();
         }
       } else {
@@ -3725,6 +3760,7 @@ export class BollingerBandStrategy extends StrategyBase {
             currentRsi: currentRsi.toFixed(2),
             confirmTimeoutCandles: flags.pullbackConfirmTimeoutCandles,
           });
+          this.logSignalLifecycle('PULLBACK_SEEN', 'SHORT', null, { pullbackHigh: armed.pullbackHigh, currentClose: latestCandle.close, currentRsi });
           this.saveCapitalData();
         }
       }
@@ -3820,6 +3856,7 @@ export class BollingerBandStrategy extends StrategyBase {
       structuralStop: structuralStopPrice.toFixed(2),
       armedToConfirmCandles: armed.candlesElapsedSinceArm,
     });
+    this.logSignalLifecycle('CONFIRMED', armed.direction, null, { signalClose: armed.signalCandleClose, pullbackLevel, confirmClose: close, structuralStop: structuralStopPrice, armedToConfirmCandles: armed.candlesElapsedSinceArm });
 
     // Reuse the existing retry-wrapped entry path. We don't have a stale-breakout
     // consecutive count in pullback mode — pass 0 (immediate-mode passes the real count
@@ -5433,6 +5470,8 @@ export class BollingerBandStrategy extends StrategyBase {
       // Step 1.5a: LIQUIDITY GUARD - Reject low-premium options for ENTRY only (high slippage, low liquidity)
       // EXIT orders must ALWAYS be allowed regardless of premium — blocking exits causes stuck positions
       const MIN_OPTION_PREMIUM = 40; // Minimum ₹40 premium required for entry (data: ₹20-40 range toxic)
+      // For lifecycle: direction is derivable from CE/PE suffix (CE bought = LONG, PE bought = SHORT)
+      const inferredDirection: 'LONG' | 'SHORT' = String(instrument.tradingsymbol || '').endsWith('CE') ? 'LONG' : 'SHORT';
       if (ltp < MIN_OPTION_PREMIUM && transaction === 'BUY') {
         this.logger.error(`❌ LIQUIDITY GUARD: Option premium ₹${ltp.toFixed(2)} is below minimum ₹${MIN_OPTION_PREMIUM}`, {
           instrument: instrument.tradingsymbol,
@@ -5440,6 +5479,7 @@ export class BollingerBandStrategy extends StrategyBase {
           minRequired: MIN_OPTION_PREMIUM,
           reason: 'Penny options have high slippage and low liquidity - entry rejected for safety'
         });
+        this.logSignalLifecycle('ENTRY_REJECTED', inferredDirection, 'low_premium', { instrument: instrument.tradingsymbol, ltp, minRequired: MIN_OPTION_PREMIUM });
         return { success: false, price: 0 };
       }
       if (ltp < MIN_OPTION_PREMIUM && transaction === 'SELL') {
@@ -5449,25 +5489,35 @@ export class BollingerBandStrategy extends StrategyBase {
         });
       }
       
-      // Step 1.5b: LIQUIDITY GUARD - Hard OI floor before execution (ENTRY only)
-      // EXIT orders must ALWAYS proceed — a stuck position is worse than slippage
-      // OI is the true liquidity signal; volume can be misleading (a few retail orders spike it)
-      const CRITICAL_OI = 10000;   // Hard minimum OI floor for entries
+      // Step 1.5b: LIQUIDITY GUARD - Dynamic OI floor reconciled with scanner (ENTRY only)
+      // EXIT orders must ALWAYS proceed — a stuck position is worse than slippage.
+      // Scanner rule (MarketScanner.ts ~L1217): accept if (oi ≥ oiMultiplier×lot) OR (vol ≥ minVolFallback).
+      // Previously this guard used a flat oi ≥ 10000 floor that did NOT match the scanner; result was
+      // scanner-picked stocks (e.g. BOSCHLTD) repeatedly aborted at execution time.
+      // Both thresholds are tunable via experimental.liquidityOiMultiplier / liquidityMinVolFallback.
+      const expFlags = StrategyManager.getExperimentalFlags();
+      const lotSize = instrument.lot_size || 1;
+      const dynamicMinOI = (expFlags.liquidityOiMultiplier ?? 500) * lotSize;
+      const minVolFallback = expFlags.liquidityMinVolFallback ?? 500;
       const oi = quoteData?.oi || 0;
       const volume = quoteData?.volume || 0;
+      const liquidityOk = oi >= dynamicMinOI || volume >= minVolFallback;
       
-      if (oi < CRITICAL_OI && transaction === 'BUY') {
-        this.logger.error(`❌ EXECUTION ABORTED: OI below safety floor! ${instrument.tradingsymbol} - OI:${oi} Vol:${volume} (Need OI≥${CRITICAL_OI})`, {
+      if (!liquidityOk && transaction === 'BUY') {
+        this.logger.error(`❌ EXECUTION ABORTED: Insufficient liquidity ${instrument.tradingsymbol} — OI:${oi} (need ≥${dynamicMinOI}) Vol:${volume} (or ≥${minVolFallback})`, {
           instrument: instrument.tradingsymbol,
           oi,
           volume,
-          criticalOI: CRITICAL_OI,
-          reason: 'Option OI below minimum threshold - entry aborted for safety'
+          dynamicMinOI,
+          minVolFallback,
+          lotSize,
+          reason: 'Both OI and Vol below thresholds - entry aborted for safety'
         });
+        this.logSignalLifecycle('ENTRY_REJECTED', inferredDirection, 'low_liquidity', { instrument: instrument.tradingsymbol, oi, volume, dynamicMinOI, minVolFallback, lotSize });
         return { success: false, price: 0 };
       }
-      if (oi < CRITICAL_OI && transaction === 'SELL') {
-        this.logger.warn(`⚠️ LIQUIDITY WARNING: Low OI exit - OI:${oi} Vol:${volume} - proceeding with exit anyway`, {
+      if (!liquidityOk && transaction === 'SELL') {
+        this.logger.warn(`⚠️ LIQUIDITY WARNING: Low liquidity exit - OI:${oi} Vol:${volume} - proceeding with exit anyway`, {
           instrument: instrument.tradingsymbol
         });
       }
@@ -5496,6 +5546,7 @@ export class BollingerBandStrategy extends StrategyBase {
               maxAllowed: MAX_SPREAD_PERCENT,
               reason: 'Wide bid-ask spread indicates high impact cost - entry rejected for safety'
             });
+            this.logSignalLifecycle('ENTRY_REJECTED', inferredDirection, 'wide_spread', { instrument: instrument.tradingsymbol, bestBid, bestAsk, spreadPercent: Number(spreadPercent.toFixed(2)), maxAllowed: MAX_SPREAD_PERCENT });
             return { success: false, price: 0 };
           }
           
