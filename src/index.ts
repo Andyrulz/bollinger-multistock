@@ -2415,8 +2415,11 @@ class TradingBot {
         const pullbackActive = !!(expFlags.enablePullbackEntry
           && Array.isArray(expFlags.pullbackSlots)
           && expFlags.pullbackSlots.includes(slotIndex));
+        const fvgActive = !!(expFlags.enableFvgEntry
+          && Array.isArray(expFlags.fvgSlots)
+          && expFlags.fvgSlots.includes(slotIndex));
         const shortsEnabled = !!expFlags.enableShortEntries;
-        const structuralStopOn = pullbackActive && !!expFlags.useStructuralStockStop;
+        const structuralStopOn = (pullbackActive || fvgActive) && !!expFlags.useStructuralStockStop;
 
         // Helper functions for styling
         const getStrengthBadge = (strength: string) => {
@@ -2850,15 +2853,39 @@ class TradingBot {
     <div class="section">
       <div class="section-title">
         📋 Strategy Rules (${signalSymbol} Options)
-        <span style="margin-left:10px; padding:3px 10px; border-radius:10px; font-size:0.75rem; font-weight:600; background:${pullbackActive ? '#a78bfa' : '#94a3b8'}; color:white;">
-          ${pullbackActive ? '🎯 PULLBACK MODE' : '⚡ IMMEDIATE MODE'}
+        <span style="margin-left:10px; padding:3px 10px; border-radius:10px; font-size:0.75rem; font-weight:600; background:${fvgActive ? '#f59e0b' : pullbackActive ? '#a78bfa' : '#94a3b8'}; color:white;">
+          ${fvgActive ? '📐 FVG MODE' : pullbackActive ? '🎯 PULLBACK MODE' : '⚡ IMMEDIATE MODE'}
         </span>
         ${!shortsEnabled ? '<span style="margin-left:6px; padding:3px 10px; border-radius:10px; font-size:0.75rem; font-weight:600; background:#fca5a5; color:#7f1d1d;">SHORTS DISABLED</span>' : ''}
       </div>
       <div class="grid-2">
         <div class="rules-box">
           <strong class="text-green">🚀 LONG Entry (Buy ${signalSymbol} CE)</strong>
-          ${pullbackActive ? `
+          ${fvgActive ? `
+          <div style="margin-top:8px; padding:8px; background:#fef3c7; border-radius:6px; font-size:0.85rem;">
+            <div style="font-weight:600; color:#78350f; margin-bottom:4px;">🎯 ARM — signal candle must satisfy:</div>
+            <ul class="rules-list" style="margin:4px 0 6px 0;">
+              <li>${signalSymbol} Close > Bollinger Upper Band</li>
+              <li>RSI between 68–85, Supertrend = UP</li>
+              <li>${signalSymbol} above R1 or Previous Day High</li>
+            </ul>
+            <div style="font-weight:600; color:#78350f; margin:6px 0 4px 0;">📐 FVG SCAN — within ${expFlags.fvgMaxScanCandles} candles:</div>
+            <ul class="rules-list" style="margin:4px 0 6px 0;">
+              <li>Find 3-candle bullish gap: c1.high &lt; c3.low</li>
+              <li>Min gap width = ${(expFlags.fvgMinGapPct * 100).toFixed(2)}% of impulse close</li>
+            </ul>
+            <div style="font-weight:600; color:#78350f; margin:6px 0 4px 0;">🎯 TRIGGER — first wick into FVG zone:</div>
+            <ul class="rules-list" style="margin:4px 0 6px 0;">
+              <li>Trigger = candle high. Ratchets DOWN on lower-high candles inside FVG</li>
+              <li>Entry fires when later candle.high ≥ trigger</li>
+            </ul>
+            <div style="font-weight:600; color:#78350f; margin:6px 0 4px 0;">❌ INVALIDATE:</div>
+            <ul class="rules-list" style="margin:4px 0 0 0;">
+              <li>${expFlags.fvgInvalidateOnFloorClose ? 'Any candle close below FVG floor → cancel + free slot' : 'Floor-close invalidation OFF'}</li>
+              <li>SL on entry = c2.low − ${(expFlags.structuralStopBufferPct * 100).toFixed(2)}%</li>
+            </ul>
+          </div>
+          ` : pullbackActive ? `
           <div style="margin-top:8px; padding:8px; background:#ede9fe; border-radius:6px; font-size:0.85rem;">
             <div style="font-weight:600; color:#5b21b6; margin-bottom:4px;">🎯 ARM — signal candle must satisfy:</div>
             <ul class="rules-list" style="margin:4px 0 6px 0;">
@@ -2924,7 +2951,7 @@ class TradingBot {
           <div class="exit-rule short">Exit: 5-min Close > MIN(Supertrend, BB Middle)${structuralStopOn && shortsEnabled ? ` &nbsp;|&nbsp; Structural stop: ${signalSymbol} breaks pullback high + ${(expFlags.structuralStopBufferPct * 100).toFixed(2)}%` : ''} &nbsp;|&nbsp; Emergency −5% premium</div>
         </div>
       </div>
-      ${pullbackActive ? `<div style="margin-top:12px; padding:10px 14px; background:#f5f3ff; border-left:3px solid #8b5cf6; border-radius:6px; font-size:0.85rem; color:#4c1d95;"><strong>Slot ${slotIndex + 1} is in Pullback A/B group.</strong> Bot waits for an ARMED signal, a pullback, then a confirmation candle before entering. Other slots remain on immediate entry.</div>` : `<div style="margin-top:12px; padding:10px 14px; background:#f1f5f9; border-left:3px solid #94a3b8; border-radius:6px; font-size:0.85rem; color:#475569;"><strong>Immediate entry mode.</strong> Bot enters on the signal candle close as soon as all conditions are met. Pullback flag is OFF for this slot (enablePullbackEntry=${expFlags.enablePullbackEntry}, pullbackSlots=[${(expFlags.pullbackSlots || []).join(',')}]).</div>`}
+      ${fvgActive ? `<div style="margin-top:12px; padding:10px 14px; background:#fffbeb; border-left:3px solid #f59e0b; border-radius:6px; font-size:0.85rem; color:#78350f;"><strong>Slot ${slotIndex + 1} is in FVG retrace A/B group (LONG-only v1).</strong> Bot ARMs on signal, scans up to ${expFlags.fvgMaxScanCandles} candles for a bullish FVG (≥${(expFlags.fvgMinGapPct*100).toFixed(2)}% gap), waits for retrace into the gap, then enters on a higher-high breach. SL = c2.low. Strict floor-close invalidation${expFlags.fvgInvalidateOnFloorClose ? ' ON' : ' OFF'}.</div>` : pullbackActive ? `<div style="margin-top:12px; padding:10px 14px; background:#f5f3ff; border-left:3px solid #8b5cf6; border-radius:6px; font-size:0.85rem; color:#4c1d95;"><strong>Slot ${slotIndex + 1} is in Pullback A/B group.</strong> Bot waits for an ARMED signal, a pullback, then a confirmation candle before entering. Other slots remain on immediate entry.</div>` : `<div style="margin-top:12px; padding:10px 14px; background:#f1f5f9; border-left:3px solid #94a3b8; border-radius:6px; font-size:0.85rem; color:#475569;"><strong>Immediate entry mode.</strong> Bot enters on the signal candle close as soon as all conditions are met. Pullback flag is OFF for this slot (enablePullbackEntry=${expFlags.enablePullbackEntry}, pullbackSlots=[${(expFlags.pullbackSlots || []).join(',')}]).</div>`}
     </div>
     
     <!-- Performance Metrics -->

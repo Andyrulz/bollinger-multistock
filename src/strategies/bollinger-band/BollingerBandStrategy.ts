@@ -121,6 +121,28 @@ interface ArmedSignalState {
   candlesSincePullback: number;    // counter after pullback confirmed, for confirm-timeout
 }
 
+// Phase 3: FVG retrace watch state. LONG-only in v1. Persisted same as ArmedSignalState.
+interface FvgWatchState {
+  direction: 'LONG';               // SHORT not implemented in v1
+  signalSymbol: string;            // Zombie guard
+  armedAtCandle: Date;
+  armedAtWallClock: Date;
+  signalCandleClose: number;       // For telemetry
+  candlesScannedSinceArm: number;  // Window counter for FVG scan
+  lastProgressedCandleTs: Date | null; // Dedup guard — each candle progresses the SM exactly once
+  // FVG (null until 3-candle pattern with valid gap is found)
+  fvg: {
+    floor: number;                 // C1.high — bottom of gap
+    ceiling: number;               // C3.low — top of gap (also FVG-touch threshold)
+    slLevel: number;               // C2.low — structural stop
+    impulseTimestamp: Date;
+    width: number;                 // ceiling - floor
+  } | null;
+  // Trigger (null until first wick into FVG zone)
+  trigger: number | null;          // current ratcheted high; entry fires when later candle's high >= this
+  triggerCandleTimestamp: Date | null;
+}
+
 export class BollingerBandStrategy extends StrategyBase {
   
   // Configuration constants - Default capital per slot
@@ -189,6 +211,9 @@ export class BollingerBandStrategy extends StrategyBase {
 
   // Phase 2: Armed-but-unentered signal waiting for pullback + confirmation
   private currentArmedSignal: ArmedSignalState | null = null;
+
+  // Phase 3: FVG retrace watch state (slot 3 only, mutually exclusive with currentArmedSignal)
+  private currentFvgWatch: FvgWatchState | null = null;
   
   // 5-minute candle building
   private currentCandle: CurrentCandle | null = null;
@@ -382,12 +407,38 @@ export class BollingerBandStrategy extends StrategyBase {
             });
           }
         }
+
+        // Phase 3: Restore FVG watch (same guards as armed pullback)
+        if (data.fvgWatch) {
+          const fvgRestored = data.fvgWatch as FvgWatchState;
+          fvgRestored.armedAtCandle = new Date(fvgRestored.armedAtCandle);
+          fvgRestored.armedAtWallClock = new Date(fvgRestored.armedAtWallClock);
+          if (fvgRestored.fvg) fvgRestored.fvg.impulseTimestamp = new Date(fvgRestored.fvg.impulseTimestamp);
+          if (fvgRestored.triggerCandleTimestamp) fvgRestored.triggerCandleTimestamp = new Date(fvgRestored.triggerCandleTimestamp);
+          if (fvgRestored.lastProgressedCandleTs) fvgRestored.lastProgressedCandleTs = new Date(fvgRestored.lastProgressedCandleTs);
+
+          const configSymbol = this.config.instruments?.[0];
+          if (configSymbol && fvgRestored.signalSymbol && fvgRestored.signalSymbol !== configSymbol) {
+            this.logger.warn(`⚠️ Discarding FVG watch — symbol mismatch (armed for ${fvgRestored.signalSymbol}, slot now ${configSymbol})`);
+          } else if ((Date.now() - fvgRestored.armedAtWallClock.getTime()) > 60 * 60 * 1000) {
+            const ageMin = ((Date.now() - fvgRestored.armedAtWallClock.getTime()) / 60000).toFixed(1);
+            this.logger.warn(`⚠️ Discarding FVG watch — stale (${ageMin} min old, max 60 min)`);
+          } else {
+            this.currentFvgWatch = fvgRestored;
+            this.logger.info(`🔄 Restored FVG watch for ${fvgRestored.signalSymbol}`, {
+              candlesScanned: fvgRestored.candlesScannedSinceArm,
+              hasFvg: !!fvgRestored.fvg,
+              hasTrigger: fvgRestored.trigger !== null,
+            });
+          }
+        }
         
         this.logger.info('💰 Bollinger Band capital loaded', {
           capital: this.currentCapital,
           totalTrades: this.tradeHistory.length,
           hasActivePosition: !!data.activePosition,
-          hasArmedSignal: !!this.currentArmedSignal
+          hasArmedSignal: !!this.currentArmedSignal,
+          hasFvgWatch: !!this.currentFvgWatch
         });
       } else {
         // Create initial data file
@@ -419,6 +470,7 @@ export class BollingerBandStrategy extends StrategyBase {
         tradeHistory: this.tradeHistory,
         activePosition: this.currentPosition, // P0: Persist active position
         armedSignal: this.currentArmedSignal, // Phase 2: Persist armed-but-unentered signal
+        fvgWatch: this.currentFvgWatch, // Phase 3: Persist FVG retrace watch
         rsiTrailState: this.currentPosition ? {
           activated: this.rsiTrailActivated,
           floorPrice: this.rsiTrailFloorPrice,
@@ -483,6 +535,7 @@ export class BollingerBandStrategy extends StrategyBase {
         // Purge the ghost position from disk to prevent repeated warnings
         this.currentPosition = null;
         this.currentArmedSignal = null; // Phase 2: also clear any armed signal from prior symbol
+        this.currentFvgWatch = null;    // Phase 3: clear any FVG watch from prior symbol
         this.saveCapitalData(); // This saves capital but clears activePosition
         return;
       }
@@ -1850,6 +1903,25 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
+   * Floor a candle timestamp to its canonical 5-minute boundary.
+   *
+   * WHY: Kite returns the SAME 5-min bar with different sub-minute timestamps
+   * depending on the fetch range. The multi-day seed fetch (loadHistoricalData)
+   * yields clean :00 boundaries, while the narrow live fetch
+   * (fetchAndProcess5MinCandle, from = now-10min) echoes the request's seconds
+   * into the candle date (e.g. :07). Without normalization, the in-bar partial
+   * (:00) and the completed bar (:07) compare as DIFFERENT candles in the dedup
+   * logic, producing a duplicate that shifts indicator/FVG windows by one slot.
+   * Flooring to the 5-min epoch boundary makes both representations identical so
+   * the dedup correctly UPDATES the bar in place. The +5:30 IST offset is a
+   * multiple of 5 minutes, so epoch flooring lands exactly on IST boundaries.
+   */
+  private floorTo5Min(date: Date): Date {
+    const FIVE_MIN_MS = 5 * 60 * 1000;
+    return new Date(Math.floor(date.getTime() / FIVE_MIN_MS) * FIVE_MIN_MS);
+  }
+
+  /**
    * Load 7 days of historical candles for signal stock (e.g., BRITANNIA, TCS)
    * Handle weekends/holidays by extending lookback up to 14 days if needed
    */
@@ -1876,8 +1948,9 @@ export class BollingerBandStrategy extends StrategyBase {
         
         if (historicalData && historicalData.length >= requiredCandles) {
           // Convert KiteConnect format to our Candle interface
+          // Floor to 5-min boundary so seed candles align with live-fetched candles (dedup integrity).
           this.candleHistory = historicalData.map((kiteCandle: any) => ({
-            timestamp: new Date(kiteCandle.date),
+            timestamp: this.floorTo5Min(new Date(kiteCandle.date)),
             open: kiteCandle.open,
             high: kiteCandle.high,
             low: kiteCandle.low,
@@ -1956,7 +2029,7 @@ export class BollingerBandStrategy extends StrategyBase {
     }
     
     this.candleHistory = cacheData.candles.map((candle: any) => ({
-      timestamp: new Date(candle.timestamp),
+      timestamp: this.floorTo5Min(new Date(candle.timestamp)),
       open: candle.open,
       high: candle.high,
       low: candle.low,
@@ -2616,7 +2689,9 @@ export class BollingerBandStrategy extends StrategyBase {
       if (historicalData && historicalData.length > 0) {
         const latestCandle = historicalData[historicalData.length - 1];
         const newCandle: Candle = {
-          timestamp: new Date(latestCandle.date),
+          // Floor to 5-min boundary so this live candle's timestamp matches the
+          // same bar from the seed fetch (prevents duplicate-candle insertion).
+          timestamp: this.floorTo5Min(new Date(latestCandle.date)),
           open: latestCandle.open,
           high: latestCandle.high,
           low: latestCandle.low,
@@ -3282,21 +3357,29 @@ export class BollingerBandStrategy extends StrategyBase {
     const now = new Date();
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
-    // 🍽️ LUNCH ZONE BLOCK: No new entries 11:00 IST → configurable end (default 13:00 IST)
-    // Data: 12:00-13:30 was worst time bucket; 12:30 bucket alone lost ₹24K post-deploy.
+    // 🍽️ LUNCH ZONE BLOCK: No new IMMEDIATE entries 11:00 IST → configurable end (default 13:00 IST)
+    // Pullback (Slot 2) and FVG (Slot 3) slots are allowed to arm and progress through lunch
+    // so a setup forming mid-lunch can convert when the window reopens.
+    // Data: 12:00-13:30 was worst time bucket for immediate entries; 12:30 bucket alone lost ₹24K.
     const lunchEnd = expFlags.lunchBlockEndMinutesIst; // default 780 (13:00)
     if (currentMinutes >= 11 * 60 && currentMinutes < lunchEnd) {
-      this.logger.debug(`🍽️ Entry blocked - Lunch zone (11:00 IST until ${Math.floor(lunchEnd / 60)}:${String(lunchEnd % 60).padStart(2, '0')})`);
-      return;
+      const allowLateArm = this.isPullbackActiveForThisSlot(expFlags) || this.isFvgActiveForThisSlot(expFlags);
+      if (!allowLateArm) {
+        this.logger.debug(`🍽️ Entry blocked - Lunch zone (11:00 IST until ${Math.floor(lunchEnd / 60)}:${String(lunchEnd % 60).padStart(2, '0')}) (immediate slot)`);
+        return;
+      }
     }
 
-    // 🕐 AFTERNOON CUTOFF: No new entries after 2:00 PM IST (no exceptions)
-    // Data: 56 trades after 14:00 → 26.8% WR, -45,262 P&L
-    // 14:00-14:30 bucket alone: 27 trades, 11.1% WR, -30,924
-    // Even Fridays are net negative after 2PM (-4,320) — no day-of-week exemptions
+    // 🕐 AFTERNOON CUTOFF: No new IMMEDIATE entries after 2:00 PM IST.
+    // Pullback (Slot 2) and FVG (Slot 3) slots are allowed to arm and progress past 2 PM
+    // so a late-day setup can still convert before the 3:19 PM EOD exit. The original cutoff
+    // data (56 trades, 26.8% WR, -45,262 P&L) was for immediate entries, not delayed arms.
     if (currentMinutes >= 14 * 60) {
-      this.logger.debug('🕐 Entry blocked - After 2:00 PM cutoff');
-      return;
+      const allowLateArm = this.isPullbackActiveForThisSlot(expFlags) || this.isFvgActiveForThisSlot(expFlags);
+      if (!allowLateArm) {
+        this.logger.debug('🕐 Entry blocked - After 2:00 PM cutoff (immediate slot)');
+        return;
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -3368,6 +3451,16 @@ export class BollingerBandStrategy extends StrategyBase {
       return;
     }
 
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 3 — FVG WATCH STATE MACHINE EARLY PROGRESS
+    // If FVG mode is active for this slot and we already have an FVG watch,
+    // progress the state machine and skip new-signal evaluation.
+    // ══════════════════════════════════════════════════════════════
+    if (this.isFvgActiveForThisSlot(expFlags) && this.currentFvgWatch) {
+      await this.progressFvgWatch(latestCandle, expFlags);
+      return;
+    }
+
     // LONG Entry Signal - RSI range optimized for overbought momentum
     const longConditions = {
       priceAboveUpperBB: close > bollingerBands.upper,
@@ -3388,7 +3481,7 @@ export class BollingerBandStrategy extends StrategyBase {
         r1: r1.toFixed(2),
         previousDayHigh: this.previousDayHigh.toFixed(2)
       });
-      this.logSignalLifecycle('DETECTED', 'LONG', null, { close, rsi, mode: this.isPullbackActiveForThisSlot(expFlags) ? 'pullback' : 'immediate' });
+      this.logSignalLifecycle('DETECTED', 'LONG', null, { close, rsi, mode: this.isFvgActiveForThisSlot(expFlags) ? 'fvg' : this.isPullbackActiveForThisSlot(expFlags) ? 'pullback' : 'immediate' });
       
       // ═══════════════════════════════════════════════════════════════
       // EXTENDED GAP TRAP FILTER (LONG) — gated P1.2
@@ -3468,6 +3561,13 @@ export class BollingerBandStrategy extends StrategyBase {
       const entryCandleLow = latestCandle.low;
       const entryCandleTimestamp = latestCandle.timestamp; // FIXED: Capture timestamp
       
+      // PHASE 3 — If FVG mode is active for this slot, arm an FVG watch instead.
+      // (Mutually exclusive with pullback via config; SHORT-side FVG not implemented in v1.)
+      if (this.isFvgActiveForThisSlot(expFlags)) {
+        this.armFvgSignal(latestCandle, expFlags);
+        return;
+      }
+
       // PHASE 2 — If pullback is active for this slot, arm instead of entering.
       // All upstream filters have already passed, so this is a clean ARM point.
       if (this.isPullbackActiveForThisSlot(expFlags)) {
@@ -3518,7 +3618,15 @@ export class BollingerBandStrategy extends StrategyBase {
         s1: s1.toFixed(2),
         previousDayLow: this.previousDayLow.toFixed(2)
       });
-      this.logSignalLifecycle('DETECTED', 'SHORT', null, { close, rsi, mode: this.isPullbackActiveForThisSlot(expFlags) ? 'pullback' : 'immediate' });
+      this.logSignalLifecycle('DETECTED', 'SHORT', null, { close, rsi, mode: this.isFvgActiveForThisSlot(expFlags) ? 'fvg_long_only_skip' : this.isPullbackActiveForThisSlot(expFlags) ? 'pullback' : 'immediate' });
+
+      // PHASE 3 — FVG slot is LONG-only in v1. Block SHORT entries entirely on FVG slots.
+      if (this.isFvgActiveForThisSlot(expFlags)) {
+        this.logger.info('[BOLLINGER] 🚫 SHORT skipped — FVG slot is LONG-only in v1', {
+          slot: this.slotIndex + 1, symbol: this.signalSymbol,
+        });
+        return;
+      }
 
       // ═══════════════════════════════════════════════════════════════
       // EXTENDED GAP TRAP FILTER (SHORT) — gated P1.2
@@ -3638,11 +3746,22 @@ export class BollingerBandStrategy extends StrategyBase {
   }
 
   /**
+   * Phase 3: parallel accessor for FVG watch slot lock.
+   */
+  public hasFvgWatch(): boolean {
+    return this.currentFvgWatch !== null;
+  }
+
+  /**
    * Structured one-line lifecycle event for greppable post-mortem analysis.
    * Co-exists with the existing emoji logs; adds a parseable shape.
    */
   private logSignalLifecycle(
-    stage: 'DETECTED' | 'ARMED' | 'PULLBACK_SEEN' | 'CONFIRMED' | 'ABANDONED' | 'ENTRY_REJECTED' | 'ENTRY_FILLED' | 'EXIT_FIRED',
+    stage:
+      | 'DETECTED' | 'ARMED' | 'PULLBACK_SEEN' | 'CONFIRMED' | 'ABANDONED'
+      | 'ENTRY_REJECTED' | 'ENTRY_FILLED' | 'EXIT_FIRED'
+      | 'FVG_ARMED' | 'FVG_FORMED' | 'FVG_TRIGGER_SET' | 'FVG_TRIGGER_LOWERED'
+      | 'FVG_INVALIDATED' | 'FVG_ENTRY' | 'FVG_UPGRADED',
     direction: 'LONG' | 'SHORT',
     reason: string | null = null,
     extra: Record<string, unknown> = {}
@@ -3879,6 +3998,397 @@ export class BollingerBandStrategy extends StrategyBase {
     }
 
     this.currentArmedSignal = null;
+    this.saveCapitalData();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE 3 — FVG RETRACE ENTRY STATE MACHINE (LONG-only v1, slot-gated)
+  //
+  // ARMED → scan up to fvgMaxScanCandles 3-candle windows for a bullish FVG
+  //   (C1.high < C3.low, gap >= fvgMinGapPct of impulse close).
+  // FVG_FORMED → wait for first wick into [floor, ceiling]. That candle's high
+  //   becomes the trigger.
+  // TRIGGER_SET → if any subsequent candle prints inside FVG with a LOWER high,
+  //   ratchet the trigger down (TRIGGER_LOWERED). If a candle's high >= current
+  //   trigger, fire entry. SL = C2.low.
+  // INVALIDATE: any candle close < FVG floor (when fvgInvalidateOnFloorClose).
+  //   Also: scan window expires before FVG forms.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private isFvgActiveForThisSlot(flags: ExperimentalFlags): boolean {
+    return !!flags.enableFvgEntry && Array.isArray(flags.fvgSlots) && flags.fvgSlots.includes(this.slotIndex);
+  }
+
+  /**
+   * Detect bullish FVG across 3 consecutive candles (c1, c2, c3 = oldest → newest).
+   * Bullish FVG: c1.high < c3.low (gap up). Returns null if no valid gap.
+   */
+  private detectBullishFvg(
+    c1: Candle, c2: Candle, c3: Candle,
+    impulseClose: number,
+    minGapPct: number
+  ): { floor: number; ceiling: number; slLevel: number; width: number } | null {
+    if (!(c1.high < c3.low)) return null;
+    const width = c3.low - c1.high;
+    const minGap = impulseClose * minGapPct;
+    if (width < minGap) return null;
+    return {
+      floor: c1.high,
+      ceiling: c3.low,
+      slLevel: c2.low,
+      width,
+    };
+  }
+
+  /**
+   * Lookback scan: search the most recent `lookbackCandles` 3-candle windows whose c3
+   * index is at or before the signal candle for a bullish FVG that has NOT yet been
+   * touched/invalidated by intermediate price action. Used at ARM time so slot 3 can
+   * catch retests of the breakout-impulse imbalance itself (not just continuation FVGs).
+   *
+   * Returns the most recent surviving FVG, or null. "Untouched" = no candle in (c3, signal]
+   * had low <= ceiling (no prior wick into zone) AND no candle in (c3, signal] had
+   * close < floor (mirrors the live floor-close invalidation rule).
+   */
+  private findRecentUntouchedBullishFvg(
+    signalCandle: Candle,
+    lookbackCandles: number,
+    minGapPct: number,
+    invalidateOnFloorClose: boolean,
+  ): { floor: number; ceiling: number; slLevel: number; width: number; impulseTimestamp: Date } | null {
+    const hist = this.candleHistory;
+    if (hist.length < 3) return null;
+    // Locate signal index (most recent matching timestamp). Fallback: last candle.
+    let signalIdx = hist.length - 1;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      if (hist[i] && hist[i]!.timestamp.getTime() === signalCandle.timestamp.getTime()) {
+        signalIdx = i;
+        break;
+      }
+    }
+    // Try newest c3 first so we return the most recent untouched FVG.
+    const oldestC3 = Math.max(2, signalIdx - lookbackCandles + 1);
+    for (let c3Idx = signalIdx; c3Idx >= oldestC3; c3Idx--) {
+      const c1 = hist[c3Idx - 2], c2 = hist[c3Idx - 1], c3 = hist[c3Idx];
+      if (!c1 || !c2 || !c3) continue;
+      const fvg = this.detectBullishFvg(c1, c2, c3, signalCandle.close, minGapPct);
+      if (!fvg) continue;
+      let touched = false;
+      for (let k = c3Idx + 1; k <= signalIdx; k++) {
+        const cand = hist[k];
+        if (!cand) continue;
+        if (cand.low <= fvg.ceiling) { touched = true; break; }
+        if (invalidateOnFloorClose && cand.close < fvg.floor) { touched = true; break; }
+      }
+      if (touched) continue;
+      return { ...fvg, impulseTimestamp: c2.timestamp };
+    }
+    return null;
+  }
+
+  /**
+   * Option 1 (Jun 17 2026) — track the freshest FVG until a trigger commits us.
+   *
+   * While an FVG watch is armed but NOT yet triggered, the latest closed candle may
+   * have just completed a NEWER bullish FVG (e.g. the gap created by the signal-impulse
+   * candle itself, which only completes one candle after arm). If that newer FVG has a
+   * strictly newer impulse than the currently-watched zone, supersede it so price can
+   * retrace into the live imbalance instead of a stale earlier one.
+   *
+   * Bounded: caller only invokes this while trigger === null (never chases once committed);
+   * monotonic via the strict impulse-newer guard; still capped by fvgMaxLifeCandles.
+   * Returns true if an upgrade occurred (caller should wait for the NEXT candle to wick).
+   */
+  private maybeUpgradeFvg(_latestCandle: Candle, flags: ExperimentalFlags): boolean {
+    const watch = this.currentFvgWatch;
+    if (!watch || !watch.fvg || watch.trigger !== null) return false;
+
+    const hist = this.candleHistory;
+    if (hist.length < 3) return false;
+    const c1 = hist[hist.length - 3];
+    const c2 = hist[hist.length - 2];
+    const c3 = hist[hist.length - 1];
+    if (!c1 || !c2 || !c3) return false;
+
+    // Impulse (C2) must be at-or-after arm (same constraint as the initial forward scan).
+    const armTs = watch.armedAtCandle.getTime();
+    if (c2.timestamp.getTime() < armTs) return false;
+
+    // Only supersede with a STRICTLY newer impulse than the currently-watched FVG.
+    if (c2.timestamp.getTime() <= watch.fvg.impulseTimestamp.getTime()) return false;
+
+    const fvg = this.detectBullishFvg(c1, c2, c3, watch.signalCandleClose, flags.fvgMinGapPct);
+    if (!fvg) return false;
+
+    const prev = watch.fvg;
+    watch.fvg = { ...fvg, impulseTimestamp: c2.timestamp };
+    this.logger.info(`🔄 FVG UPGRADED on ${this.signalSymbol} — fresher impulse superseded prior zone`, {
+      slot: this.slotIndex + 1,
+      fromFloor: prev.floor.toFixed(2),
+      fromCeiling: prev.ceiling.toFixed(2),
+      fromImpulse: prev.impulseTimestamp.toISOString(),
+      toFloor: fvg.floor.toFixed(2),
+      toCeiling: fvg.ceiling.toFixed(2),
+      toWidth: fvg.width.toFixed(2),
+      toSlLevel: fvg.slLevel.toFixed(2),
+      toImpulse: c2.timestamp.toISOString(),
+    });
+    this.logSignalLifecycle('FVG_UPGRADED', 'LONG', null, {
+      fromFloor: prev.floor, fromCeiling: prev.ceiling, fromImpulse: prev.impulseTimestamp.toISOString(),
+      toFloor: fvg.floor, toCeiling: fvg.ceiling, toWidth: fvg.width, toSlLevel: fvg.slLevel,
+      toImpulse: c2.timestamp.toISOString(),
+    });
+    this.saveCapitalData();
+    return true;
+  }
+
+  /**
+   * Transition IDLE → FVG_ARMED. Captures signal candle, starts scan window.
+   */
+  private armFvgSignal(signalCandle: Candle, flags: ExperimentalFlags): void {
+    // Safety: enforce mutual exclusion with pullback state. If both ever co-exist,
+    // FVG branch takes precedence (configured by slot membership), so clear pullback.
+    if (this.currentArmedSignal) {
+      this.logger.warn(`⚠️ FVG arm pre-empts existing pullback state (config conflict?) — clearing armedSignal`);
+      this.currentArmedSignal = null;
+    }
+    this.currentFvgWatch = {
+      direction: 'LONG',
+      signalSymbol: this.signalSymbol,
+      armedAtCandle: signalCandle.timestamp,
+      armedAtWallClock: new Date(),
+      signalCandleClose: signalCandle.close,
+      candlesScannedSinceArm: 0,
+      lastProgressedCandleTs: null,
+      fvg: null,
+      trigger: null,
+      triggerCandleTimestamp: null,
+    };
+    this.logger.info(`🎯 LONG FVG signal ARMED — scanning for FVG`, {
+      symbol: this.signalSymbol,
+      slot: this.slotIndex + 1,
+      signalClose: signalCandle.close.toFixed(2),
+    });
+    this.logSignalLifecycle('FVG_ARMED', 'LONG', null, { signalClose: signalCandle.close });
+
+    if (flags.enableFvgLookback) {
+      const preExisting = this.findRecentUntouchedBullishFvg(
+        signalCandle,
+        flags.fvgLookbackCandles,
+        flags.fvgMinGapPct,
+        flags.fvgInvalidateOnFloorClose,
+      );
+      if (preExisting) {
+        this.currentFvgWatch.fvg = preExisting;
+        this.logger.info(`📐 FVG PRE-FORMED on ${this.signalSymbol} (lookback hit)`, {
+          slot: this.slotIndex + 1,
+          floor: preExisting.floor.toFixed(2),
+          ceiling: preExisting.ceiling.toFixed(2),
+          width: preExisting.width.toFixed(2),
+          slLevel: preExisting.slLevel.toFixed(2),
+          impulseTime: preExisting.impulseTimestamp.toISOString(),
+        });
+        this.logSignalLifecycle('FVG_FORMED', 'LONG', null, {
+          floor: preExisting.floor, ceiling: preExisting.ceiling,
+          width: preExisting.width, slLevel: preExisting.slLevel,
+          source: 'lookback',
+        });
+      }
+    }
+
+    this.saveCapitalData();
+  }
+
+  /**
+   * Advance the FVG state machine by one 5-min candle. Three sub-states:
+   *  (a) no FVG yet — scan a sliding 3-candle window from candleHistory until window expires
+   *  (b) FVG formed but no trigger — first wick into [floor, ceiling] sets trigger
+   *  (c) trigger set — ratchet down on lower-high inside FVG; fire entry on high >= trigger
+   * Floor-close invalidation runs in (b) and (c).
+   */
+  private async progressFvgWatch(latestCandle: Candle, flags: ExperimentalFlags): Promise<void> {
+    const watch = this.currentFvgWatch;
+    if (!watch) return;
+
+    // Per-candle dedup. The 5-min master cycle normally fires once per boundary, but
+    // the retry mechanism (10s) and realignment path can re-process the same candle
+    // timestamp. Without this guard, candlesScannedSinceArm inflates spuriously and
+    // the scan window or ratchet logic fires multiple times on a single 5-min bar.
+    const latestTs = latestCandle.timestamp.getTime();
+    if (watch.lastProgressedCandleTs !== null
+        && watch.lastProgressedCandleTs.getTime() === latestTs) {
+      return;
+    }
+    watch.lastProgressedCandleTs = latestCandle.timestamp;
+
+    watch.candlesScannedSinceArm++;
+
+    // INVALIDATE: candle closes below FVG floor (strict, once FVG exists)
+    if (watch.fvg && flags.fvgInvalidateOnFloorClose && latestCandle.close < watch.fvg.floor) {
+      this.clearFvgWatch(`Candle close ${latestCandle.close.toFixed(2)} < FVG floor ${watch.fvg.floor.toFixed(2)}`);
+      return;
+    }
+
+    // INVALIDATE: total watch lifetime exceeded — prevents stale FVGs locking the slot all day
+    if (watch.candlesScannedSinceArm > flags.fvgMaxLifeCandles) {
+      this.clearFvgWatch(`FVG watch lifetime exceeded (${flags.fvgMaxLifeCandles} candles since arm)`);
+      return;
+    }
+
+    // (a) Still scanning for an FVG
+    if (!watch.fvg) {
+      // Need at least 3 completed candles AT/AFTER arm to form an FVG
+      const hist = this.candleHistory;
+      if (hist.length >= 3) {
+        // Try the most recent 3-candle window ending at latestCandle
+        const c1 = hist[hist.length - 3];
+        const c2 = hist[hist.length - 2];
+        const c3 = hist[hist.length - 1];
+        // Restrict to candles at-or-after arm (avoid using pre-arm history)
+        // Impulse (C2) must be at-or-after arm. C1 may be the candle just before signal
+        // when the signal IS the impulse — inclusive read avoids missing valid post-signal FVGs.
+        const armTs = watch.armedAtCandle.getTime();
+        if (c1 && c2 && c3 && c2.timestamp.getTime() >= armTs) {
+          const fvg = this.detectBullishFvg(c1, c2, c3, watch.signalCandleClose, flags.fvgMinGapPct);
+          if (fvg) {
+            watch.fvg = { ...fvg, impulseTimestamp: c2.timestamp };
+            this.logger.info(`📐 FVG FORMED on ${this.signalSymbol}`, {
+              slot: this.slotIndex + 1,
+              floor: fvg.floor.toFixed(2),
+              ceiling: fvg.ceiling.toFixed(2),
+              width: fvg.width.toFixed(2),
+              slLevel: fvg.slLevel.toFixed(2),
+              impulseTime: c2.timestamp.toISOString(),
+            });
+            this.logSignalLifecycle('FVG_FORMED', 'LONG', null, {
+              floor: fvg.floor, ceiling: fvg.ceiling, width: fvg.width, slLevel: fvg.slLevel,
+            });
+            this.saveCapitalData();
+            return;
+          }
+        }
+      }
+      // Window expired without FVG
+      if (watch.candlesScannedSinceArm >= flags.fvgMaxScanCandles) {
+        this.clearFvgWatch(`No FVG formed in ${flags.fvgMaxScanCandles} candles`);
+      }
+      return;
+    }
+
+    // Option 1 — while pre-trigger, track the freshest FVG. A newer impulse (e.g. the
+    // signal-impulse gap that completes one candle after arm) supersedes a marginal
+    // earlier zone. On upgrade, return and let the NEXT candle wick the new zone.
+    if (flags.enableFvgUpgrade && watch.trigger === null) {
+      if (this.maybeUpgradeFvg(latestCandle, flags)) return;
+    }
+
+    const fvg = watch.fvg;
+    const wickInsideFvg = latestCandle.low <= fvg.ceiling && latestCandle.high >= fvg.floor;
+    // Same-candle guard — prevents an in-progress tick on the SAME candle that just set/lowered
+    // the trigger from immediately firing entry on its own (creeping) high.
+    const isSameAsTriggerCandle = watch.triggerCandleTimestamp !== null
+      && latestCandle.timestamp.getTime() === watch.triggerCandleTimestamp.getTime();
+
+    // (b) FVG formed but no trigger yet — first candle wicking into the gap sets trigger
+    if (watch.trigger === null) {
+      if (wickInsideFvg) {
+        watch.trigger = latestCandle.high;
+        watch.triggerCandleTimestamp = latestCandle.timestamp;
+        this.logger.info(`🎯 FVG TRIGGER set at ${watch.trigger.toFixed(2)} on ${this.signalSymbol}`, {
+          slot: this.slotIndex + 1,
+          candleHigh: latestCandle.high.toFixed(2),
+          candleClose: latestCandle.close.toFixed(2),
+        });
+        this.logSignalLifecycle('FVG_TRIGGER_SET', 'LONG', null, { trigger: watch.trigger });
+        this.saveCapitalData();
+      }
+      return;
+    }
+
+    // (c) Trigger set — check entry on a SUBSEQUENT candle only.
+    if (!isSameAsTriggerCandle && latestCandle.high >= watch.trigger) {
+      await this.enterAfterFvgTrigger(latestCandle, watch, flags);
+      return;
+    }
+
+    // Ratchet: candle inside FVG with lower high → lower the trigger.
+    // Skip if same candle as current trigger (its own high can't ratchet itself).
+    if (!isSameAsTriggerCandle && wickInsideFvg && latestCandle.high < watch.trigger) {
+      const oldTrigger = watch.trigger;
+      watch.trigger = latestCandle.high;
+      watch.triggerCandleTimestamp = latestCandle.timestamp;
+      this.logger.info(`📉 FVG trigger LOWERED ${oldTrigger.toFixed(2)} → ${watch.trigger.toFixed(2)}`, {
+        symbol: this.signalSymbol,
+        slot: this.slotIndex + 1,
+      });
+      this.logSignalLifecycle('FVG_TRIGGER_LOWERED', 'LONG', null, { from: oldTrigger, to: watch.trigger });
+      this.saveCapitalData();
+    }
+  }
+
+  /**
+   * Cleanup helper: log INVALIDATED, null state, persist. Frees slot for retention.
+   */
+  private clearFvgWatch(reason: string): void {
+    const w = this.currentFvgWatch;
+    if (!w) return;
+    this.logger.info(`❌ FVG watch INVALIDATED: ${reason}`, {
+      symbol: this.signalSymbol,
+      slot: this.slotIndex + 1,
+      candlesScanned: w.candlesScannedSinceArm,
+      hadFvg: !!w.fvg,
+      hadTrigger: w.trigger !== null,
+    });
+    this.logSignalLifecycle('FVG_INVALIDATED', 'LONG', reason, {
+      candlesScanned: w.candlesScannedSinceArm, hadFvg: !!w.fvg, hadTrigger: w.trigger !== null,
+    });
+    this.currentFvgWatch = null;
+    this.saveCapitalData();
+  }
+
+  /**
+   * Execute LONG entry on FVG trigger breach. SL = C2.low (FVG slLevel).
+   */
+  private async enterAfterFvgTrigger(latestCandle: Candle, watch: FvgWatchState, flags: ExperimentalFlags): Promise<void> {
+    if (!watch.fvg || watch.trigger === null) {
+      this.clearFvgWatch('Internal: trigger fired without FVG/trigger state');
+      return;
+    }
+    const close = latestCandle.close;
+    const entryCandleHigh = latestCandle.high;
+    const entryCandleLow = latestCandle.low;
+    const entryCandleTimestamp = latestCandle.timestamp;
+    const slLevel = watch.fvg.slLevel;
+    const stopBuffer = flags.structuralStopBufferPct;
+    const structuralStopPrice = slLevel * (1 - stopBuffer);
+
+    this.logger.info(`✅ FVG LONG ENTRY — trigger ${watch.trigger.toFixed(2)} breached`, {
+      symbol: this.signalSymbol,
+      slot: this.slotIndex + 1,
+      candleHigh: entryCandleHigh.toFixed(2),
+      close: close.toFixed(2),
+      fvgFloor: watch.fvg.floor.toFixed(2),
+      fvgCeiling: watch.fvg.ceiling.toFixed(2),
+      slLevel: slLevel.toFixed(2),
+      structuralStop: structuralStopPrice.toFixed(2),
+    });
+    this.logSignalLifecycle('FVG_ENTRY', 'LONG', null, {
+      trigger: watch.trigger, fvgFloor: watch.fvg.floor, fvgCeiling: watch.fvg.ceiling,
+      slLevel, structuralStop: structuralStopPrice,
+    });
+
+    await this.executeLongEntryWithRetry(close, entryCandleHigh, entryCandleLow, entryCandleTimestamp, 0);
+
+    if (this.currentPosition && flags.useStructuralStockStop) {
+      this.currentPosition.structuralStop = {
+        stockPrice: structuralStopPrice,
+        basedOnPullbackLevel: slLevel,
+        direction: 'LONG',
+      };
+      this.logger.info(`🛡️ Structural stock stop set at ${structuralStopPrice.toFixed(2)} (FVG SL ${slLevel.toFixed(2)})`);
+    }
+
+    this.currentFvgWatch = null;
     this.saveCapitalData();
   }
 

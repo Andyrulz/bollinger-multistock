@@ -75,7 +75,7 @@ export interface SlotStateWithPosition extends SlotState {
  * Retention decision for logging
  */
 type RetentionDecision = 'LOCK' | 'KEEP' | 'SWAP' | 'DEPLOY';
-type SwapReason = 'empty_slot' | 'active_position' | 'armed_signal' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout' | 'in_cooldown' | 'outperformed' | 'too_young';
+type SwapReason = 'empty_slot' | 'active_position' | 'armed_signal' | 'fvg_watch' | 'still_top_tier' | 'momentum_died' | 'bias_flip' | 'not_in_scan' | 'stale_breakout' | 'in_cooldown' | 'outperformed' | 'too_young' | 'bias_not_allowed';
 
 /**
  * Experimental flags (Profitability Recovery Plan, May 2026)
@@ -122,6 +122,17 @@ export interface ExperimentalFlags {
   // Executor must match or scanner-picked stocks get aborted at order time.
   liquidityOiMultiplier: number;              // default 500 — matches MarketScanner DYNAMIC_OI_MULTIPLIER
   liquidityMinVolFallback: number;            // default 500 — matches MarketScanner MIN_VOL
+
+  // Phase 3 — FVG retrace entry (Jun 2026). Slot-gated A/B against pullback (slot 2) and immediate (slot 1).
+  enableFvgEntry: boolean;                    // master switch, default false
+  fvgSlots: number[];                         // 0-indexed slots running FVG mode (mutually exclusive with pullbackSlots)
+  fvgMinGapPct: number;                       // default 0.0015 — minimum FVG width as fraction of impulse close (0.15%)
+  fvgMaxScanCandles: number;                  // default 8 — candles after ARM to keep scanning for an FVG
+  fvgMaxLifeCandles: number;                  // default 48 (4 hrs) — total candles since ARM after which watch is invalidated even if FVG formed
+  fvgInvalidateOnFloorClose: boolean;         // default true — strict: candle close below FVG floor cancels watch
+  enableFvgLookback: boolean;                 // when true, at ARM check the last fvgLookbackCandles 3-candle windows (c3 ≤ signal) for an untouched bullish FVG; lets slot 3 catch retests of the breakout-impulse imbalance itself
+  fvgLookbackCandles: number;                 // default 5 — how many candles back from signal to scan for a pre-existing FVG
+  enableFvgUpgrade: boolean;                  // when true, while the FVG watch is armed-but-not-yet-triggered, replace the watched zone with a fresher valid FVG (newer impulse) formed by post-arm candles; lets the signal-impulse gap supersede a marginal earlier one
 }
 
 export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
@@ -153,6 +164,16 @@ export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
   structuralStopBufferPct: 0.0005,
   liquidityOiMultiplier: 500,
   liquidityMinVolFallback: 500,
+  // Phase 3 defaults — FVG OFF by default
+  enableFvgEntry: false,
+  fvgSlots: [],
+  fvgMinGapPct: 0.0015,
+  fvgMaxScanCandles: 8,
+  fvgMaxLifeCandles: 48,
+  fvgInvalidateOnFloorClose: true,
+  enableFvgLookback: false,
+  fvgLookbackCandles: 5,
+  enableFvgUpgrade: false,
 };
 
 /**
@@ -1689,9 +1710,14 @@ export class StrategyManager {
       const hasArmedSignal = typeof (strategy as any).hasArmedSignal === 'function'
         ? (strategy as any).hasArmedSignal()
         : false;
+      const hasFvgWatch = typeof (strategy as any).hasFvgWatch === 'function'
+        ? (strategy as any).hasFvgWatch()
+        : false;
       
-      if ((hasActivePosition || hasArmedSignal) && this.smartRetentionConfig.lockOnActivePosition) {
-        const lockReason: SwapReason = hasActivePosition ? 'active_position' : 'armed_signal';
+      if ((hasActivePosition || hasArmedSignal || hasFvgWatch) && this.smartRetentionConfig.lockOnActivePosition) {
+        const lockReason: SwapReason = hasActivePosition
+          ? 'active_position'
+          : hasArmedSignal ? 'armed_signal' : 'fvg_watch';
         this.logRetentionDecision(slotIndex, slotState.symbol, 'LOCK', lockReason, null);
         slotState.locked = true;
         continue;
@@ -1713,6 +1739,17 @@ export class StrategyManager {
       // CASE 3: Stock not in scan results (breakout expired, DQ'd, etc.)
       if (!stockInScan) {
         this.logRetentionDecision(slotIndex, slotState.symbol, 'SWAP', 'not_in_scan', null);
+        await this.swapStrategy(slotIndex, selectedCandidates, deployedSymbols);
+        continue;
+      }
+      
+      // CASE 3.5: Stock's bias is not allowed in this slot (e.g. SHORT on FVG slot, or any
+      // SHORT when enableShortEntries=false). Eject so a tradable LONG can take the slot.
+      // This catches legacy state and bias flips into disallowed direction in one path.
+      const allowedBiases = this.allowedBiasesForSlot(slotIndex);
+      if (!allowedBiases.includes(stockInScan.bias)) {
+        this.logRetentionDecision(slotIndex, slotState.symbol, 'SWAP', 'bias_not_allowed',
+          `${stockInScan.bias} not allowed (slot accepts ${allowedBiases.join('/')})`);
         await this.swapStrategy(slotIndex, selectedCandidates, deployedSymbols);
         continue;
       }
@@ -1802,9 +1839,13 @@ export class StrategyManager {
       idleSlots.sort((a, b) => a.score - b.score);
       const weakest = idleSlots[0]!;
       
-      // Find best available candidate not already deployed and not in cooldown
+      // Find best available candidate not already deployed and not in cooldown,
+      // AND eligible for the weakest slot's allowed-bias set (e.g. don't try to
+      // outperform a LONG-only FVG slot with a SHORT candidate).
+      const weakestAllowedBiases = this.allowedBiasesForSlot(weakest.slotIndex);
       const bestCandidate = selectedCandidates.find(c => 
         !deployedSymbols.has(c.symbol) && !this.isSymbolInCooldown(c.symbol)
+        && weakestAllowedBiases.includes(c.bias)
       );
       
       if (bestCandidate && (bestCandidate.score - weakest.score) >= OUTPERFORM_SCORE_DELTA) {
@@ -1829,6 +1870,25 @@ export class StrategyManager {
   }
 
   /**
+   * Return which entry directions are allowed in a given slot, given current flags.
+   *   - FVG slots are LONG-only (Phase 3 v1)
+   *   - Global enableShortEntries=false strips SHORT from every slot
+   *   - Otherwise both directions allowed
+   * Used to filter scanner candidates BEFORE deployment so the bot never locks a slot
+   * to a stock its entry gate will refuse at signal time.
+   */
+  private allowedBiasesForSlot(slotIndex: number): Array<'LONG' | 'SHORT'> {
+    const f = this.experimentalFlags;
+    if (f.enableFvgEntry && Array.isArray(f.fvgSlots) && f.fvgSlots.includes(slotIndex)) {
+      return ['LONG'];
+    }
+    if (!f.enableShortEntries) {
+      return ['LONG'];
+    }
+    return ['LONG', 'SHORT'];
+  }
+
+  /**
    * Handle empty slot - deploy best available candidate
    */
   private async handleEmptySlot(
@@ -1843,15 +1903,22 @@ export class StrategyManager {
         .map(s => s.symbol!)
     );
     
-    // Find first candidate not already deployed AND not in cooldown
+    // Bias gate: skip candidates whose direction this slot can't trade. Without this,
+    // a SHORT-biased top candidate would lock the slot only to be rejected by the
+    // strategy's entry-time SHORT block (or FVG slot's LONG-only rule).
+    const allowedBiases = this.allowedBiasesForSlot(slotIndex);
+    
+    // Find first candidate not already deployed AND not in cooldown AND bias-eligible
     const availableCandidate = candidates.find(c => 
       !deployedSymbols.has(c.symbol) && 
       !alreadyDeployedInSlots.has(c.symbol) &&
-      !this.isSymbolInCooldown(c.symbol)
+      !this.isSymbolInCooldown(c.symbol) &&
+      allowedBiases.includes(c.bias)
     );
     
     if (!availableCandidate) {
-      this.logger.info(`   📭 No available candidates for Slot ${slotIndex + 1}`);
+      const biasNote = allowedBiases.length < 2 ? ` (slot accepts ${allowedBiases.join('/')} only)` : '';
+      this.logger.info(`   📭 No available candidates for Slot ${slotIndex + 1}${biasNote}`);
       return;
     }
     
@@ -2008,6 +2075,7 @@ export class StrategyManager {
       'empty_slot': 'Empty slot',
       'active_position': 'Active position (protected)',
       'armed_signal': 'Armed pullback signal (protected)',
+      'fvg_watch': 'FVG retrace watch (protected)',
       'still_top_tier': 'Still performing well',
       'momentum_died': 'Momentum dropped',
       'bias_flip': 'Bias reversed',
@@ -2016,6 +2084,7 @@ export class StrategyManager {
       'in_cooldown': 'Symbol in cooldown (slot freed)',
       'outperformed': 'Outperformed by better candidate',
       'too_young': 'Slot too young to swap (deployment age guard)',
+      'bias_not_allowed': 'Bias not allowed in this slot',
     };
     
     // Store decision on slot state for dashboard display
