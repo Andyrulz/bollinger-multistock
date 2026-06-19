@@ -186,6 +186,16 @@ class TradingBot {
       }
     });
 
+    // IMP-001 validation: scanner candle engine status (seeded?, symbol count, last poll, sample candle counts)
+    this.app.get('/api/scanner/candle-engine', async (req: Request, res: Response): Promise<void> => {
+      try {
+        res.json(this.strategyManager.getCandleEngineStatus());
+      } catch (error) {
+        this.logger.error('Failed to get candle engine status:', error);
+        res.status(500).json({ error: 'Failed to get candle engine status' });
+      }
+    });
+
     // =============================
     // MAIN DASHBOARD
     // =============================

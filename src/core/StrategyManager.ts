@@ -133,6 +133,15 @@ export interface ExperimentalFlags {
   enableFvgLookback: boolean;                 // when true, at ARM check the last fvgLookbackCandles 3-candle windows (c3 ≤ signal) for an untouched bullish FVG; lets slot 3 catch retests of the breakout-impulse imbalance itself
   fvgLookbackCandles: number;                 // default 5 — how many candles back from signal to scan for a pre-existing FVG
   enableFvgUpgrade: boolean;                  // when true, while the FVG watch is armed-but-not-yet-triggered, replace the watched zone with a fresher valid FVG (newer impulse) formed by post-arm candles; lets the signal-impulse gap supersede a marginal earlier one
+
+  // IMP-001 (Jun 2026) — stateful scanner candles. Default false = current behavior (full 10-day re-fetch every scan).
+  // When true: seed once (5-day), then keep cachedHistoricalData current incrementally. Gated for shadow validation.
+  enableIncrementalScannerCandles: boolean;   // master switch for the quote-driven incremental candle engine
+
+  // Finding #2 (Jun 2026) — session-anchored intraday VWAP in the scanner score. Default false = legacy
+  // multi-day cumulative VWAP. When true, calculateVWAP resets at each session open. Gated for A/B since
+  // it shifts the trend score (spot>vwap) and therefore stock selection.
+  enableSessionVwap: boolean;
 }
 
 export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
@@ -174,6 +183,8 @@ export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
   enableFvgLookback: false,
   fvgLookbackCandles: 5,
   enableFvgUpgrade: false,
+  enableIncrementalScannerCandles: false,
+  enableSessionVwap: false,
 };
 
 /**
@@ -331,6 +342,16 @@ export class StrategyManager {
       
       // Schedule hourly scanner with Smart Retention
       this.scheduleHourlyScanner();
+
+      // IMP-001: start the incremental candle poll loop (only when enabled). Seeds once on first scan;
+      // the loop keeps forming candles current (running high/low + volume) during market hours.
+      if (this.experimentalFlags.enableIncrementalScannerCandles) {
+        this.marketScanner.startCandlePolling(45000, () => this.isMarketOpenNow());
+        this.logger.info('🕯️ IMP-001 incremental scanner candles ENABLED (seed-once + quote append)');
+      }
+
+      // Finding #2: push the session-VWAP flag to the scanner (gated; OFF = legacy multi-day cumulative).
+      this.marketScanner.setSessionVwap(this.experimentalFlags.enableSessionVwap);
       
       // Initialize OI History Service for Smart Money detection
       await this.initializeOIHistoryService();
@@ -1264,6 +1285,20 @@ export class StrategyManager {
     }, 60000);
   }
 
+  /**
+   * True during NSE market hours (09:15–15:30 IST). Computed from UTC so it's correct
+   * regardless of the server's local timezone. Used to gate the IMP-001 candle poll loop.
+   */
+  private isMarketOpenNow(): boolean {
+    const now = new Date();
+    const istMin = now.getUTCHours() * 60 + now.getUTCMinutes() + 330; // UTC+5:30
+    const istMinutes = istMin % (24 * 60);
+    const dayShift = istMin >= 24 * 60 ? 1 : 0;
+    const day = (now.getUTCDay() + dayShift) % 7;
+    const isWeekday = day >= 1 && day <= 5;
+    return isWeekday && istMinutes >= (9 * 60 + 15) && istMinutes <= (15 * 60 + 30);
+  }
+
   private async fetchPreMarketData(): Promise<void> {
     try {
       this.logger.info('📊 Fetching pre-market historical data...');
@@ -1567,20 +1602,39 @@ export class StrategyManager {
         return;
       }
       
-      // Step 1: Re-fetch historical data (ALWAYS - fresh data is mandatory)
-      this.logger.info('📊 Step 1: Re-fetching historical data for all stocks...');
-      const cacheResult = await this.marketScanner.cacheHistoricalData();
-      if (!cacheResult.success) {
-        this.logger.error('❌ Smart Retention: Failed to cache historical data');
-        return;
+      // Step 1: Get fresh candle data.
+      // IMP-001: when enableIncrementalScannerCandles is ON, the candle store is kept current by the
+      // quote-poll loop (seed once + incremental append). We only seed-if-needed and repair stale
+      // symbols here — NO full re-fetch. Robust fallback: if the store can't be made fresh, fall back
+      // to the legacy full re-fetch for this scan so scoring never runs on stale/empty data.
+      if (this.experimentalFlags.enableIncrementalScannerCandles) {
+        const seeded = await this.marketScanner.seedCandlesIfNeeded();
+        if (!seeded) {
+          this.logger.warn('⚠️ Incremental seed failed → falling back to full historical re-fetch this scan');
+          const fb = await this.marketScanner.cacheHistoricalData();
+          if (!fb.success) { this.logger.error('❌ Fallback re-fetch also failed'); return; }
+        } else {
+          this.marketScanner.finalizeClosedFormingCandles();      // Finding #1: push the just-closed bar into the store before staleness check + scan
+          const fresh = await this.marketScanner.ensureFreshUniverse();
+          this.logger.info(`📊 Step 1 (incremental): store maintained — ${fresh.stale} stale, ${fresh.reseeded} reseeded${fresh.fullReseed ? ' (FULL reseed)' : ''}`);
+        }
+        this.isDataCached = true;
+        this.marketScanner.saveCandleStore();
+      } else {
+        this.logger.info('📊 Step 1: Re-fetching historical data for all stocks...');
+        const cacheResult = await this.marketScanner.cacheHistoricalData();
+        if (!cacheResult.success) {
+          this.logger.error('❌ Smart Retention: Failed to cache historical data');
+          return;
+        }
+        this.isDataCached = true;
+
+        // Fix D: 3s cooldown after heavy historical data fetch (54 batches × 1s = ~60s)
+        // before starting universe scan (which fires getQuote calls).
+        // Allows Zerodha's connection pool to fully recover.
+        this.logger.info('⏳ Cooling down 3s before universe scan...');
+        await new Promise(resolve => setTimeout(resolve, 3000));
       }
-      this.isDataCached = true;
-      
-      // Fix D: 3s cooldown after heavy historical data fetch (54 batches × 1s = ~60s)
-      // before starting universe scan (which fires getQuote calls).
-      // Allows Zerodha's connection pool to fully recover.
-      this.logger.info('⏳ Cooling down 3s before universe scan...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
       
       // Step 2: Run full scan
       this.logger.info('📊 Step 2: Running universe scan...');
@@ -2152,6 +2206,17 @@ export class StrategyManager {
    */
   public async getLastScannerResults(): Promise<any> {
     return this.lastScannerResults || null;
+  }
+
+  /**
+   * IMP-001 validation: expose the scanner candle-engine status (mode + seed + last poll + samples).
+   */
+  public getCandleEngineStatus(): any {
+    return {
+      mode: this.experimentalFlags.enableIncrementalScannerCandles ? 'incremental' : 'legacy_full_refetch',
+      marketOpen: this.isMarketOpenNow(),
+      ...this.marketScanner.getCandleEngineStatus(),
+    };
   }
 
   /**

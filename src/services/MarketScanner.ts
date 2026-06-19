@@ -109,6 +109,19 @@ export class MarketScanner {
   private SCANNER_COOLDOWN_MS = 10000; // 10 seconds between scanner runs
   private oiHistoryService: OIHistoryService | null = null;
 
+  // ─── IMP-001: stateful scanner candles (engine; dormant unless enabled by caller) ───
+  private readonly SEED_LOOKBACK_DAYS = 5;        // historical seed window (≥20 hourly bars for 1h ST + holiday margin)
+  private readonly CANDLE_WINDOW = 375;           // rolling cap per symbol (~5 trading days of 5-min bars)
+  private readonly FIVE_MIN_MS = 5 * 60 * 1000;
+  // Forming-candle state for incremental high/low tracking (built from frequent last_price polls).
+  private formingCandle: Map<string, { boundary: number; open: number; high: number; low: number; close: number; openDayVol: number; lastDayVol: number }> = new Map();
+  private candleStorePath: string = '';           // set lazily; data/cache/scanner-candles.json
+  private candlePollTimer: NodeJS.Timeout | null = null;
+  private candlePollRunning: boolean = false;     // overlap guard
+  private candleSeeded: boolean = false;          // true once seeded (historical or persisted)
+  private lastPollSummary = { at: 0, updated: 0, total: 0 };
+  private useSessionVwap: boolean = false;        // Finding #2: when true, calculateVWAP anchors to the current session (resets daily)
+
   constructor(
     private kiteConnect: any,
     private logger: Logger,
@@ -132,6 +145,16 @@ export class MarketScanner {
   setOIHistoryService(service: OIHistoryService): void {
     this.oiHistoryService = service;
     this.logger.info('📊 MarketScanner: OI History Service connected for Smart Money scoring');
+  }
+
+  /**
+   * Finding #2: toggle session-anchored VWAP. When true, calculateVWAP sums only the current
+   * session's bars (true intraday VWAP) instead of the whole multi-day array. Pushed by
+   * StrategyManager from the enableSessionVwap experimental flag. OFF = legacy cumulative behavior.
+   */
+  setSessionVwap(enabled: boolean): void {
+    this.useSessionVwap = enabled;
+    this.logger.info(`📈 MarketScanner: session-anchored VWAP ${enabled ? 'ENABLED' : 'disabled (legacy cumulative)'}`);
   }
 
   /**
@@ -191,9 +214,9 @@ export class MarketScanner {
    * Pre-load historical data at 09:00 AM (before market open)
    * Called by StrategyManager's reactive auth logic
    */
-  async cacheHistoricalData(): Promise<{ success: boolean; count: number }> {
+  async cacheHistoricalData(lookbackDays: number = 10): Promise<{ success: boolean; count: number }> {
     this.logger.info(
-      "📥 MarketScanner: Pre-loading historical data (10 days, 5-min)...",
+      `📥 MarketScanner: Pre-loading historical data (${lookbackDays} days, 5-min)...`,
     );
     const startTime = Date.now();
 
@@ -239,10 +262,10 @@ export class MarketScanner {
                 return { symbol: stock.symbol, success: false };
               }
 
-              // Fetch 10 days of 5-min data
+              // Fetch historical 5-min data (lookbackDays window)
               const toDate = new Date();
               const fromDate = new Date();
-              fromDate.setDate(fromDate.getDate() - 10);
+              fromDate.setDate(fromDate.getDate() - lookbackDays);
 
               const candleStartTime = Date.now();
               const candles = await this.kiteConnect.getHistoricalData(
@@ -324,7 +347,7 @@ export class MarketScanner {
               }
               const toDate = new Date();
               const fromDate = new Date();
-              fromDate.setDate(fromDate.getDate() - 10);
+              fromDate.setDate(fromDate.getDate() - lookbackDays);
               const candleStartTime = Date.now();
               const candles = await this.kiteConnect.getHistoricalData(
                 instrumentToken, "5minute", fromDate, toDate,
@@ -405,6 +428,312 @@ export class MarketScanner {
     this.logger.info("🧹 MarketScanner: Clearing cached data");
     this.cachedHistoricalData.clear();
     this.isDataCached = false;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // IMP-001 — STATEFUL SCANNER CANDLE ENGINE
+  // Pure, self-contained helpers. Dormant unless the caller (StrategyManager)
+  // opts in via enableIncrementalScannerCandles. With the flag OFF, none of
+  // these run and behavior is identical to the legacy full re-fetch.
+  // Reuses the floorTo5Min + dedup approach proven in BollingerBandStrategy
+  // (the fix for the 2026-06-16 duplicate-candle bug).
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Floor an epoch-ms timestamp to its 5-minute boundary (matches BollingerBandStrategy). */
+  floorTo5Min(ms: number): number {
+    return Math.floor(ms / this.FIVE_MIN_MS) * this.FIVE_MIN_MS;
+  }
+
+  /** True if two timestamps fall on the same calendar day (IST-safe via UTC date parts). */
+  private sameDay(a: number, b: number): boolean {
+    const da = new Date(a), db = new Date(b);
+    return da.getUTCFullYear() === db.getUTCFullYear()
+      && da.getUTCMonth() === db.getUTCMonth()
+      && da.getUTCDate() === db.getUTCDate();
+  }
+
+  /**
+   * Append (or update/dedup) a finalized 5-min candle into a symbol's series.
+   * Rules mirror the strategy: identical ts+OHLC → ignore; same ts, new OHLC → update
+   * in place; strictly newer ts → push. Trims to CANDLE_WINDOW. Returns the op taken.
+   */
+  appendCandle(symbol: string, candle: Candle): 'PUSH' | 'UPDATE' | 'DUPLICATE' | 'STALE' {
+    const series = this.cachedHistoricalData.get(symbol);
+    const c: Candle = { ...candle, date: new Date(this.floorTo5Min(candle.date.getTime())) };
+    if (!series || series.length === 0) {
+      this.cachedHistoricalData.set(symbol, [c]);
+      return 'PUSH';
+    }
+    const last = series[series.length - 1]!;
+    const lastT = this.floorTo5Min(last.date.getTime());
+    const newT = c.date.getTime();
+    if (newT === lastT) {
+      if (last.open === c.open && last.high === c.high && last.low === c.low && last.close === c.close) return 'DUPLICATE';
+      series[series.length - 1] = c; // update forming → finalized
+      return 'UPDATE';
+    }
+    if (newT < lastT) return 'STALE'; // out-of-order; ignore (reseed path handles gaps)
+    series.push(c);
+    if (series.length > this.CANDLE_WINDOW) series.splice(0, series.length - this.CANDLE_WINDOW);
+    return 'PUSH';
+  }
+
+  /**
+   * Update the in-progress 5-min candle for a symbol from a fresh tick (last_price + day volume).
+   * Tracks running high/low. Call this frequently (e.g. every 30–60s). When the tick crosses a
+   * 5-min boundary, the previous forming candle is finalized via appendCandle() and a new one opens.
+   */
+  updateFormingCandle(symbol: string, lastPrice: number, dayVolume: number, nowMs: number): void {
+    if (!(lastPrice > 0)) return;
+    const boundary = this.floorTo5Min(nowMs);
+    const f = this.formingCandle.get(symbol);
+
+    if (!f || f.boundary !== boundary) {
+      // Finalize the prior bar (if any and same trading day) before opening a new one.
+      // Volume uses the LAST in-bar day-volume (not this crossing tick, whose volume belongs to the new bar).
+      if (f && this.sameDay(f.boundary, boundary)) {
+        this.appendCandle(symbol, {
+          date: new Date(f.boundary), open: f.open, high: f.high, low: f.low, close: f.close,
+          volume: Math.max(0, f.lastDayVol - f.openDayVol),
+        });
+      } else if (f) {
+        // New trading day → finalize prior bar without a reliable cross-day volume delta;
+        // leave volume 0 (the reseed/repair path corrects historical volume). Never stitch across days.
+        this.appendCandle(symbol, {
+          date: new Date(f.boundary), open: f.open, high: f.high, low: f.low, close: f.close,
+          volume: 0,
+        });
+      }
+      this.formingCandle.set(symbol, { boundary, open: lastPrice, high: lastPrice, low: lastPrice, close: lastPrice, openDayVol: dayVolume, lastDayVol: dayVolume });
+      return;
+    }
+
+    f.high = Math.max(f.high, lastPrice);
+    f.low = Math.min(f.low, lastPrice);
+    f.close = lastPrice;
+    f.lastDayVol = dayVolume;
+  }
+
+  /**
+   * Force-finalize the current forming candle for a symbol at a boundary (called at the 5-min
+   * mark with an authoritative day-volume from getQuote). Idempotent via appendCandle dedup.
+   */
+  flushFormingCandle(symbol: string, dayVolume: number): void {
+    const f = this.formingCandle.get(symbol);
+    if (!f) return;
+    this.appendCandle(symbol, {
+      date: new Date(f.boundary), open: f.open, high: f.high, low: f.low, close: f.close,
+      volume: Math.max(0, dayVolume - f.openDayVol),
+    });
+  }
+
+  /**
+   * Finding #1: finalize any forming candle whose 5-min boundary has already closed
+   * (boundary < floor(now)). Pure + synchronous (no network, no poll-guard dependency).
+   * Pushes the just-closed bar via appendCandle and clears the forming entry so the next poll
+   * opens a fresh bar with a real open. Called at scan start (incremental path) so scoring sees
+   * the bar that closed at XX:YY:00 instead of lagging one 5-min bar until the next 45s poll
+   * crosses the boundary. Idempotent: if the poll loop already finalized the bar, this is a no-op.
+   */
+  finalizeClosedFormingCandles(nowMs: number = Date.now()): number {
+    const cutoff = this.floorTo5Min(nowMs);
+    let finalized = 0;
+    for (const [sym, f] of this.formingCandle.entries()) {
+      if (f.boundary < cutoff) {
+        const sameDay = this.sameDay(f.boundary, cutoff);
+        this.appendCandle(sym, {
+          date: new Date(f.boundary), open: f.open, high: f.high, low: f.low, close: f.close,
+          volume: sameDay ? Math.max(0, f.lastDayVol - f.openDayVol) : 0,
+        });
+        this.formingCandle.delete(sym);
+        finalized++;
+      }
+    }
+    if (finalized > 0) this.logger.debug(`🕯️ Finalized ${finalized} just-closed forming candles at scan start`);
+    return finalized;
+  }
+
+  /** A symbol is stale if its newest candle is older than `maxAgeBars` 5-min bars. */
+  isCandleStale(symbol: string, nowMs: number, maxAgeBars = 2): boolean {
+    const series = this.cachedHistoricalData.get(symbol);
+    if (!series || series.length === 0) return true;
+    const lastT = this.floorTo5Min(series[series.length - 1]!.date.getTime());
+    return (this.floorTo5Min(nowMs) - lastT) > maxAgeBars * this.FIVE_MIN_MS;
+  }
+
+  /** Read accessor for the candle store (used by scoring / tests). */
+  getCandles(symbol: string): Candle[] | undefined {
+    return this.cachedHistoricalData.get(symbol);
+  }
+
+  /**
+   * Persist the trimmed candle store to disk so warm restarts can skip the network seed.
+   * Best-effort; never throws.
+   */
+  saveCandleStore(): void {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      if (!this.candleStorePath) {
+        const dir = path.join(process.cwd(), 'data', 'cache');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        this.candleStorePath = path.join(dir, 'scanner-candles.json');
+      }
+      const out: any = { savedAt: new Date().toISOString(), windowDays: this.SEED_LOOKBACK_DAYS, candles: {} };
+      for (const [sym, series] of this.cachedHistoricalData.entries()) {
+        out.candles[sym] = series.map(c => ({ d: c.date.getTime(), o: c.open, h: c.high, l: c.low, c: c.close, v: c.volume }));
+      }
+      fs.writeFileSync(this.candleStorePath, JSON.stringify(out));
+    } catch (e: any) {
+      this.logger.warn(`⚠️ saveCandleStore failed (non-fatal): ${e?.message || e}`);
+    }
+  }
+
+  /**
+   * Load the persisted candle store. Returns true if a FRESH store was loaded (newest bar within
+   * `maxAgeBars` of now during/just-after a session). Stale/missing → returns false (caller reseeds).
+   */
+  loadCandleStore(nowMs: number = Date.now(), maxAgeBars = 2): boolean {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const p = path.join(process.cwd(), 'data', 'cache', 'scanner-candles.json');
+      if (!fs.existsSync(p)) return false;
+      const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (!raw?.candles) return false;
+      let newest = 0;
+      const map = new Map<string, Candle[]>();
+      for (const sym of Object.keys(raw.candles)) {
+        const series: Candle[] = raw.candles[sym].map((r: any) => ({ date: new Date(r.d), open: r.o, high: r.h, low: r.l, close: r.c, volume: r.v }));
+        if (series.length) newest = Math.max(newest, series[series.length - 1]!.date.getTime());
+        map.set(sym, series);
+      }
+      const fresh = newest > 0 && (this.floorTo5Min(nowMs) - this.floorTo5Min(newest)) <= maxAgeBars * this.FIVE_MIN_MS;
+      if (!fresh) {
+        this.logger.info(`📦 Persisted candle store found but stale (newest ${new Date(newest).toISOString()}) — will reseed`);
+        return false;
+      }
+      this.cachedHistoricalData = map;
+      this.isDataCached = true;
+      this.logger.info(`📦 Loaded fresh candle store: ${map.size} symbols (newest ${new Date(newest).toISOString()})`);
+      return true;
+    } catch (e: any) {
+      this.logger.warn(`⚠️ loadCandleStore failed (non-fatal): ${e?.message || e}`);
+      return false;
+    }
+  }
+
+  // ─── IMP-001 orchestration (called by StrategyManager only when the flag is ON) ───
+
+  /**
+   * Ensure the candle store is seeded exactly once: prefer a fresh persisted store, else do a
+   * single SEED_LOOKBACK_DAYS historical pull and persist. Subsequent calls are no-ops.
+   */
+  async seedCandlesIfNeeded(): Promise<boolean> {
+    if (this.candleSeeded && this.cachedHistoricalData.size > 0) return true;
+    if (this.loadCandleStore()) { this.candleSeeded = true; return true; }
+    this.logger.info(`🌱 Seeding scanner candles once (${this.SEED_LOOKBACK_DAYS}-day historical pull)...`);
+    const res = await this.cacheHistoricalData(this.SEED_LOOKBACK_DAYS);
+    if (res.success) {
+      this.candleSeeded = true;
+      this.saveCandleStore();
+      this.logger.info(`🌱 Seed complete: ${res.count} symbols. Incremental candle engine active.`);
+    }
+    return res.success;
+  }
+
+  /**
+   * One quote poll for the whole universe → updates forming candles (running high/low + volume).
+   * Uses batched getQuote (≤250/call). Overlap-guarded. Cheap vs historical.
+   */
+  async pollUniverseCandles(): Promise<void> {
+    if (this.candlePollRunning) return;
+    if (!this.candleSeeded) return; // wait for the one-time seed (first scan) before building forming candles
+    this.candlePollRunning = true;
+    const now = Date.now();
+    let updated = 0;
+    try {
+      const keys = this.universe.map(s => `NSE:${s.symbol}`);
+      const CHUNK = 250;
+      for (let i = 0; i < keys.length; i += CHUNK) {
+        const chunk = keys.slice(i, i + CHUNK);
+        try {
+          const quotes = await this.kiteConnect.getQuote(chunk);
+          for (const stock of this.universe) {
+            const q = quotes[`NSE:${stock.symbol}`];
+            if (q && typeof q.last_price === 'number' && q.last_price > 0) {
+              this.updateFormingCandle(stock.symbol, q.last_price, q.volume || 0, now);
+              updated++;
+            }
+          }
+        } catch (e: any) {
+          this.logger.warn(`⚠️ Candle poll chunk failed (non-fatal): ${e?.message || e}`);
+        }
+        if (i + CHUNK < keys.length) await new Promise(r => setTimeout(r, 300));
+      }
+      this.lastPollSummary = { at: now, updated, total: this.universe.length };
+      this.logger.debug(`🕯️ Candle poll: ${updated}/${this.universe.length} symbols updated`);
+    } finally {
+      this.candlePollRunning = false;
+    }
+  }
+
+  /** Start the continuous candle-poll loop (gated by a market-hours predicate from the caller). */
+  startCandlePolling(intervalMs: number, isMarketOpen: () => boolean): void {
+    if (this.candlePollTimer) return;
+    this.logger.info(`🕯️ Starting incremental candle poll loop (every ${Math.round(intervalMs / 1000)}s)`);
+    this.candlePollTimer = setInterval(() => {
+      if (!isMarketOpen()) return;
+      this.pollUniverseCandles().catch(e => this.logger.warn(`candle poll error: ${e?.message || e}`));
+    }, intervalMs);
+  }
+
+  stopCandlePolling(): void {
+    if (this.candlePollTimer) { clearInterval(this.candlePollTimer); this.candlePollTimer = null; }
+  }
+
+  /**
+   * Targeted repair: reseed (historical) any symbol whose newest candle is stale. If too many are
+   * stale (> 30%), signal a full reseed instead. Returns counts for logging/validation.
+   */
+  async ensureFreshUniverse(nowMs: number = Date.now()): Promise<{ stale: number; reseeded: number; fullReseed: boolean }> {
+    const stale = this.universe.filter(s => this.isCandleStale(s.symbol, nowMs));
+    if (stale.length === 0) return { stale: 0, reseeded: 0, fullReseed: false };
+    if (stale.length > this.universe.length * 0.3) {
+      this.logger.warn(`⚠️ ${stale.length}/${this.universe.length} symbols stale → full reseed`);
+      const res = await this.cacheHistoricalData(this.SEED_LOOKBACK_DAYS);
+      if (res.success) this.saveCandleStore();
+      return { stale: stale.length, reseeded: res.count, fullReseed: true };
+    }
+    // Targeted reseed, batched (reuse historical pacing) — bounded since stale is small.
+    let reseeded = 0;
+    for (let i = 0; i < stale.length; i += 2) {
+      const batch = stale.slice(i, i + 2);
+      await Promise.allSettled(batch.map(async (s) => {
+        try {
+          const toDate = new Date();
+          const fromDate = new Date(); fromDate.setDate(fromDate.getDate() - this.SEED_LOOKBACK_DAYS);
+          const candles = await this.kiteConnect.getHistoricalData(s.instrumentToken, '5minute', fromDate, toDate);
+          if (candles && candles.length) {
+            this.cachedHistoricalData.set(s.symbol, candles.map((c: any) => ({ date: new Date(c.date), open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 })));
+            this.formingCandle.delete(s.symbol); // restart forming from clean history
+            reseeded++;
+          }
+        } catch { /* leave stale; next scan retries */ }
+      }));
+      if (i + 2 < stale.length) await new Promise(r => setTimeout(r, 1000));
+    }
+    this.logger.info(`🔧 Targeted reseed: ${reseeded}/${stale.length} stale symbols repaired`);
+    return { stale: stale.length, reseeded, fullReseed: false };
+  }
+
+  /** Status snapshot for dashboard/validation. */
+  getCandleEngineStatus(): { seeded: boolean; symbols: number; lastPoll: { at: number; updated: number; total: number }; sampleCounts: Array<{ symbol: string; candles: number; newest: string | null }> } {
+    const sample = this.universe.slice(0, 5).map(s => {
+      const series = this.cachedHistoricalData.get(s.symbol);
+      return { symbol: s.symbol, candles: series?.length || 0, newest: series && series.length ? series[series.length - 1]!.date.toISOString() : null };
+    });
+    return { seeded: this.candleSeeded, symbols: this.cachedHistoricalData.size, lastPoll: this.lastPollSummary, sampleCounts: sample };
   }
 
   /**
@@ -1973,10 +2302,17 @@ export class MarketScanner {
    * Calculate VWAP
    */
   private calculateVWAP(candles: Candle[]): number {
+    if (candles.length === 0) return 0;
+    // Finding #2: when session VWAP is enabled, anchor to the current session (the last bar's day)
+    // so VWAP resets daily — a true intraday VWAP. Legacy behavior (flag OFF) sums the whole array.
+    // An NSE session (09:15–15:30 IST = 03:45–10:00 UTC) never crosses UTC midnight, so sameDay
+    // (UTC date parts) groups one session cleanly.
+    const anchorTs = candles[candles.length - 1]!.date.getTime();
     let cumVolume = 0;
     let cumPriceVolume = 0;
 
     for (const candle of candles) {
+      if (this.useSessionVwap && !this.sameDay(candle.date.getTime(), anchorTs)) continue;
       const typicalPrice = (candle.high + candle.low + candle.close) / 3;
       cumPriceVolume += typicalPrice * candle.volume;
       cumVolume += candle.volume;
