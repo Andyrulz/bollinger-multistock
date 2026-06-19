@@ -1,5 +1,5 @@
 {
-  "capital": 60653.3,
+  "capital": 49868.36,
   "tradeHistory": [
     {
       "tradeId": "BB_1769592888631",
@@ -26,10 +26,34 @@
       "exitPrice": 119.3,
       "entryTime": "2026-01-28T09:30:05.904Z",
       "exitTime": "2026-01-28T09:34:48.631Z",
-      "pnl": -271.2499999999995,
+      "pnl": -368.07,
       "exitReason": "LONG_TRAILING_SL_POLLING",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -271.2499999999995,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.51,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.63,
+          "ipft": 0,
+          "gst": 4.96,
+          "total": 33.12
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 31.32,
+          "txnCharges": 7.42,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.94,
+          "total": 63.7
+        },
+        "totalCharges": 96.82
+      }
     },
     {
       "tradeId": "BB_1769670305367",
@@ -56,10 +80,34 @@
       "exitPrice": 98.2,
       "entryTime": "2026-01-29T06:50:26.268Z",
       "exitTime": "2026-01-29T07:05:05.367Z",
-      "pnl": -1006.25,
+      "pnl": -1094.66,
       "exitReason": "SHORT_ENTRY_CANDLE_HIGH_BREACH",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1006.25,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 6.46,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.55,
+          "ipft": 0,
+          "gst": 4.77,
+          "total": 31.8
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 25.78,
+          "txnCharges": 6.11,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.7,
+          "total": 56.61
+        },
+        "totalCharges": 88.41
+      }
     },
     {
       "tradeId": "BB_1769760006945",
@@ -86,10 +134,34 @@
       "exitPrice": 13.7,
       "entryTime": "2026-01-30T07:45:05.698Z",
       "exitTime": "2026-01-30T08:00:06.945Z",
-      "pnl": 249.99999999999912,
+      "pnl": 162.3,
       "exitReason": "SHORT_INSUFFICIENT_MOVEMENT_15MIN",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 249.99999999999912,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 6,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.51,
+          "ipft": 0,
+          "gst": 4.68,
+          "total": 31.21
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 25.69,
+          "txnCharges": 6.08,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.7,
+          "total": 56.49
+        },
+        "totalCharges": 87.7
+      }
     },
     {
       "tradeId": "BB_1769918405355",
@@ -116,10 +188,34 @@
       "exitPrice": 68.5,
       "entryTime": "2026-02-01T03:55:05.432Z",
       "exitTime": "2026-02-01T04:00:05.355Z",
-      "pnl": -989.9999999999984,
+      "pnl": -1082.3,
       "exitReason": "SHORT_ENTRY_CANDLE_HIGH_BREACH",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -989.9999999999984,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.04,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.59,
+          "ipft": 0,
+          "gst": 4.87,
+          "total": 32.52
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 28.26,
+          "txnCharges": 6.69,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.81,
+          "total": 59.78
+        },
+        "totalCharges": 92.3
+      }
     },
     {
       "tradeId": "BB_1769929344695",
@@ -146,10 +242,34 @@
       "exitPrice": 30.8,
       "entryTime": "2026-02-01T06:55:05.815Z",
       "exitTime": "2026-02-01T07:02:24.695Z",
-      "pnl": 2812.5,
+      "pnl": 2720.93,
       "exitReason": "SHORT_TRAILING_SL_POLLING",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 2812.5,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.84,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.49,
+          "ipft": 0,
+          "gst": 4.65,
+          "total": 31
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 28.88,
+          "txnCharges": 6.84,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.83,
+          "total": 60.57
+        },
+        "totalCharges": 91.57
+      }
     },
     {
       "tradeId": "BB_1769929635323",
@@ -176,10 +296,34 @@
       "exitPrice": 26.65,
       "entryTime": "2026-02-01T07:05:08.103Z",
       "exitTime": "2026-02-01T07:07:15.323Z",
-      "pnl": -2281.2500000000014,
+      "pnl": -2368.97,
       "exitReason": "SHORT_TRAILING_SL_POLLING",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -2281.2500000000014,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 6.73,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.57,
+          "ipft": 0,
+          "gst": 4.81,
+          "total": 32.13
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 24.98,
+          "txnCharges": 5.92,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.67,
+          "total": 55.59
+        },
+        "totalCharges": 87.72
+      }
     },
     {
       "tradeId": "BB_1770100806435",
@@ -206,10 +350,34 @@
       "exitPrice": 20.7,
       "entryTime": "2026-02-03T06:00:06.658Z",
       "exitTime": "2026-02-03T06:40:06.435Z",
-      "pnl": -3062.5000000000014,
+      "pnl": -3141.76,
       "exitReason": "LONG_SUPERTREND_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -3062.5000000000014,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.68,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.48,
+          "ipft": 0,
+          "gst": 4.63,
+          "total": 30.81
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 19.41,
+          "txnCharges": 4.6,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.43,
+          "total": 48.45
+        },
+        "totalCharges": 79.26
+      }
     },
     {
       "tradeId": "BB_1770191106609",
@@ -236,10 +404,34 @@
       "exitPrice": 56.1,
       "entryTime": "2026-02-04T06:55:06.676Z",
       "exitTime": "2026-02-04T07:45:06.609Z",
-      "pnl": -2287.5000000000005,
+      "pnl": -2385.61,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -2287.5000000000005,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.29,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.7,
+          "ipft": 0,
+          "gst": 5.1,
+          "total": 34.11
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 31.56,
+          "txnCharges": 7.47,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.95,
+          "total": 64
+        },
+        "totalCharges": 98.11
+      }
     },
     {
       "tradeId": "BB_1770266706769",
@@ -266,10 +458,34 @@
       "exitPrice": 12.45,
       "entryTime": "2026-02-05T03:55:06.533Z",
       "exitTime": "2026-02-05T04:45:06.769Z",
-      "pnl": -160.00000000000085,
+      "pnl": -230.89,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -160.00000000000085,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.6,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.3,
+          "ipft": 0,
+          "gst": 4.25,
+          "total": 28.16
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 14.94,
+          "txnCharges": 3.54,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.24,
+          "total": 42.73
+        },
+        "totalCharges": 70.89
+      }
     },
     {
       "tradeId": "BB_1770366006474",
@@ -296,10 +512,34 @@
       "exitPrice": 33.1,
       "entryTime": "2026-02-06T07:20:06.619Z",
       "exitTime": "2026-02-06T08:20:06.474Z",
-      "pnl": -2729.999999999998,
+      "pnl": -2825.52,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -2729.999999999998,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.03,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.68,
+          "ipft": 0,
+          "gst": 5.05,
+          "total": 33.78
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 29.79,
+          "txnCharges": 7.06,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.87,
+          "total": 61.74
+        },
+        "totalCharges": 95.52
+      }
     },
     {
       "tradeId": "BB_1770371340459",
@@ -326,10 +566,34 @@
       "exitPrice": 36,
       "entryTime": "2026-02-06T09:25:06.907Z",
       "exitTime": "2026-02-06T09:49:00.459Z",
-      "pnl": 337.50000000000034,
+      "pnl": 269.1,
       "exitReason": "EOD_SAFETY_EXIT_3:19PM",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 337.50000000000034,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.08,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.26,
+          "ipft": 0,
+          "gst": 4.16,
+          "total": 27.51
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 13.5,
+          "txnCharges": 3.2,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.18,
+          "total": 40.89
+        },
+        "totalCharges": 68.4
+      }
     },
     {
       "tradeId": "BB_1770619500868",
@@ -356,10 +620,34 @@
       "exitPrice": 29.5,
       "entryTime": "2026-02-09T06:35:06.514Z",
       "exitTime": "2026-02-09T06:45:00.868Z",
-      "pnl": 2681.25,
+      "pnl": 2577.56,
       "exitReason": "GAMMA_CLIMAX_RSI92",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 2681.25,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.69,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.65,
+          "ipft": 0,
+          "gst": 4.99,
+          "total": 33.35
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 36.51,
+          "txnCharges": 8.65,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.16,
+          "total": 70.34
+        },
+        "totalCharges": 103.69
+      }
     },
     {
       "tradeId": "BB_1770626701056",
@@ -386,10 +674,34 @@
       "exitPrice": 28.3,
       "entryTime": "2026-02-09T08:35:06.691Z",
       "exitTime": "2026-02-09T08:45:01.056Z",
-      "pnl": 2557.5000000000014,
+      "pnl": 2456.1,
       "exitReason": "GAMMA_CLIMAX_RSI89",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 2557.5000000000014,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.39,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.62,
+          "ipft": 0,
+          "gst": 4.93,
+          "total": 32.96
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 35.02,
+          "txnCharges": 8.3,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.1,
+          "total": 68.44
+        },
+        "totalCharges": 101.4
+      }
     },
     {
       "tradeId": "BB_1770701706590",
@@ -416,10 +728,34 @@
       "exitPrice": 10.35,
       "entryTime": "2026-02-10T04:15:06.608Z",
       "exitTime": "2026-02-10T05:35:06.590Z",
-      "pnl": -2475,
+      "pnl": -2543.56,
       "exitReason": "LONG_SUPERTREND_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -2475,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.91,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.33,
+          "ipft": 0,
+          "gst": 4.31,
+          "total": 28.56
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 12.81,
+          "txnCharges": 3.03,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.15,
+          "total": 40
+        },
+        "totalCharges": 68.56
+      }
     },
     {
       "tradeId": "BB_1770708006476",
@@ -446,10 +782,34 @@
       "exitPrice": 45.6,
       "entryTime": "2026-02-10T06:40:06.652Z",
       "exitTime": "2026-02-10T07:20:06.476Z",
-      "pnl": -1774.9999999999986,
+      "pnl": -1877.05,
       "exitReason": "LONG_SUPERTREND_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1774.9999999999986,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.73,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.74,
+          "ipft": 0,
+          "gst": 5.18,
+          "total": 34.67
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 34.2,
+          "txnCharges": 8.1,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.06,
+          "total": 67.38
+        },
+        "totalCharges": 102.05
+      }
     },
     {
       "tradeId": "BB_1770799789486",
@@ -476,10 +836,34 @@
       "exitPrice": 33.7,
       "entryTime": "2026-02-11T08:35:06.511Z",
       "exitTime": "2026-02-11T08:49:49.486Z",
-      "pnl": -579.9999999999983,
+      "pnl": -659.41,
       "exitReason": "MONITORING_RESTART_FAILED",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -579.9999999999983,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.42,
+          "ipft": 0,
+          "gst": 4.5,
+          "total": 29.93
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 20.22,
+          "txnCharges": 4.79,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.46,
+          "total": 49.48
+        },
+        "totalCharges": 79.41
+      }
     },
     {
       "tradeId": "BB_1770803340317",
@@ -506,10 +890,34 @@
       "exitPrice": 65.5,
       "entryTime": "2026-02-11T08:55:06.540Z",
       "exitTime": "2026-02-11T09:49:00.317Z",
-      "pnl": 1216.2500000000005,
+      "pnl": 1142.43,
       "exitReason": "EOD_SAFETY_EXIT_3:19PM",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 1216.2500000000005,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.64,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.31,
+          "ipft": 0,
+          "gst": 4.26,
+          "total": 28.22
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 17.19,
+          "txnCharges": 4.07,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.33,
+          "total": 45.6
+        },
+        "totalCharges": 73.82
+      }
     },
     {
       "tradeId": "BB_1770873606356",
@@ -536,10 +944,34 @@
       "exitPrice": 9.9,
       "entryTime": "2026-02-12T04:05:06.553Z",
       "exitTime": "2026-02-12T05:20:06.356Z",
-      "pnl": -797.4999999999997,
+      "pnl": -857.98,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -797.4999999999997,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 2.22,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.19,
+          "ipft": 0,
+          "gst": 4,
+          "total": 26.42
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 8.17,
+          "txnCharges": 1.93,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 3.95,
+          "total": 34.06
+        },
+        "totalCharges": 60.48
+      }
     },
     {
       "tradeId": "BB_1770889740346",
@@ -566,10 +998,34 @@
       "exitPrice": 69.55,
       "entryTime": "2026-02-12T07:45:06.544Z",
       "exitTime": "2026-02-12T09:49:00.346Z",
-      "pnl": 1019.9999999999989,
+      "pnl": 940.28,
       "exitReason": "EOD_SAFETY_EXIT_3:19PM",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 1019.9999999999989,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.58,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.39,
+          "ipft": 0,
+          "gst": 4.43,
+          "total": 29.41
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 20.87,
+          "txnCharges": 4.94,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.49,
+          "total": 50.31
+        },
+        "totalCharges": 79.72
+      }
     },
     {
       "tradeId": "BB_1770959706393",
@@ -596,10 +1052,34 @@
       "exitPrice": 18.05,
       "entryTime": "2026-02-13T04:25:06.490Z",
       "exitTime": "2026-02-13T05:15:06.393Z",
-      "pnl": -218.74999999999866,
+      "pnl": -292.8,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -218.74999999999866,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.09,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.35,
+          "ipft": 0,
+          "gst": 4.34,
+          "total": 28.79
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 16.92,
+          "txnCharges": 4.01,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.32,
+          "total": 45.26
+        },
+        "totalCharges": 74.05
+      }
     },
     {
       "tradeId": "BB_1770966306486",
@@ -626,10 +1106,34 @@
       "exitPrice": 43.9,
       "entryTime": "2026-02-13T06:05:06.439Z",
       "exitTime": "2026-02-13T07:05:06.486Z",
-      "pnl": -1946.7000000000014,
+      "pnl": -2026.95,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1946.7000000000014,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.51,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.47,
+          "ipft": 0,
+          "gst": 4.6,
+          "total": 30.6
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 20.35,
+          "txnCharges": 4.82,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.47,
+          "total": 49.65
+        },
+        "totalCharges": 80.25
+      }
     },
     {
       "tradeId": "BB_1770976140308",
@@ -656,10 +1160,34 @@
       "exitPrice": 96.9,
       "entryTime": "2026-02-13T07:55:06.619Z",
       "exitTime": "2026-02-13T09:49:00.308Z",
-      "pnl": 581.2500000000007,
+      "pnl": 505.59,
       "exitReason": "EOD_SAFETY_EXIT_3:19PM",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 581.2500000000007,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.1,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.35,
+          "ipft": 0,
+          "gst": 4.34,
+          "total": 28.8
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 18.17,
+          "txnCharges": 4.3,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.38,
+          "total": 46.86
+        },
+        "totalCharges": 75.66
+      }
     },
     {
       "tradeId": "BB_1771233006613",
@@ -686,10 +1214,34 @@
       "exitPrice": 137,
       "entryTime": "2026-02-16T06:45:06.487Z",
       "exitTime": "2026-02-16T09:10:06.613Z",
-      "pnl": -74.99999999999929,
+      "pnl": -162.84,
       "exitReason": "LONG_SUPERTREND_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -74.99999999999929,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 6.11,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.52,
+          "ipft": 0,
+          "gst": 4.7,
+          "total": 31.35
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 25.69,
+          "txnCharges": 6.08,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.7,
+          "total": 56.49
+        },
+        "totalCharges": 87.84
+      }
     },
     {
       "tradeId": "BB_1771310405762",
@@ -716,10 +1268,34 @@
       "exitPrice": 30.75,
       "entryTime": "2026-02-17T05:40:05.733Z",
       "exitTime": "2026-02-17T06:40:05.762Z",
-      "pnl": -1147.5000000000002,
+      "pnl": -1211.63,
       "exitReason": "LONG_SUPERTREND_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1147.5000000000002,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 2.87,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.24,
+          "ipft": 0,
+          "gst": 4.12,
+          "total": 27.24
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 10.38,
+          "txnCharges": 2.46,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.04,
+          "total": 36.89
+        },
+        "totalCharges": 64.13
+      }
     },
     {
       "tradeId": "BB_1771321740301",
@@ -746,10 +1322,34 @@
       "exitPrice": 41.15,
       "entryTime": "2026-02-17T09:05:06.548Z",
       "exitTime": "2026-02-17T09:49:00.301Z",
-      "pnl": 936.2500000000002,
+      "pnl": 872.39,
       "exitReason": "EOD_SAFETY_EXIT_3:19PM",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 936.2500000000002,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 2.23,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.19,
+          "ipft": 0,
+          "gst": 4,
+          "total": 26.43
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 10.8,
+          "txnCharges": 2.56,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.06,
+          "total": 37.43
+        },
+        "totalCharges": 63.86
+      }
     },
     {
       "tradeId": "BB_1771488606432",
@@ -776,10 +1376,34 @@
       "exitPrice": 64.45,
       "entryTime": "2026-02-19T06:40:06.626Z",
       "exitTime": "2026-02-19T08:10:06.432Z",
-      "pnl": 307.5000000000006,
+      "pnl": 237.52,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 307.5000000000006,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.33,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.28,
+          "ipft": 0,
+          "gst": 4.2,
+          "total": 27.82
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 14.5,
+          "txnCharges": 3.43,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.22,
+          "total": 42.16
+        },
+        "totalCharges": 69.98
+      }
     },
     {
       "tradeId": "BB_1772085906462",
@@ -806,10 +1430,34 @@
       "exitPrice": 26.45,
       "entryTime": "2026-02-26T05:05:06.489Z",
       "exitTime": "2026-02-26T06:05:06.462Z",
-      "pnl": -1237.5000000000016,
+      "pnl": -1332.29,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1237.5000000000016,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.49,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.63,
+          "ipft": 0,
+          "gst": 4.95,
+          "total": 33.09
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 29.76,
+          "txnCharges": 7.05,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.87,
+          "total": 61.7
+        },
+        "totalCharges": 94.79
+      }
     },
     {
       "tradeId": "BB_1772094306622",
@@ -836,10 +1484,34 @@
       "exitPrice": 133.35,
       "entryTime": "2026-02-26T06:15:06.504Z",
       "exitTime": "2026-02-26T08:25:06.622Z",
-      "pnl": 669.9999999999989,
+      "pnl": 591.49,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 669.9999999999989,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.5,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.38,
+          "ipft": 0,
+          "gst": 4.41,
+          "total": 29.3
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 20,
+          "txnCharges": 4.74,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.46,
+          "total": 49.21
+        },
+        "totalCharges": 78.51
+      }
     },
     {
       "tradeId": "BB_1772180706434",
@@ -866,10 +1538,34 @@
       "exitPrice": 139.6,
       "entryTime": "2026-02-27T08:10:06.505Z",
       "exitTime": "2026-02-27T08:25:06.434Z",
-      "pnl": -2189.999999999999,
+      "pnl": -2287.82,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -2189.999999999999,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.22,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.69,
+          "ipft": 0,
+          "gst": 5.08,
+          "total": 34.01
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 31.41,
+          "txnCharges": 7.44,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.94,
+          "total": 63.81
+        },
+        "totalCharges": 97.82
+      }
     },
     {
       "tradeId": "BB_1772425806395",
@@ -896,10 +1592,34 @@
       "exitPrice": 18.65,
       "entryTime": "2026-03-02T04:20:06.486Z",
       "exitTime": "2026-03-02T04:30:06.395Z",
-      "pnl": -875,
+      "pnl": -953.54,
       "exitReason": "RSI_CONFIRMATION_FAILED",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -875,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.95,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.42,
+          "ipft": 0,
+          "gst": 4.49,
+          "total": 29.87
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 19.58,
+          "txnCharges": 4.64,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.44,
+          "total": 48.67
+        },
+        "totalCharges": 78.54
+      }
     },
     {
       "tradeId": "BB_1772440232364",
@@ -926,10 +1646,34 @@
       "exitPrice": 953.35,
       "entryTime": "2026-03-02T08:20:06.811Z",
       "exitTime": "2026-03-02T08:30:32.364Z",
-      "pnl": -303.74999999999943,
+      "pnl": -407.59,
       "exitReason": "RSI_CONFIRMATION_FAILED",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -303.74999999999943,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.58,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.72,
+          "ipft": 0,
+          "gst": 5.15,
+          "total": 34.47
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 35.75,
+          "txnCharges": 8.47,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.13,
+          "total": 69.37
+        },
+        "totalCharges": 103.84
+      }
     },
     {
       "tradeId": "BB_1772605806581",
@@ -956,10 +1700,34 @@
       "exitPrice": 218.65,
       "entryTime": "2026-03-04T05:45:06.644Z",
       "exitTime": "2026-03-04T06:30:06.581Z",
-      "pnl": -334.99999999999943,
+      "pnl": -434.19,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -334.99999999999943,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.89,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.67,
+          "ipft": 0,
+          "gst": 5.02,
+          "total": 33.6
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 32.8,
+          "txnCharges": 7.77,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5,
+          "total": 65.59
+        },
+        "totalCharges": 99.19
+      }
     },
     {
       "tradeId": "BB_1772611506596",
@@ -986,10 +1754,34 @@
       "exitPrice": 29.05,
       "entryTime": "2026-03-04T06:35:06.627Z",
       "exitTime": "2026-03-04T08:05:06.596Z",
-      "pnl": 131.25000000000054,
+      "pnl": 58.29,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 131.25000000000054,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.82,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.32,
+          "ipft": 0,
+          "gst": 4.29,
+          "total": 28.44
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 16.34,
+          "txnCharges": 3.87,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.3,
+          "total": 44.52
+        },
+        "totalCharges": 72.96
+      }
     },
     {
       "tradeId": "BB_1772612106487",
@@ -1016,10 +1808,34 @@
       "exitPrice": 73.3,
       "entryTime": "2026-03-04T08:10:06.556Z",
       "exitTime": "2026-03-04T08:15:06.487Z",
-      "pnl": -341.2500000000005,
+      "pnl": -419.01,
       "exitReason": "RSI_CONFIRMATION_FAILED",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -341.2500000000005,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.68,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.4,
+          "ipft": 0,
+          "gst": 4.44,
+          "total": 29.53
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 19.24,
+          "txnCharges": 4.56,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.42,
+          "total": 48.23
+        },
+        "totalCharges": 77.76
+      }
     },
     {
       "tradeId": "BB_1772615106458",
@@ -1046,10 +1862,34 @@
       "exitPrice": 29.95,
       "entryTime": "2026-03-04T09:00:06.665Z",
       "exitTime": "2026-03-04T09:05:06.459Z",
-      "pnl": -225.00000000000054,
+      "pnl": -298.92,
       "exitReason": "RSI_CONFIRMATION_FAILED",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -225.00000000000054,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.07,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.34,
+          "ipft": 0,
+          "gst": 4.33,
+          "total": 28.75
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 16.85,
+          "txnCharges": 3.99,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.32,
+          "total": 45.17
+        },
+        "totalCharges": 73.92
+      }
     },
     {
       "tradeId": "BB_1772692806553",
@@ -1076,10 +1916,34 @@
       "exitPrice": 45.15,
       "entryTime": "2026-03-05T04:05:06.589Z",
       "exitTime": "2026-03-05T06:40:06.553Z",
-      "pnl": 1697.5000000000005,
+      "pnl": 1613.62,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 1697.5000000000005,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.01,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.42,
+          "ipft": 0,
+          "gst": 4.5,
+          "total": 29.94
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 23.7,
+          "txnCharges": 5.61,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.61,
+          "total": 53.94
+        },
+        "totalCharges": 83.88
+      }
     },
     {
       "tradeId": "BB_1772702106563",
@@ -1106,10 +1970,34 @@
       "exitPrice": 67.05,
       "entryTime": "2026-03-05T08:20:06.578Z",
       "exitTime": "2026-03-05T09:15:06.563Z",
-      "pnl": -3478.7500000000014,
+      "pnl": -3571.24,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -3478.7500000000014,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.79,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.66,
+          "ipft": 0,
+          "gst": 5.01,
+          "total": 33.48
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 27.66,
+          "txnCharges": 6.55,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.78,
+          "total": 59.01
+        },
+        "totalCharges": 92.49
+      }
     },
     {
       "tradeId": "BB_1772704140385",
@@ -1136,10 +2024,34 @@
       "exitPrice": 35.05,
       "entryTime": "2026-03-05T09:20:06.584Z",
       "exitTime": "2026-03-05T09:49:00.385Z",
-      "pnl": -1650,
+      "pnl": -1766.49,
       "exitReason": "EOD_SAFETY_EXIT_3:19PM",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1650,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 10.86,
+          "sebiCharges": 0.03,
+          "stampDuty": 0.92,
+          "ipft": 0,
+          "gst": 5.56,
+          "total": 37.37
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 43.37,
+          "txnCharges": 10.27,
+          "sebiCharges": 0.03,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.45,
+          "total": 79.12
+        },
+        "totalCharges": 116.49
+      }
     },
     {
       "tradeId": "BB_1772790540372",
@@ -1166,10 +2078,34 @@
       "exitPrice": 351.2,
       "entryTime": "2026-03-06T09:15:06.542Z",
       "exitTime": "2026-03-06T09:49:00.372Z",
-      "pnl": 1817.4999999999982,
+      "pnl": 1729.48,
       "exitReason": "EOD_SAFETY_EXIT_3:19PM",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 1817.4999999999982,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.59,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.47,
+          "ipft": 0,
+          "gst": 4.61,
+          "total": 30.69
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 26.34,
+          "txnCharges": 6.24,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.73,
+          "total": 57.33
+        },
+        "totalCharges": 88.02
+      }
     },
     {
       "tradeId": "BB_1773133506523",
@@ -1196,10 +2132,34 @@
       "exitPrice": 107.75,
       "entryTime": "2026-03-10T07:25:06.443Z",
       "exitTime": "2026-03-10T09:05:06.523Z",
-      "pnl": -1023.749999999999,
+      "pnl": -1116.11,
       "exitReason": "LONG_SUPERTREND_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1023.749999999999,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.06,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.6,
+          "ipft": 0,
+          "gst": 4.87,
+          "total": 32.55
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 28.28,
+          "txnCharges": 6.7,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.81,
+          "total": 59.81
+        },
+        "totalCharges": 92.36
+      }
     },
     {
       "tradeId": "BB_MANUAL_CLEAR_1773219562751",
@@ -1226,10 +2186,34 @@
       "exitPrice": 65.65,
       "entryTime": "2026-03-11T07:00:06.606Z",
       "exitTime": "2026-03-11T08:59:13.000Z",
-      "pnl": 6562.500000000005,
+      "pnl": 6420.98,
       "exitReason": "MANUAL_CLEAR_BROKER_AUTO_SQUAREOFF",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 6562.500000000005,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 12.25,
+          "sebiCharges": 0.03,
+          "stampDuty": 1.03,
+          "ipft": 0,
+          "gst": 5.81,
+          "total": 39.12
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 61.55,
+          "txnCharges": 14.58,
+          "sebiCharges": 0.04,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 6.23,
+          "total": 102.4
+        },
+        "totalCharges": 141.52
+      }
     },
     {
       "tradeId": "BB_1773391806425",
@@ -1256,10 +2240,34 @@
       "exitPrice": 106.15,
       "entryTime": "2026-03-13T07:55:06.459Z",
       "exitTime": "2026-03-13T08:50:06.425Z",
-      "pnl": -1159.9999999999995,
+      "pnl": -1232.87,
       "exitReason": "PREMIUM_HARD_STOP_8PCT",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1159.9999999999995,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.18,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.35,
+          "ipft": 0,
+          "gst": 4.35,
+          "total": 28.89
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 15.92,
+          "txnCharges": 3.77,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.28,
+          "total": 43.98
+        },
+        "totalCharges": 72.87
+      }
     },
     {
       "tradeId": "BB_1773640206539",
@@ -1286,10 +2294,34 @@
       "exitPrice": 56.65,
       "entryTime": "2026-03-16T04:40:06.573Z",
       "exitTime": "2026-03-16T05:50:06.539Z",
-      "pnl": 1572.4999999999982,
+      "pnl": 1468.94,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 1572.4999999999982,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.68,
+          "ipft": 0,
+          "gst": 5.04,
+          "total": 33.74
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 36.11,
+          "txnCharges": 8.55,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.14,
+          "total": 69.82
+        },
+        "totalCharges": 103.56
+      }
     },
     {
       "tradeId": "BB_1773651006643",
@@ -1316,10 +2348,34 @@
       "exitPrice": 78.3,
       "entryTime": "2026-03-16T07:10:06.616Z",
       "exitTime": "2026-03-16T08:50:06.643Z",
-      "pnl": 990.0000000000006,
+      "pnl": 906.13,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 990.0000000000006,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.21,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.44,
+          "ipft": 0,
+          "gst": 4.54,
+          "total": 30.2
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 23.49,
+          "txnCharges": 5.56,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.6,
+          "total": 53.67
+        },
+        "totalCharges": 83.87
+      }
     },
     {
       "tradeId": "BB_1773723906468",
@@ -1346,10 +2402,34 @@
       "exitPrice": 52.6,
       "entryTime": "2026-03-17T04:35:06.531Z",
       "exitTime": "2026-03-17T05:05:06.468Z",
-      "pnl": -2899.9999999999986,
+      "pnl": -3010.86,
       "exitReason": "PREMIUM_HARD_STOP_8PCT",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -2899.9999999999986,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 10.37,
+          "sebiCharges": 0.03,
+          "stampDuty": 0.88,
+          "ipft": 0,
+          "gst": 5.47,
+          "total": 36.75
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 39.45,
+          "txnCharges": 9.34,
+          "sebiCharges": 0.03,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.29,
+          "total": 74.11
+        },
+        "totalCharges": 110.86
+      }
     },
     {
       "tradeId": "BB_1773824706595",
@@ -1376,10 +2456,34 @@
       "exitPrice": 73,
       "entryTime": "2026-03-18T07:15:06.565Z",
       "exitTime": "2026-03-18T09:05:06.595Z",
-      "pnl": 1189.9999999999995,
+      "pnl": 1113.05,
       "exitReason": "LONG_SUPERTREND_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 1189.9999999999995,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.12,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.35,
+          "ipft": 0,
+          "gst": 4.34,
+          "total": 28.82
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 19.16,
+          "txnCharges": 4.54,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.42,
+          "total": 48.13
+        },
+        "totalCharges": 76.95
+      }
     },
     {
       "tradeId": "BB_1773910206542",
@@ -1406,10 +2510,34 @@
       "exitPrice": 51.25,
       "entryTime": "2026-03-19T07:35:06.532Z",
       "exitTime": "2026-03-19T08:50:06.542Z",
-      "pnl": -880.0000000000008,
+      "pnl": -961,
       "exitReason": "SHORT_SUPERTREND_BB_BREAK",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -880.0000000000008,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.32,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.45,
+          "ipft": 0,
+          "gst": 4.56,
+          "total": 30.34
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 21.14,
+          "txnCharges": 5.01,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.5,
+          "total": 50.66
+        },
+        "totalCharges": 81
+      }
     },
     {
       "tradeId": "BB_1774340100997",
@@ -1436,10 +2564,34 @@
       "exitPrice": 104.55,
       "entryTime": "2026-03-24T07:05:06.588Z",
       "exitTime": "2026-03-24T08:15:00.997Z",
-      "pnl": 8356.25,
+      "pnl": 8269.44,
       "exitReason": "GAMMA_CLIMAX_RSI87",
       "status": "CLOSED",
-      "strategy": "BOLLINGER_BAND"
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 8356.25,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.53,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.3,
+          "ipft": 0,
+          "gst": 4.24,
+          "total": 28.08
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 27.44,
+          "txnCharges": 6.5,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.77,
+          "total": 58.73
+        },
+        "totalCharges": 86.81
+      }
     },
     {
       "tradeId": "BB_1775028906253",
@@ -1466,13 +2618,1495 @@
       "exitPrice": 247.15,
       "entryTime": "2026-04-01T07:20:06.504Z",
       "exitTime": "2026-04-01T07:35:06.253Z",
-      "pnl": -1629.9999999999982,
+      "pnl": -1736.52,
       "exitReason": "BREAKOUT_NO_FOLLOWTHROUGH",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -1629.9999999999982,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 9.36,
+          "sebiCharges": 0.03,
+          "stampDuty": 0.79,
+          "ipft": 0,
+          "gst": 5.29,
+          "total": 35.47
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 37.07,
+          "txnCharges": 8.78,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.18,
+          "total": 71.05
+        },
+        "totalCharges": 106.52
+      }
+    },
+    {
+      "tradeId": "BB_1775641740161",
+      "entryOrderId": "260408150781591",
+      "exitOrderId": "260408151626912",
+      "instrument": {
+        "instrument_token": "25538818",
+        "exchange_token": "99761",
+        "tradingsymbol": "COFORGE26APR1240CE",
+        "name": "COFORGE",
+        "last_price": 56.7,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 1240,
+        "tick_size": 0.05,
+        "lot_size": 375,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 375,
+      "entryPrice": 57.45,
+      "exitPrice": 66.4,
+      "entryTime": "2026-04-08T05:15:06.520Z",
+      "exitTime": "2026-04-08T09:49:00.161Z",
+      "pnl": 3251.53,
+      "exitReason": "EOD_SAFETY_EXIT_3:19PM",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": 3356.250000000001,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.65,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.65,
+          "ipft": 0,
+          "gst": 4.98,
+          "total": 33.3
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 37.35,
+          "txnCharges": 8.85,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.2,
+          "total": 71.42
+        },
+        "totalCharges": 104.72
+      }
+    },
+    {
+      "tradeId": "BB_1775811306292",
+      "entryOrderId": "260410150969952",
+      "exitOrderId": "260410151246824",
+      "instrument": {
+        "instrument_token": "41815042",
+        "exchange_token": "163340",
+        "tradingsymbol": "TRENT26APR3950CE",
+        "name": "TRENT",
+        "last_price": 124.05,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 3950,
+        "tick_size": 0.05,
+        "lot_size": 100,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 100,
+      "entryPrice": 125.3,
+      "exitPrice": 116.45,
+      "entryTime": "2026-04-10T07:10:06.516Z",
+      "exitTime": "2026-04-10T08:55:06.292Z",
+      "pnl": -960.21,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND",
+      "grossPnl": -884.9999999999994,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.45,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.38,
+          "ipft": 0,
+          "gst": 4.4,
+          "total": 29.24
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 17.47,
+          "txnCharges": 4.14,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.35,
+          "total": 45.97
+        },
+        "totalCharges": 75.21
+      }
+    },
+    {
+      "tradeId": "BB_1776238206260",
+      "entryOrderId": "260415150432776",
+      "exitOrderId": "260415151099535",
+      "instrument": {
+        "instrument_token": "29057282",
+        "exchange_token": "113505",
+        "tradingsymbol": "HAL26APR4200CE",
+        "name": "HAL",
+        "last_price": 114.95,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 4200,
+        "tick_size": 0.05,
+        "lot_size": 150,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 150,
+      "entryPrice": 114.95,
+      "exitPrice": 115.45,
+      "entryTime": "2026-04-15T04:20:06.482Z",
+      "exitTime": "2026-04-15T07:30:06.260Z",
+      "grossPnl": 75,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 6.13,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.52,
+          "ipft": 0,
+          "gst": 4.71,
+          "total": 31.38
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 25.98,
+          "txnCharges": 6.15,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.71,
+          "total": 56.86
+        },
+        "totalCharges": 88.24
+      },
+      "pnl": -13.239999999999995,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776239706267",
+      "entryOrderId": "260415151122242",
+      "exitOrderId": "260415151160380",
+      "instrument": {
+        "instrument_token": "24289794",
+        "exchange_token": "94882",
+        "tradingsymbol": "COLPAL26APR1940CE",
+        "name": "COLPAL",
+        "last_price": 46.25,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 1940,
+        "tick_size": 0.05,
+        "lot_size": 225,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 225,
+      "entryPrice": 45.6,
+      "exitPrice": 42.2,
+      "entryTime": "2026-04-15T07:40:06.514Z",
+      "exitTime": "2026-04-15T07:55:06.267Z",
+      "grossPnl": -764.9999999999997,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.65,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.31,
+          "ipft": 0,
+          "gst": 4.26,
+          "total": 28.23
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 14.24,
+          "txnCharges": 3.37,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.21,
+          "total": 41.83
+        },
+        "totalCharges": 70.06
+      },
+      "pnl": -835.0599999999997,
+      "exitReason": "BREAKOUT_NO_FOLLOWTHROUGH",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776246540206",
+      "entryOrderId": "260415151215608",
+      "exitOrderId": "260415151489904",
+      "instrument": {
+        "instrument_token": "25541378",
+        "exchange_token": "99771",
+        "tradingsymbol": "COFORGE26APR1280CE",
+        "name": "COFORGE",
+        "last_price": 42.4,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 1280,
+        "tick_size": 0.05,
+        "lot_size": 375,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 375,
+      "entryPrice": 42.4,
+      "exitPrice": 40.95,
+      "entryTime": "2026-04-15T08:15:06.520Z",
+      "exitTime": "2026-04-15T09:49:00.206Z",
+      "grossPnl": -543.7499999999984,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.65,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.48,
+          "ipft": 0,
+          "gst": 4.62,
+          "total": 30.77
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 23.03,
+          "txnCharges": 5.46,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.59,
+          "total": 53.1
+        },
+        "totalCharges": 83.87
+      },
+      "pnl": -627.6199999999984,
+      "exitReason": "EOD_SAFETY_EXIT_3:19PM",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776321006346",
+      "entryOrderId": "260416150699688",
+      "exitOrderId": "260416151019699",
+      "instrument": {
+        "instrument_token": "21158146",
+        "exchange_token": "82649",
+        "tradingsymbol": "ASIANPAINT26APR2440CE",
+        "name": "ASIANPAINT",
+        "last_price": 53,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 2440,
+        "tick_size": 0.05,
+        "lot_size": 250,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 250,
+      "entryPrice": 53.8,
+      "exitPrice": 47.45,
+      "entryTime": "2026-04-16T05:10:06.488Z",
+      "exitTime": "2026-04-16T06:30:06.346Z",
+      "grossPnl": -1587.4999999999986,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.78,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.4,
+          "ipft": 0,
+          "gst": 4.46,
+          "total": 29.65
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 17.79,
+          "txnCharges": 4.21,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.36,
+          "total": 46.37
+        },
+        "totalCharges": 76.02
+      },
+      "pnl": -1663.5199999999986,
+      "exitReason": "PREMIUM_HARD_STOP_8PCT",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776409506255",
+      "entryOrderId": "260417150442585",
+      "exitOrderId": "260417151000445",
+      "instrument": {
+        "instrument_token": "20755202",
+        "exchange_token": "81075",
+        "tradingsymbol": "ASIANPAINT26APR2460CE",
+        "name": "ASIANPAINT",
+        "last_price": 53.55,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 2460,
+        "tick_size": 0.05,
+        "lot_size": 250,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 250,
+      "entryPrice": 53.9,
+      "exitPrice": 57.95,
+      "entryTime": "2026-04-17T04:30:06.486Z",
+      "exitTime": "2026-04-17T07:05:06.255Z",
+      "grossPnl": 1012.500000000001,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.79,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.4,
+          "ipft": 0,
+          "gst": 4.46,
+          "total": 29.66
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 21.73,
+          "txnCharges": 5.15,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.53,
+          "total": 51.42
+        },
+        "totalCharges": 81.08
+      },
+      "pnl": 931.420000000001,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776419340150",
+      "entryOrderId": "260417151096902",
+      "exitOrderId": "260417151486739",
+      "instrument": {
+        "instrument_token": "42949122",
+        "exchange_token": "167770",
+        "tradingsymbol": "SIEMENS26APR3700CE",
+        "name": "SIEMENS",
+        "last_price": 86.9,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 3700,
+        "tick_size": 0.05,
+        "lot_size": 175,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 175,
+      "entryPrice": 87,
+      "exitPrice": 99.3,
+      "entryTime": "2026-04-17T07:45:06.401Z",
+      "exitTime": "2026-04-17T09:49:00.150Z",
+      "grossPnl": 2152.4999999999995,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.41,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.46,
+          "ipft": 0,
+          "gst": 4.58,
+          "total": 30.47
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 26.07,
+          "txnCharges": 6.17,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.71,
+          "total": 56.97
+        },
+        "totalCharges": 87.44
+      },
+      "pnl": 2065.0599999999995,
+      "exitReason": "EOD_SAFETY_EXIT_3:19PM",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776671406250",
+      "entryOrderId": "260420151041625",
+      "exitOrderId": "260420151162440",
+      "instrument": {
+        "instrument_token": "32077570",
+        "exchange_token": "125303",
+        "tradingsymbol": "INDIGO26APR4700CE",
+        "name": "INDIGO",
+        "last_price": 95.45,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 4700,
+        "tick_size": 0.05,
+        "lot_size": 150,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 150,
+      "entryPrice": 95.4,
+      "exitPrice": 89.5,
+      "entryTime": "2026-04-20T07:10:06.490Z",
+      "exitTime": "2026-04-20T07:50:06.250Z",
+      "grossPnl": -885.0000000000009,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.08,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.43,
+          "ipft": 0,
+          "gst": 4.52,
+          "total": 30.04
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 20.14,
+          "txnCharges": 4.77,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.46,
+          "total": 49.38
+        },
+        "totalCharges": 79.42
+      },
+      "pnl": -964.4200000000009,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776674106237",
+      "entryOrderId": "260420151268411",
+      "exitOrderId": "260420151306161",
+      "instrument": {
+        "instrument_token": "26199554",
+        "exchange_token": "102342",
+        "tradingsymbol": "CUMMINSIND26APR5200CE",
+        "name": "CUMMINSIND",
+        "last_price": 120.6,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 5200,
+        "tick_size": 0.05,
+        "lot_size": 200,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 200,
+      "entryPrice": 120.7,
+      "exitPrice": 118.75,
+      "entryTime": "2026-04-20T08:20:06.505Z",
+      "exitTime": "2026-04-20T08:35:06.237Z",
+      "grossPnl": -390.00000000000057,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.58,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.72,
+          "ipft": 0,
+          "gst": 5.15,
+          "total": 34.47
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 35.63,
+          "txnCharges": 8.44,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.12,
+          "total": 69.21
+        },
+        "totalCharges": 103.68
+      },
+      "pnl": -493.6800000000006,
+      "exitReason": "BREAKOUT_NO_FOLLOWTHROUGH",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776756006256",
+      "entryOrderId": "260421151071575",
+      "exitOrderId": "260421151104668",
+      "instrument": {
+        "instrument_token": "36217346",
+        "exchange_token": "141474",
+        "tradingsymbol": "M&M26APR3260CE",
+        "name": "M&M",
+        "last_price": 58.65,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 3260,
+        "tick_size": 0.05,
+        "lot_size": 200,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 200,
+      "entryPrice": 57.9,
+      "exitPrice": 56.05,
+      "entryTime": "2026-04-21T07:10:06.531Z",
+      "exitTime": "2026-04-21T07:20:06.256Z",
+      "grossPnl": -370.0000000000003,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.11,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.35,
+          "ipft": 0,
+          "gst": 4.34,
+          "total": 28.81
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 16.82,
+          "txnCharges": 3.98,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.32,
+          "total": 45.13
+        },
+        "totalCharges": 73.94
+      },
+      "pnl": -443.9400000000003,
+      "exitReason": "RSI_CONFIRMATION_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776759306242",
+      "entryOrderId": "260421151250133",
+      "exitOrderId": "260421151291173",
+      "instrument": {
+        "instrument_token": "42069506",
+        "exchange_token": "164334",
+        "tradingsymbol": "ULTRACEMCO26APR12100CE",
+        "name": "ULTRACEMCO",
+        "last_price": 186.1,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 12100,
+        "tick_size": 0.05,
+        "lot_size": 50,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 50,
+      "entryPrice": 189.7,
+      "exitPrice": 172.35,
+      "entryTime": "2026-04-21T08:05:06.514Z",
+      "exitTime": "2026-04-21T08:15:06.242Z",
+      "grossPnl": -867.4999999999998,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 3.37,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.28,
+          "ipft": 0,
+          "gst": 4.21,
+          "total": 27.87
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 12.93,
+          "txnCharges": 3.06,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.15,
+          "total": 40.15
+        },
+        "totalCharges": 68.02
+      },
+      "pnl": -935.5199999999998,
+      "exitReason": "RSI_CONFIRMATION_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1776837906268",
+      "entryOrderId": "260422150305206",
+      "exitOrderId": "260422150800936",
+      "instrument": {
+        "instrument_token": "26675458",
+        "exchange_token": "104201",
+        "tradingsymbol": "DIVISLAB26APR6300CE",
+        "name": "DIVISLAB",
+        "last_price": 79.15,
+        "expiry": "2026-04-28T00:00:00.000Z",
+        "strike": 6300,
+        "tick_size": 0.05,
+        "lot_size": 100,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 100,
+      "entryPrice": 80.65,
+      "exitPrice": 72.8,
+      "entryTime": "2026-04-22T04:10:06.716Z",
+      "exitTime": "2026-04-22T06:05:06.268Z",
+      "grossPnl": -785.0000000000009,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 2.87,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.24,
+          "ipft": 0,
+          "gst": 4.12,
+          "total": 27.24
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 10.92,
+          "txnCharges": 2.59,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.07,
+          "total": 37.59
+        },
+        "totalCharges": 64.83
+      },
+      "pnl": -849.830000000001,
+      "exitReason": "PREMIUM_HARD_STOP_8PCT",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777445106355",
+      "entryOrderId": "260429150219659",
+      "exitOrderId": "260429150878745",
+      "instrument": {
+        "instrument_token": "45056514",
+        "exchange_token": "176002",
+        "tradingsymbol": "TORNTPHARM26MAY4250CE",
+        "name": "TORNTPHARM",
+        "last_price": 140.45,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 4250,
+        "tick_size": 0.05,
+        "lot_size": 125,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 125,
+      "entryPrice": 140.45,
+      "exitPrice": 132.05,
+      "entryTime": "2026-04-29T04:00:06.470Z",
+      "exitTime": "2026-04-29T06:45:06.355Z",
+      "grossPnl": -1049.9999999999973,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 6.24,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.53,
+          "ipft": 0,
+          "gst": 4.73,
+          "total": 31.52
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 24.76,
+          "txnCharges": 5.86,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.66,
+          "total": 55.3
+        },
+        "totalCharges": 86.82
+      },
+      "pnl": -1136.8199999999972,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777450806223",
+      "entryOrderId": "260429150917236",
+      "exitOrderId": "260429151123118",
+      "instrument": {
+        "instrument_token": "25058050",
+        "exchange_token": "97883",
+        "tradingsymbol": "DIVISLAB26MAY6500CE",
+        "name": "DIVISLAB",
+        "last_price": 228.3,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 6500,
+        "tick_size": 0.05,
+        "lot_size": 100,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 100,
+      "entryPrice": 229.5,
+      "exitPrice": 220,
+      "entryTime": "2026-04-29T07:00:06.485Z",
+      "exitTime": "2026-04-29T08:20:06.223Z",
+      "grossPnl": -950,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.15,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.69,
+          "ipft": 0,
+          "gst": 5.07,
+          "total": 33.93
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 33,
+          "txnCharges": 7.82,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.01,
+          "total": 65.85
+        },
+        "totalCharges": 99.78
+      },
+      "pnl": -1049.78,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777523106240",
+      "entryOrderId": "260430150372956",
+      "exitOrderId": "260430150438632",
+      "instrument": {
+        "instrument_token": "23967234",
+        "exchange_token": "93622",
+        "tradingsymbol": "CIPLA26MAY1320CE",
+        "name": "CIPLA",
+        "last_price": 45,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 1320,
+        "tick_size": 0.05,
+        "lot_size": 375,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 375,
+      "entryPrice": 45,
+      "exitPrice": 43.15,
+      "entryTime": "2026-04-30T04:15:06.435Z",
+      "exitTime": "2026-04-30T04:25:06.240Z",
+      "grossPnl": -693.7500000000006,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 6,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.51,
+          "ipft": 0,
+          "gst": 4.68,
+          "total": 31.21
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 24.27,
+          "txnCharges": 5.75,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.64,
+          "total": 54.68
+        },
+        "totalCharges": 85.89
+      },
+      "pnl": -779.6400000000006,
+      "exitReason": "RSI_CONFIRMATION_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777527306282",
+      "entryOrderId": "260430150739613",
+      "exitOrderId": "260430150806000",
+      "instrument": {
+        "instrument_token": "27090434",
+        "exchange_token": "105822",
+        "tradingsymbol": "HAL26MAY4300PE",
+        "name": "HAL",
+        "last_price": 149,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 4300,
+        "tick_size": 0.05,
+        "lot_size": 150,
+        "instrument_type": "PE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "SHORT",
+      "quantity": 150,
+      "entryPrice": 150.1,
+      "exitPrice": 147.15,
+      "entryTime": "2026-04-30T05:20:06.455Z",
+      "exitTime": "2026-04-30T05:35:06.282Z",
+      "grossPnl": -442.4999999999983,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.68,
+          "ipft": 0,
+          "gst": 5.04,
+          "total": 33.74
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 33.11,
+          "txnCharges": 7.84,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.01,
+          "total": 65.98
+        },
+        "totalCharges": 99.72
+      },
+      "pnl": -542.2199999999983,
+      "exitReason": "BREAKOUT_NO_FOLLOWTHROUGH",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777541706233",
+      "entryOrderId": "260430151293625",
+      "exitOrderId": "260430151823332",
+      "instrument": {
+        "instrument_token": "41031426",
+        "exchange_token": "160279",
+        "tradingsymbol": "TECHM26MAY1480CE",
+        "name": "TECHM",
+        "last_price": 41.3,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 1480,
+        "tick_size": 0.05,
+        "lot_size": 600,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 600,
+      "entryPrice": 41.15,
+      "exitPrice": 39.5,
+      "entryTime": "2026-04-30T07:50:06.437Z",
+      "exitTime": "2026-04-30T09:35:06.233Z",
+      "grossPnl": -989.9999999999991,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.77,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.74,
+          "ipft": 0,
+          "gst": 5.18,
+          "total": 34.71
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 35.55,
+          "txnCharges": 8.42,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.12,
+          "total": 69.11
+        },
+        "totalCharges": 103.82
+      },
+      "pnl": -1093.819999999999,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777875306433",
+      "entryOrderId": "260504150231235",
+      "exitOrderId": "260504150889206",
+      "instrument": {
+        "instrument_token": "23181570",
+        "exchange_token": "90553",
+        "tradingsymbol": "BRITANNIA26MAY5800CE",
+        "name": "BRITANNIA",
+        "last_price": 163.9,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 5800,
+        "tick_size": 0.05,
+        "lot_size": 125,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 125,
+      "entryPrice": 166.65,
+      "exitPrice": 158.25,
+      "entryTime": "2026-05-04T04:00:06.327Z",
+      "exitTime": "2026-05-04T06:15:06.433Z",
+      "grossPnl": -1050.0000000000007,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 7.4,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.62,
+          "ipft": 0,
+          "gst": 4.94,
+          "total": 32.98
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 29.67,
+          "txnCharges": 7.03,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.87,
+          "total": 61.59
+        },
+        "totalCharges": 94.57
+      },
+      "pnl": -1144.5700000000006,
+      "exitReason": "LONG_SUPERTREND_BREAK",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777878906195",
+      "entryOrderId": "260504151084811",
+      "exitOrderId": "260504151101114",
+      "instrument": {
+        "instrument_token": "29413122",
+        "exchange_token": "114895",
+        "tradingsymbol": "GODREJPROP26MAY1940CE",
+        "name": "GODREJPROP",
+        "last_price": 84.9,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 1940,
+        "tick_size": 0.05,
+        "lot_size": 275,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 275,
+      "entryPrice": 84.75,
+      "exitPrice": 66.9,
+      "entryTime": "2026-05-04T07:10:06.440Z",
+      "exitTime": "2026-05-04T07:15:06.195Z",
+      "grossPnl": -4908.749999999998,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.28,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.7,
+          "ipft": 0,
+          "gst": 5.09,
+          "total": 34.09
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 27.6,
+          "txnCharges": 6.54,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.78,
+          "total": 58.94
+        },
+        "totalCharges": 93.03
+      },
+      "pnl": -5001.779999999998,
+      "exitReason": "PREMIUM_HARD_STOP_8PCT",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777888140125",
+      "entryOrderId": "260504151313063",
+      "exitOrderId": "260504151640775",
+      "instrument": {
+        "instrument_token": "27787266",
+        "exchange_token": "108544",
+        "tradingsymbol": "EICHERMOT26MAY7250CE",
+        "name": "EICHERMOT",
+        "last_price": 256.25,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 7250,
+        "tick_size": 0.05,
+        "lot_size": 100,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 100,
+      "entryPrice": 255.75,
+      "exitPrice": 284.5,
+      "entryTime": "2026-05-04T08:15:06.412Z",
+      "exitTime": "2026-05-04T09:49:00.125Z",
+      "grossPnl": 2875,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 9.09,
+          "sebiCharges": 0.03,
+          "stampDuty": 0.77,
+          "ipft": 0,
+          "gst": 5.24,
+          "total": 35.13
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 42.68,
+          "txnCharges": 10.11,
+          "sebiCharges": 0.03,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.43,
+          "total": 78.25
+        },
+        "totalCharges": 113.38
+      },
+      "pnl": 2761.62,
+      "exitReason": "EOD_SAFETY_EXIT_3:19PM",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1777974540141",
+      "entryOrderId": "260505151441004",
+      "exitOrderId": "260505151939886",
+      "instrument": {
+        "instrument_token": "21220098",
+        "exchange_token": "82891",
+        "tradingsymbol": "AUROPHARMA26MAY1420CE",
+        "name": "AUROPHARMA",
+        "last_price": 43.5,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 1420,
+        "tick_size": 0.05,
+        "lot_size": 550,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 550,
+      "entryPrice": 43.75,
+      "exitPrice": 48.55,
+      "entryTime": "2026-05-05T07:55:06.428Z",
+      "exitTime": "2026-05-05T09:49:00.141Z",
+      "grossPnl": 2639.9999999999986,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.55,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.72,
+          "ipft": 0,
+          "gst": 5.14,
+          "total": 34.43
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 40.05,
+          "txnCharges": 9.49,
+          "sebiCharges": 0.03,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.31,
+          "total": 74.88
+        },
+        "totalCharges": 109.31
+      },
+      "pnl": 2530.6899999999987,
+      "exitReason": "EOD_SAFETY_EXIT_3:19PM",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1778042106201",
+      "entryOrderId": "260506150374775",
+      "exitOrderId": "260506150464903",
+      "instrument": {
+        "instrument_token": "45057026",
+        "exchange_token": "176004",
+        "tradingsymbol": "TORNTPHARM26MAY4300CE",
+        "name": "TORNTPHARM",
+        "last_price": 131.2,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 4300,
+        "tick_size": 0.05,
+        "lot_size": 125,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 125,
+      "entryPrice": 131.6,
+      "exitPrice": 121.35,
+      "entryTime": "2026-05-06T04:20:06.374Z",
+      "exitTime": "2026-05-06T04:35:06.201Z",
+      "grossPnl": -1281.25,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 5.84,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.49,
+          "ipft": 0,
+          "gst": 4.65,
+          "total": 31
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 22.75,
+          "txnCharges": 5.39,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.57,
+          "total": 52.73
+        },
+        "totalCharges": 83.73
+      },
+      "pnl": -1364.98,
+      "exitReason": "BREAKOUT_NO_FOLLOWTHROUGH",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1778052311259",
+      "entryOrderId": "260506151031280",
+      "exitOrderId": "260506151065082",
+      "instrument": {
+        "instrument_token": "11046146",
+        "exchange_token": "43149",
+        "tradingsymbol": "ADANIGREEN26MAY1340CE",
+        "name": "ADANIGREEN",
+        "last_price": 61,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 1340,
+        "tick_size": 0.05,
+        "lot_size": 600,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 600,
+      "entryPrice": 61.95,
+      "exitPrice": 58,
+      "entryTime": "2026-05-06T07:15:11.446Z",
+      "exitTime": "2026-05-06T07:25:11.259Z",
+      "grossPnl": -2370.000000000002,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 13.21,
+          "sebiCharges": 0.04,
+          "stampDuty": 1.12,
+          "ipft": 0,
+          "gst": 5.99,
+          "total": 40.36
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 52.2,
+          "txnCharges": 12.36,
+          "sebiCharges": 0.03,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.83,
+          "total": 90.42
+        },
+        "totalCharges": 130.78
+      },
+      "pnl": -2500.780000000002,
+      "exitReason": "RSI_CONFIRMATION_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1778055906226",
+      "entryOrderId": "260506151226369",
+      "exitOrderId": "260506151255057",
+      "instrument": {
+        "instrument_token": "29309698",
+        "exchange_token": "114491",
+        "tradingsymbol": "INDIGO26MAY4400CE",
+        "name": "INDIGO",
+        "last_price": 151.45,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 4400,
+        "tick_size": 0.05,
+        "lot_size": 150,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 150,
+      "entryPrice": 151.25,
+      "exitPrice": 147.2,
+      "entryTime": "2026-05-06T08:15:11.471Z",
+      "exitTime": "2026-05-06T08:25:06.226Z",
+      "grossPnl": -607.5000000000017,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.06,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.68,
+          "ipft": 0,
+          "gst": 5.05,
+          "total": 33.81
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 33.12,
+          "txnCharges": 7.85,
+          "sebiCharges": 0.02,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.02,
+          "total": 66.01
+        },
+        "totalCharges": 99.82
+      },
+      "pnl": -707.3200000000018,
+      "exitReason": "RSI_CONFIRMATION_FAILED",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1778147340148",
+      "entryOrderId": "260507151189049",
+      "exitOrderId": "260507151962314",
+      "instrument": {
+        "instrument_token": "27107330",
+        "exchange_token": "105888",
+        "tradingsymbol": "HAL26MAY4700CE",
+        "name": "HAL",
+        "last_price": 155.75,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 4700,
+        "tick_size": 0.05,
+        "lot_size": 150,
+        "instrument_type": "CE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "LONG",
+      "quantity": 150,
+      "entryPrice": 157,
+      "exitPrice": 193.1,
+      "entryTime": "2026-05-07T07:05:06.690Z",
+      "exitTime": "2026-05-07T09:49:00.148Z",
+      "grossPnl": 5414.999999999999,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 8.37,
+          "sebiCharges": 0.02,
+          "stampDuty": 0.71,
+          "ipft": 0,
+          "gst": 5.11,
+          "total": 34.21
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 43.45,
+          "txnCharges": 10.29,
+          "sebiCharges": 0.03,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 5.46,
+          "total": 79.23
+        },
+        "totalCharges": 113.44
+      },
+      "pnl": 5301.5599999999995,
+      "exitReason": "EOD_SAFETY_EXIT_3:19PM",
+      "status": "CLOSED",
+      "strategy": "BOLLINGER_BAND"
+    },
+    {
+      "tradeId": "BB_1778486407262",
+      "entryOrderId": "260511151252085",
+      "exitOrderId": "260511151277123",
+      "instrument": {
+        "instrument_token": "36966658",
+        "exchange_token": "144401",
+        "tradingsymbol": "MARUTI26MAY13500PE",
+        "name": "MARUTI",
+        "last_price": 274.1,
+        "expiry": "2026-05-26T00:00:00.000Z",
+        "strike": 13500,
+        "tick_size": 0.05,
+        "lot_size": 50,
+        "instrument_type": "PE",
+        "segment": "NFO-OPT",
+        "exchange": "NFO",
+        "strikeType": "ATM"
+      },
+      "direction": "SHORT",
+      "quantity": 50,
+      "entryPrice": 275,
+      "exitPrice": 271.35,
+      "entryTime": "2026-05-11T07:50:06.437Z",
+      "exitTime": "2026-05-11T08:00:07.262Z",
+      "grossPnl": -182.49999999999886,
+      "charges": {
+        "buy": {
+          "brokerage": 20,
+          "stt": 0,
+          "txnCharges": 4.89,
+          "sebiCharges": 0.01,
+          "stampDuty": 0.41,
+          "ipft": 0,
+          "gst": 4.48,
+          "total": 29.79
+        },
+        "sell": {
+          "brokerage": 20,
+          "stt": 20.35,
+          "txnCharges": 4.82,
+          "sebiCharges": 0.01,
+          "stampDuty": 0,
+          "ipft": 0,
+          "gst": 4.47,
+          "total": 49.65
+        },
+        "totalCharges": 79.44
+      },
+      "pnl": -261.93999999999886,
+      "exitReason": "RSI_CONFIRMATION_FAILED",
       "status": "CLOSED",
       "strategy": "BOLLINGER_BAND"
     }
   ],
   "activePosition": null,
   "rsiTrailState": null,
-  "lastUpdated": "2026-04-02T09:09:15.497Z"
+  "lastUpdated": "2026-05-15T04:39:20.592Z"
 }
