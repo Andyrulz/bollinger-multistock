@@ -134,6 +134,11 @@ export interface ExperimentalFlags {
   fvgLookbackCandles: number;                 // default 5 — how many candles back from signal to scan for a pre-existing FVG
   enableFvgUpgrade: boolean;                  // when true, while the FVG watch is armed-but-not-yet-triggered, replace the watched zone with a fresher valid FVG (newer impulse) formed by post-arm candles; lets the signal-impulse gap supersede a marginal earlier one
 
+  // FVG trend safety (Jun 2026) — fixes counter-trend FVG fills (e.g. APOLLOHOSP entered LONG with Supertrend DOWN,
+  // so the Supertrend exit sat ABOVE entry). Both default false = legacy FVG behavior.
+  fvgRequireTrendAtEntry: boolean;            // when true, an FVG LONG fires only if Supertrend=UP AND close>Supertrend (stop is always below entry)
+  fvgInvalidateOnTrendFlip: boolean;          // when true, free the slot the moment Supertrend flips DOWN during an FVG watch (mirrors pullback's regime-flip abandon)
+
   // IMP-001 (Jun 2026) — stateful scanner candles. Default false = current behavior (full 10-day re-fetch every scan).
   // When true: seed once (5-day), then keep cachedHistoricalData current incrementally. Gated for shadow validation.
   enableIncrementalScannerCandles: boolean;   // master switch for the quote-driven incremental candle engine
@@ -183,6 +188,8 @@ export const DEFAULT_EXPERIMENTAL_FLAGS: ExperimentalFlags = {
   enableFvgLookback: false,
   fvgLookbackCandles: 5,
   enableFvgUpgrade: false,
+  fvgRequireTrendAtEntry: false,
+  fvgInvalidateOnTrendFlip: false,
   enableIncrementalScannerCandles: false,
   enableSessionVwap: false,
 };

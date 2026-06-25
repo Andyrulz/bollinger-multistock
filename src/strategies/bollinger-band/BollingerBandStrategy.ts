@@ -4235,6 +4235,15 @@ export class BollingerBandStrategy extends StrategyBase {
       return;
     }
 
+    // INVALIDATE (Fix 1b): Supertrend flipped against the (LONG) setup — free the slot immediately.
+    // Mirrors the pullback machine's regime-flip abandon (shouldAbandonArmedSignal). A 10,2 Supertrend
+    // flip to DOWN means the bullish premise is gone; don't keep the slot locked waiting for a retrace
+    // that won't resume (this is what let APOLLOHOSP linger then enter LONG with ST DOWN).
+    if (flags.fvgInvalidateOnTrendFlip && this.currentIndicators?.supertrend?.trend === 'DOWN') {
+      this.clearFvgWatch(`Supertrend flipped DOWN (value ${this.currentIndicators.supertrend.value.toFixed(2)})`);
+      return;
+    }
+
     // (a) Still scanning for an FVG
     if (!watch.fvg) {
       // Need at least 3 completed candles AT/AFTER arm to form an FVG
@@ -4307,6 +4316,19 @@ export class BollingerBandStrategy extends StrategyBase {
 
     // (c) Trigger set — check entry on a SUBSEQUENT candle only.
     if (!isSameAsTriggerCandle && latestCandle.high >= watch.trigger) {
+      // Fix 1: trend guard — never enter a LONG below/at the Supertrend (which would put the
+      // 5-min-close exit ABOVE entry). Require Supertrend=UP AND close>Supertrend so the stop is
+      // always below entry. On fail, skip this candle (keep watching); floor-close/lifetime/Fix 1b free the slot.
+      if (flags.fvgRequireTrendAtEntry && !this.fvgEntryTrendOk(latestCandle)) {
+        const st = this.currentIndicators?.supertrend;
+        this.logger.info(`⛔ FVG entry deferred — trend guard (ST ${st?.trend} @${st?.value?.toFixed(2)} vs close ${latestCandle.close.toFixed(2)})`, {
+          slot: this.slotIndex + 1, symbol: this.signalSymbol,
+        });
+        this.logSignalLifecycle('ENTRY_REJECTED', 'LONG', 'fvg_trend_guard', {
+          stTrend: st?.trend, stValue: st?.value, close: latestCandle.close, trigger: watch.trigger,
+        });
+        return;
+      }
       await this.enterAfterFvgTrigger(latestCandle, watch, flags);
       return;
     }
@@ -4324,6 +4346,17 @@ export class BollingerBandStrategy extends StrategyBase {
       this.logSignalLifecycle('FVG_TRIGGER_LOWERED', 'LONG', null, { from: oldTrigger, to: watch.trigger });
       this.saveCapitalData();
     }
+  }
+
+  /**
+   * Fix 1: FVG entry quality gate. Trend must be with us AND the entry close must be above the
+   * Supertrend exit level, so a LONG is never born already below its 5-min-close stop (which would
+   * put the Supertrend exit ABOVE entry). No indicator → refuse to enter blind.
+   */
+  private fvgEntryTrendOk(candle: Candle): boolean {
+    const st = this.currentIndicators?.supertrend;
+    if (!st) return false;
+    return st.trend === 'UP' && candle.close > st.value;
   }
 
   /**
