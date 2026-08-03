@@ -2,9 +2,12 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Start Trading Bot",
+			"label": "Start Bollinger Trading Bot",
 			"type": "shell",
 			"command": "npm run dev",
+			"options": {
+				"cwd": "${workspaceFolder}/bollinger-multistock"
+			},
 			"isBackground": true,
 			"problemMatcher": [
 				"$tsc"
@@ -12,10 +15,14 @@
 			"group": "build"
 		},
 		{
-			"label": "Start Trading Bot",
+			"label": "Start Swing Scanner",
 			"type": "shell",
 			"command": "npm run dev",
+			"options": {
+				"cwd": "${workspaceFolder}/swing-trading"
+			},
 			"isBackground": true,
+			"problemMatcher": [],
 			"group": "build"
 		}
 	]
